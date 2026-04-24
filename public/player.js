@@ -73,7 +73,7 @@ socket.on('bomb:tick', s => {
     if (canvas) {
       const myId = s.players.find(p => p.name === me)?.id || null;
       bomb3d.init(canvas, s.grid.w, s.grid.h, {
-        cameraMode: 'follow',
+        cameraMode: 'overview',
         followPlayerId: myId,
       });
       playerBombNeedsInit = false;
@@ -606,7 +606,7 @@ function renderBombPlayer() {
   if (bombCanvas && bombSnap?.grid) {
     const myId = bombSnap.players.find(p => p.name === me)?.id || null;
     bomb3d.init(bombCanvas, bombSnap.grid.w, bombSnap.grid.h, {
-      cameraMode: 'follow',
+      cameraMode: 'overview',
       followPlayerId: myId,
     });
     bomb3d.update(bombSnap);
