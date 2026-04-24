@@ -51,7 +51,7 @@ body::before {
   border: 1px solid var(--card-b); font-size: 13px; color: var(--ink-2); letter-spacing: 1px; text-transform: uppercase; }
 
 .host-main { flex: 1; padding: 24px 60px; display: flex; flex-direction: column; overflow-y: auto; min-height: 0; }
-.host-main > * { animation: phaseFadeIn .5s cubic-bezier(.2,.8,.4,1) both; }
+.host-main.phase-changing > * { animation: phaseFadeIn .5s cubic-bezier(.2,.8,.4,1) both; }
 @keyframes phaseFadeIn { from { opacity: 0; transform: translateY(14px); } }
 
 /* LOBBY on host */

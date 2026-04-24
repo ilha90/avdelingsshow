@@ -112,6 +112,7 @@ const game = {
   bombEndTimer: null,
   // Config
   questionCount: 10,
+  leaderboardEvery: 3,
 };
 
 function publicState() {
@@ -127,6 +128,7 @@ function publicState() {
     total: game.questions.length,
     paused: game.paused,
     questionCount: game.questionCount,
+    leaderboardEvery: game.leaderboardEvery,
     timeLimit: game.timeLimit,
     configTimeLimit: game.configTimeLimit,
     lightning: game.lightning,
@@ -258,8 +260,10 @@ function scheduleAutoAdvance() {
   const curIdx = game.qIndex;
   autoAdvanceTimer = setTimeout(() => {
     if (game.phase !== 'reveal' || game.qIndex !== curIdx) return;
-    // Hver 3. spørsmål OG på siste: vis leaderboard før vi går videre
-    const shouldShowBoard = ((curIdx + 1) % 3 === 0) || (curIdx + 1 >= game.questions.length);
+    // Hver N-te spørsmål OG på siste: vis leaderboard før vi går videre
+    const every = Math.max(0, game.leaderboardEvery || 0);
+    const isLast = curIdx + 1 >= game.questions.length;
+    const shouldShowBoard = (every > 0 && (curIdx + 1) % every === 0) || isLast;
     if (shouldShowBoard) {
       game.phase = 'leaderboard';
       broadcast();
@@ -1121,7 +1125,8 @@ io.on('connection', (socket) => {
       enableTeams(cfg.numTeams);
     }
     if (typeof cfg.timeLimit === 'number') { game.timeLimit = Math.max(5000, Math.min(60000, cfg.timeLimit)); game.configTimeLimit = game.timeLimit; }
-    if (typeof cfg.questionCount === 'number') game.questionCount = Math.max(3, Math.min(20, cfg.questionCount));
+    if (typeof cfg.questionCount === 'number') game.questionCount = Math.max(3, Math.min(25, cfg.questionCount));
+    if (typeof cfg.leaderboardEvery === 'number') game.leaderboardEvery = Math.max(0, Math.min(20, cfg.leaderboardEvery));
     broadcast();
   });
 

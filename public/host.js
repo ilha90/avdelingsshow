@@ -217,9 +217,25 @@ socket.on('state', s => {
   const prev = state;
   state = s;
   triggerPhaseEffects(prev, s);
+  // Unngå re-render når bare "answered count" endres under quiz
+  const sameQuestion = prev && prev.phase === s.phase && s.phase === 'question'
+    && prev.qIndex === s.qIndex && prev.paused === s.paused;
+  const sameVoting = prev && prev.phase === s.phase && s.phase === 'voting';
+  const sameScatter = prev && prev.phase === s.phase && s.phase === 'scatter-play';
+  if (sameQuestion || sameVoting || sameScatter) {
+    // Soft update — oppdater bare counters
+    softUpdateCounts();
+    lastPhase = s.phase;
+    return;
+  }
+  // Aktiver fase-fade kun ved FAKTISK fase-endring
+  if (prev && prev.phase !== s.phase) {
+    main.classList.remove('phase-changing');
+    void main.offsetWidth;
+    main.classList.add('phase-changing');
+  }
   lastPhase = s.phase;
   lastQIndex = s.qIndex;
-  // Bevar AI-input fokus/verdi hvis bruker skriver
   const ae = document.activeElement;
   const preservedId = ae && ['aiTopic','aiKey','aiEndpoint','aiModel'].includes(ae.id) ? ae.id : null;
   const preservedValue = preservedId ? ae.value : null;
@@ -235,6 +251,31 @@ socket.on('state', s => {
     }
   }
 });
+
+function softUpdateCounts() {
+  if (!state) return;
+  const answered = state.players.filter(p => p.answered || p.voted).length;
+  const total = state.players.length;
+  // Quiz-counter
+  const qMeta = document.querySelector('.q-meta div:last-child');
+  if (qMeta && state.phase === 'question') {
+    qMeta.textContent = `${answered} / ${total} svar inne ${state.paused ? '· ⏸ Pause' : ''}`;
+  }
+  // Voting-counter
+  const vStatus = document.querySelector('.voting-status');
+  if (vStatus && state.phase === 'voting') {
+    vStatus.textContent = `${answered} / ${total} har stemt`;
+  }
+  const vBar = document.querySelector('.voting-bar');
+  if (vBar && state.phase === 'voting') {
+    vBar.style.width = ((answered / Math.max(1, total)) * 100) + '%';
+  }
+  // Scatter-counter
+  const sStatus = document.querySelector('.scatter-status');
+  if (sStatus && state.phase === 'scatter-play') {
+    sStatus.textContent = `${answered} / ${total} ferdig`;
+  }
+}
 
 function triggerPhaseEffects(prev, s) {
   if (!prev) return;
@@ -343,10 +384,16 @@ function renderLobby() {
           </div>
           <div class="cfg-row">
             <label>Spørsmål: <select id="cfgQCount">
-              ${[5,8,10,12,15].map(n => `<option value="${n}" ${n === state.questionCount ? 'selected' : ''}>${n}</option>`).join('')}
+              ${[5,8,10,12,15,20].map(n => `<option value="${n}" ${n === state.questionCount ? 'selected' : ''}>${n}</option>`).join('')}
             </select></label>
-            <label>Tid pr spørsmål: <select id="cfgTime">
+            <label>Tid: <select id="cfgTime">
               ${[10000,15000,20000,30000].map(n => `<option value="${n}" ${n === state.timeLimit ? 'selected' : ''}>${n/1000} sek</option>`).join('')}
+            </select></label>
+            <label>📊 Tavle: <select id="cfgLBEvery">
+              <option value="0" ${state.leaderboardEvery === 0 ? 'selected' : ''}>Bare på slutten</option>
+              <option value="3" ${state.leaderboardEvery === 3 ? 'selected' : ''}>Hver 3.</option>
+              <option value="5" ${state.leaderboardEvery === 5 ? 'selected' : ''}>Hver 5.</option>
+              <option value="10" ${state.leaderboardEvery === 10 ? 'selected' : ''}>Hver 10.</option>
             </select></label>
           </div>
         </div>
@@ -379,6 +426,8 @@ function renderLobby() {
   num?.addEventListener('change', () => socket.emit('host:config', { numTeams: +num.value }));
   qc?.addEventListener('change', () => socket.emit('host:config', { questionCount: +qc.value }));
   tm?.addEventListener('change', () => socket.emit('host:config', { timeLimit: +tm.value }));
+  const lb = document.getElementById('cfgLBEvery');
+  lb?.addEventListener('change', () => socket.emit('host:config', { leaderboardEvery: +lb.value }));
 
   // Kick-spiller: klikk på player-chip
   document.querySelectorAll('.player-chip[data-pid], .team-chip[data-pid]').forEach(el => {
