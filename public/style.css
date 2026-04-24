@@ -621,10 +621,11 @@ body::before {
 .snake-dead { color: var(--red); font-size: 14px; font-weight: 500; }
 .snake-pad { display: grid; gap: 10px; justify-items: center; margin-top: 20px; width: 100%; max-width: 340px; }
 .snake-pad .pad-row { display: flex; gap: 80px; }
-.pad-btn { width: 90px; height: 90px; font-size: 36px; border: none; border-radius: 20px;
+.pad-btn { width: 90px; height: 90px; font-size: 36px; border-radius: 20px;
   background: linear-gradient(180deg, var(--card), rgba(255,255,255,0.02));
-  border: 2px solid var(--card-b); color: var(--ink); cursor: pointer;
-  -webkit-tap-highlight-color: transparent; transition: transform .1s, background .1s; }
+  border: 2px solid var(--card-b); color: var(--ink); font-family: inherit; cursor: pointer;
+  -webkit-tap-highlight-color: transparent; transition: transform .1s, background .1s, border-color .12s, box-shadow .12s;
+  touch-action: none; -webkit-user-select: none; user-select: none; }
 .pad-btn:active { transform: scale(.92); background: rgba(212,175,55,.3); border-color: var(--gold); }
 .pad-btn.active-dir { background: rgba(212,175,55,.28); border-color: var(--gold); box-shadow: 0 0 16px rgba(212,175,55,.5); }
 .snake-hint { color: var(--ink-2); font-size: 13px; text-align: center; margin-top: 20px; }

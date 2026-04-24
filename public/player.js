@@ -287,7 +287,11 @@ function renderSnakePlayer() {
   // Wire up knappene + swipe
   const pad = document.getElementById('snakePad');
   pad.querySelectorAll('.pad-btn').forEach(b => {
-    b.addEventListener('click', () => sendSnakeDir(b.dataset.dir));
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sendSnakeDir(b.dataset.dir);
+    });
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
   });
   // Swipe-gestures på hele skjermen
   let touchStart = null;
@@ -465,16 +469,47 @@ function renderBombPlayer() {
       <p class="snake-hint">Piltaster/WASD på laptop, swipe eller knapper på mobil. Mellomrom/knapp = bombe.</p>
     </div>`;
   const pad = document.getElementById('bombPad');
+  const bombActiveDirs = new Set();
+  function emitBombDirs() {
+    socket.emit('player:bomb-dirs', {
+      up: bombActiveDirs.has('up'),
+      down: bombActiveDirs.has('down'),
+      left: bombActiveDirs.has('left'),
+      right: bombActiveDirs.has('right'),
+    });
+    // Oppdater aktiv-status på knapper
+    pad.querySelectorAll('.pad-btn[data-dir]').forEach(el => {
+      el.classList.toggle('active-dir', bombActiveDirs.has(el.dataset.dir));
+    });
+  }
   pad.querySelectorAll('.pad-btn[data-dir]').forEach(b => {
-    b.addEventListener('pointerdown', () => sendBombMove(b.dataset.dir));
-    b.addEventListener('pointerup', () => sendBombMove('stop'));
-    b.addEventListener('pointerleave', () => sendBombMove('stop'));
+    // pointerdown: legg til dir, behold capture slik at vi får up selv om fingeren glir utenfor knappen
+    b.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try { b.setPointerCapture(e.pointerId); } catch {}
+      bombActiveDirs.add(b.dataset.dir);
+      emitBombDirs();
+      buzz(12);
+    });
+    const release = (e) => {
+      bombActiveDirs.delete(b.dataset.dir);
+      emitBombDirs();
+    };
+    b.addEventListener('pointerup', release);
+    b.addEventListener('pointercancel', release);
+    // Blokker context-menu ved lang press
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
   });
   document.getElementById('bombDrop').addEventListener('click', () => { socket.emit('player:bomb-drop'); buzz(40); });
 
-  // Swipe
+  // Swipe på screen (ikke pad — så multitouch-pad ikke forstyrres)
   let touchStart = null;
-  const onStart = e => { const t = e.touches ? e.touches[0] : e; touchStart = { x: t.clientX, y: t.clientY, dir: null }; };
+  const canvas = document.getElementById('playerBombCanvas');
+  const onStart = e => {
+    if (e.target.closest('.bomb-pad')) return; // ignorer swipe fra pad-området
+    const t = e.touches ? e.touches[0] : e;
+    touchStart = { x: t.clientX, y: t.clientY, dir: null };
+  };
   const onMove = e => {
     if (e.cancelable) e.preventDefault(); // blokker scroll/zoom
     if (!touchStart) return;
@@ -483,30 +518,45 @@ function renderBombPlayer() {
     const absX = Math.abs(dx), absY = Math.abs(dy);
     if (Math.max(absX, absY) < 25) return;
     const dir = absX > absY ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
-    if (dir !== touchStart.dir) { touchStart.dir = dir; sendBombMove(dir); }
+    if (dir !== touchStart.dir) {
+      touchStart.dir = dir;
+      bombActiveDirs.clear();
+      bombActiveDirs.add(dir);
+      emitBombDirs();
+    }
   };
-  const onEnd = () => { touchStart = null; sendBombMove('stop'); };
+  const onEnd = (e) => {
+    if (e.target?.closest('.bomb-pad')) return;
+    touchStart = null;
+    bombActiveDirs.clear();
+    emitBombDirs();
+  };
   screen.addEventListener('touchstart', onStart, { passive: true });
   screen.addEventListener('touchmove', onMove, { passive: false });
   screen.addEventListener('touchend', onEnd, { passive: true });
 
-  // Keyboard
+  // Keyboard — tracker også pressed keys for diagonal
+  const KEY_DIR = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+                    w: 'up', W: 'up', s: 'down', S: 'down', a: 'left', A: 'left', d: 'right', D: 'right' };
   window.onkeydown = (e) => {
     if (state?.phase !== 'bomb') return;
-    if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') sendBombMove('up');
-    else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') sendBombMove('down');
-    else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') sendBombMove('left');
-    else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') sendBombMove('right');
-    else if (e.key === ' ' || e.key === 'Enter' || e.key === 'b' || e.key === 'B') {
+    if (e.key === ' ' || e.key === 'Enter' || e.key === 'b' || e.key === 'B') {
       e.preventDefault();
       socket.emit('player:bomb-drop'); buzz(40);
+      return;
     }
+    const d = KEY_DIR[e.key];
+    if (!d) return;
+    if (bombActiveDirs.has(d)) return; // unngå repeat-spam
+    bombActiveDirs.add(d);
+    emitBombDirs();
   };
   window.onkeyup = (e) => {
     if (state?.phase !== 'bomb') return;
-    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','W','a','A','s','S','d','D'].includes(e.key)) {
-      sendBombMove('stop');
-    }
+    const d = KEY_DIR[e.key];
+    if (!d) return;
+    bombActiveDirs.delete(d);
+    emitBombDirs();
   };
   drawBombMini();
 }

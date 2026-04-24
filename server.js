@@ -951,6 +951,7 @@ function bombRespawnPlayer(sid, player) {
     if (grid[idx(pos.x, pos.y)] !== 0) continue;
     player.x = pos.x; player.y = pos.y;
     player.nextDir = null;
+    player.dirs = { up: false, down: false, left: false, right: false };
     player.alive = true; player.deadAt = 0;
     player.shield = 1; // respawn-beskyttelse (1 treff)
     // Clear cells around spawn of soft walls
@@ -1001,6 +1002,7 @@ function startBomberman() {
       nextDir: null, alive: true, deadAt: 0,
       bombsMax: 1, bombsPlaced: 0, range: 2,
       shield: 0,
+      dirs: { up: false, down: false, left: false, right: false },
       score: 0, kills: 0,
     });
   }
@@ -1042,35 +1044,45 @@ function bombermanTickInner() {
   for (const bomb of toDetonate) detonateBomb(bomb);
   b.bombs = b.bombs.filter(bb => bb.explodesAt > now);
 
-  // Move players
+  // Move players (støtter diagonalt via dirs-objekt med flere knapper samtidig)
   const explCells = new Set(b.explosions.map(e => e.x + ',' + e.y));
   for (const [sid, p] of b.players) {
     if (!p.alive) continue;
-    if (p.nextDir) {
-      let nx = p.x, ny = p.y;
-      if (p.nextDir === 'up') ny--;
-      else if (p.nextDir === 'down') ny++;
-      else if (p.nextDir === 'left') nx--;
-      else if (p.nextDir === 'right') nx++;
-      if (nx >= 0 && nx < W && ny >= 0 && ny < BOMB_GRID.h) {
-        const cell = grid[idx(nx, ny)];
-        // Blokkert av vegg eller bombe
-        const bombAt = b.bombs.some(bb => bb.x === nx && bb.y === ny);
-        if (cell === 0 && !bombAt) {
-          p.x = nx; p.y = ny;
-          // Pick up powerup
-          const puIdx = b.powerups.findIndex(u => u.x === nx && u.y === ny);
-          if (puIdx >= 0) {
-            const pu = b.powerups[puIdx];
-            if (pu.type === 'bomb') p.bombsMax = Math.min(8, p.bombsMax + 1);
-            else if (pu.type === 'range') p.range = Math.min(10, p.range + 1);
-            else if (pu.type === 'shield') p.shield = (p.shield || 0) + 1;
-            else if (pu.type === 'gold') p.score += 50;
-            b.powerups.splice(puIdx, 1);
-          }
-        }
-      }
+    // Compute (dx, dy) fra dirs-state eller legacy nextDir
+    let dx = 0, dy = 0;
+    if (p.dirs) {
+      dx = (p.dirs.right ? 1 : 0) - (p.dirs.left ? 1 : 0);
+      dy = (p.dirs.down ? 1 : 0) - (p.dirs.up ? 1 : 0);
+    } else if (p.nextDir) {
+      if (p.nextDir === 'up') dy = -1;
+      else if (p.nextDir === 'down') dy = 1;
+      else if (p.nextDir === 'left') dx = -1;
+      else if (p.nextDir === 'right') dx = 1;
     }
+    if (dx === 0 && dy === 0) continue;
+    // Prøv diagonal først, så fallback til enkelt-akser
+    const tryMove = (tx, ty) => {
+      if (tx < 0 || tx >= W || ty < 0 || ty >= BOMB_GRID.h) return false;
+      const cell = grid[idx(tx, ty)];
+      if (cell !== 0) return false;
+      if (b.bombs.some(bb => bb.x === tx && bb.y === ty)) return false;
+      p.x = tx; p.y = ty;
+      // Pick up powerup
+      const puIdx = b.powerups.findIndex(u => u.x === tx && u.y === ty);
+      if (puIdx >= 0) {
+        const pu = b.powerups[puIdx];
+        if (pu.type === 'bomb') p.bombsMax = Math.min(8, p.bombsMax + 1);
+        else if (pu.type === 'range') p.range = Math.min(10, p.range + 1);
+        else if (pu.type === 'shield') p.shield = (p.shield || 0) + 1;
+        else if (pu.type === 'gold') p.score += 50;
+        b.powerups.splice(puIdx, 1);
+      }
+      return true;
+    };
+    let moved = false;
+    if (dx !== 0 && dy !== 0) moved = tryMove(p.x + dx, p.y + dy);
+    if (!moved && dx !== 0) moved = tryMove(p.x + dx, p.y);
+    if (!moved && dy !== 0) moved = tryMove(p.x, p.y + dy);
     // Sjekk eksplosjon under spiller
     if (explCells.has(p.x + ',' + p.y)) killPlayer(p, null);
   }
@@ -1502,9 +1514,27 @@ io.on('connection', (socket) => {
     if (game.phase !== 'bomb' || !game.bomb) return;
     const p = game.bomb.players.get(socket.id);
     if (!p || !p.alive) return;
-    if (dir === null || dir === 'stop') { p.nextDir = null; return; }
+    if (dir === null || dir === 'stop') {
+      p.nextDir = null;
+      p.dirs = { up: false, down: false, left: false, right: false };
+      return;
+    }
     if (!['up','down','left','right'].includes(dir)) return;
     p.nextDir = dir;
+    // Oversett enkelt-dir til dirs for konsistens
+    p.dirs = { up: dir === 'up', down: dir === 'down', left: dir === 'left', right: dir === 'right' };
+  });
+
+  socket.on('player:bomb-dirs', (d) => {
+    if (game.phase !== 'bomb' || !game.bomb) return;
+    const p = game.bomb.players.get(socket.id);
+    if (!p || !p.alive) return;
+    if (!d || typeof d !== 'object') return;
+    p.dirs = {
+      up: !!d.up, down: !!d.down,
+      left: !!d.left, right: !!d.right,
+    };
+    p.nextDir = null; // Ikke bruk legacy
   });
 
   socket.on('player:bomb-drop', () => {
