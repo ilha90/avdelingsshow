@@ -1,7 +1,7 @@
 // host.js — vert-siden (storskjerm)
 import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } from '/ai.js';
 import { avatarFor, colorFor } from '/avatars.js';
-import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest, listVoices as ttsVoices, getVoiceURI as ttsGetVoice, setVoice as ttsSetVoice, getCurrentVoice as ttsCur, hasSupport as ttsSupport, onState as ttsOnState } from '/tts.js';
+import { speak, stop as stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, test as ttsTest, hasSupport as ttsSupport, onState as ttsOnState } from '/tts.js';
 import * as bomb3d from '/bomb3d.js';
 import * as snake3d from '/snake3d.js';
 const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
@@ -128,51 +128,41 @@ const ttsMenu = document.getElementById('ttsMenu');
 function refreshTtsBtn() { ttsBtn.textContent = ttsOn() ? '🎙️' : '🔈'; ttsBtn.style.opacity = ttsOn() ? '1' : '.55'; }
 refreshTtsBtn();
 
-// Visuell indikator når TTS snakker
+// Visuell indikator når TTS snakker (mascot + topbar-knapp)
+const mascotEl = document.getElementById('mascot');
+const mascotBubbleEl = document.getElementById('mascotBubble');
+let lastSpokenText = '';
+function hostSpeak(text) {
+  lastSpokenText = text || '';
+  speak(text);
+}
 ttsOnState(s => {
-  if (s === 'speaking') ttsBtn.classList.add('tts-speaking');
-  else ttsBtn.classList.remove('tts-speaking');
+  if (s === 'speaking') {
+    ttsBtn.classList.add('tts-speaking');
+    mascotEl?.classList.add('speaking');
+    if (mascotBubbleEl && lastSpokenText) {
+      mascotBubbleEl.textContent = lastSpokenText.length > 160 ? lastSpokenText.slice(0, 157) + '…' : lastSpokenText;
+      mascotBubbleEl.classList.add('visible');
+    }
+  } else {
+    ttsBtn.classList.remove('tts-speaking');
+    mascotEl?.classList.remove('speaking');
+    mascotBubbleEl?.classList.remove('visible');
+  }
 });
 function renderTtsMenu() {
-  const cur = ttsPreset();
-  const voices = ttsVoices();
-  const curVoiceURI = ttsGetVoice();
-  const curV = ttsCur();
   ttsMenu.innerHTML = `
     <div class="tts-head">
       <b>Les opp spørsmål</b>
       <label class="tts-switch"><input type="checkbox" ${ttsOn() ? 'checked' : ''} id="ttsOnCb">
         <span></span></label>
     </div>
-    ${!ttsSupport() ? `<p class="ai-note" style="color:var(--red)">Nettleseren støtter ikke TTS.</p>` :
-      voices.length === 0 ? `<p class="ai-note" style="color:var(--red)">Fant ingen stemmer. Prøv å oppdatere siden eller bytt nettleser.</p>` : `
-      <label class="ai-note" style="display:flex; flex-direction:column; gap:4px; margin-bottom: 8px">
-        Stemme ${curV ? `(nå: ${curV.name.slice(0, 28)} · ${curV.lang})` : ''}
-        <select id="ttsVoiceSel" style="background:var(--bg-2); color:var(--ink); border:1px solid var(--card-b); border-radius:6px; padding:6px 8px; font-family:inherit; font-size:12px">
-          <option value="">Auto (norsk hvis tilgjengelig)</option>
-          ${voices.map(v => `<option value="${esc(v.uri)}" ${v.uri === curVoiceURI ? 'selected' : ''}>${esc(v.name)} (${v.lang})</option>`).join('')}
-        </select>
-      </label>`}
-    <div class="tts-presets">
-      ${Object.entries(TTS_PRESETS).map(([k, v]) => `
-        <button class="tts-preset ${k === cur ? 'active' : ''}" data-key="${k}">
-          <b>${v.label}</b><span>${v.desc}</span>
-        </button>`).join('')}
-    </div>
-    <button class="btn btn-ghost btn-sm" id="ttsTestBtn" style="width:100%">🔊 Test stemmen</button>`;
+    ${!ttsSupport() ? `<p class="ai-note" style="color:var(--red)">Nettleseren støtter ikke TTS.</p>` : ''}
+    <button class="btn btn-ghost btn-sm" id="ttsTestBtn" style="width:100%; margin-top:10px">🔊 Test stemmen</button>`;
   ttsMenu.querySelector('#ttsOnCb').addEventListener('change', e => {
     ttsSetOn(e.target.checked);
-    if (!e.target.checked) stopSpeaking();
     refreshTtsBtn();
   });
-  ttsMenu.querySelector('#ttsVoiceSel')?.addEventListener('change', e => {
-    ttsSetVoice(e.target.value);
-    renderTtsMenu();
-  });
-  ttsMenu.querySelectorAll('.tts-preset').forEach(b => b.addEventListener('click', () => {
-    ttsSetPreset(b.dataset.key);
-    renderTtsMenu();
-  }));
   ttsMenu.querySelector('#ttsTestBtn').addEventListener('click', (e) => { e.stopPropagation(); ttsTest(); });
 }
 ttsBtn.addEventListener('click', (e) => {
@@ -203,6 +193,12 @@ function spawnFloater(emoji, from) {
 // ===== Trophy popups =====
 socket.on('trophies', (list) => {
   list.forEach((t, i) => setTimeout(() => spawnTrophy(t), i * 400));
+  // Les opp trofé-annonseringer (med liten delay så ikke de overlapper hverandre)
+  list.forEach((t, i) => setTimeout(() => {
+    if (t.type === 'first' && t.name) hostSpeak(`${t.name} var først ute!`);
+    else if (t.type === 'streak' && t.name) hostSpeak(`${t.name} har ${t.label.toLowerCase()}!`);
+    else if (t.type === 'perfect') hostSpeak('Alle svarte riktig!');
+  }, i * 1800 + 400));
 });
 
 function spawnTrophy({ emoji, label, name }) {
@@ -293,15 +289,9 @@ function triggerPhaseEffects(prev, s) {
     if (s.phase === 'lie-reveal') { window.sfx?.reveal(); stopSpeaking(); }
     if (s.phase === 'reveal') stopSpeaking(); // lyd spilles i renderReveal basert på riktig/feil
   }
-  // TTS: les opp nye spørsmål / avstemninger / icebreaker-prompts
+  // TTS: les opp spørsmål (kun)
   if (s.phase === 'question' && prev.phase !== 'question' && s.question && s.question.text) {
-    if (!s.question.isEmoji) speak(s.question.text);
-  }
-  if (s.phase === 'voting' && prev.phase !== 'voting') {
-    if (s.votingPrompt) speak('Hvem er mest sannsynlig til å ' + s.votingPrompt);
-  }
-  if (s.phase === 'icebreaker' && (prev.phase !== 'icebreaker' || prev.icebreakerPrompt !== s.icebreakerPrompt)) {
-    if (s.icebreakerTarget && s.icebreakerPrompt) speak(`${s.icebreakerTarget}, ${s.icebreakerPrompt}`);
+    if (!s.question.isEmoji) hostSpeak(s.question.text);
   }
   // Player joined sound
   if (prev.players.length < s.players.length) window.sfx?.join();
