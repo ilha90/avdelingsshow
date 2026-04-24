@@ -1,4 +1,5 @@
 // bomb3d.js — Three.js renderer for Bomberman
+// Støtter både host (overview) og spiller (follow-camera) perspektiv
 import * as THREE from 'three';
 
 let renderer = null, scene = null, camera = null;
@@ -9,6 +10,17 @@ let floorGroup = null;
 let gridW = 0, gridH = 0;
 let lastWallsVersion = -1;
 
+// Kamera-modi
+let cameraMode = 'overview'; // 'overview' | 'follow'
+let followPlayerId = null;
+// Kill-cam state
+let killCamUntil = 0;
+let killCamTarget = null;
+// Glatt kamera-interpolasjon
+const cameraTarget = new THREE.Vector3();
+const cameraLookAt = new THREE.Vector3();
+const tmpLookAt = new THREE.Vector3();
+
 const MAT = {
   floorA: new THREE.MeshStandardMaterial({ color: 0x25422e, roughness: 0.95 }),
   floorB: new THREE.MeshStandardMaterial({ color: 0x1a2f22, roughness: 0.95 }),
@@ -16,12 +28,16 @@ const MAT = {
   crate:  new THREE.MeshStandardMaterial({ color: 0xa8672f, roughness: 0.9 }),
   bomb:   new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.35, metalness: 0.3 }),
   fuse:   new THREE.MeshBasicMaterial({ color: 0xffb040 }),
+  skin:   new THREE.MeshStandardMaterial({ color: 0xffdcb0, roughness: 0.55, metalness: 0.0 }),
+  belt:   new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.7, metalness: 0.1 }),
 };
 
 const PU_COLOR = { bomb: 0xe54b4b, range: 0xffbe0b, shield: 0x3a86ff, gold: 0xd4af37 };
 
-export function init(canvas, gW, gH) {
+export function init(canvas, gW, gH, options = {}) {
   gridW = gW; gridH = gH;
+  cameraMode = options.cameraMode || 'overview';
+  followPlayerId = options.followPlayerId || null;
   if (renderer) dispose();
 
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -33,20 +49,19 @@ export function init(canvas, gW, gH) {
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0c141b);
-  scene.fog = new THREE.Fog(0x0c141b, 30, 70);
+  scene.fog = new THREE.Fog(0x0c141b, 30, 80);
 
+  camera = new THREE.PerspectiveCamera(48, canvas.clientWidth / Math.max(1, canvas.clientHeight), 0.1, 200);
+  setCameraTargetInstant();
+
+  scene.add(new THREE.AmbientLight(0xfff0dd, 0.6));
+  const sun = new THREE.DirectionalLight(0xfff3d6, 0.95);
   const cx = gW / 2, cz = gH / 2;
-  camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / Math.max(1, canvas.clientHeight), 0.1, 200);
-  camera.position.set(cx, Math.max(gH * 1.0, 14), gH + 7);
-  camera.lookAt(cx, 0, cz - 1);
-
-  scene.add(new THREE.AmbientLight(0xfff0dd, 0.55));
-  const sun = new THREE.DirectionalLight(0xfff3d6, 1.0);
-  sun.position.set(cx - gW * 0.6, gH * 1.5, cz - gH * 0.3);
+  sun.position.set(cx - gW * 0.5, gH * 1.5, cz - gH * 0.2);
   sun.target.position.set(cx, 0, cz);
   scene.add(sun.target);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.camera.left = -gW * 0.7;
   sun.shadow.camera.right = gW * 0.7;
   sun.shadow.camera.top = gH * 0.7;
@@ -56,7 +71,7 @@ export function init(canvas, gW, gH) {
   sun.shadow.bias = -0.0005;
   scene.add(sun);
 
-  // Floor (sjakkrutet)
+  // Gulv — sjakkrutet
   floorGroup = new THREE.Group();
   const tileGeom = new THREE.PlaneGeometry(1, 1);
   for (let y = 0; y < gH; y++) {
@@ -70,6 +85,44 @@ export function init(canvas, gW, gH) {
     }
   }
   scene.add(floorGroup);
+}
+
+export function setCameraMode(mode, followId = null) {
+  cameraMode = mode;
+  followPlayerId = followId;
+}
+
+export function triggerKillCam(x, y, durationMs = 2500) {
+  killCamTarget = { x, y };
+  killCamUntil = Date.now() + durationMs;
+}
+
+function setCameraTargetInstant() {
+  computeCameraTarget();
+  camera.position.copy(cameraTarget);
+  camera.lookAt(cameraLookAt);
+}
+
+function computeCameraTarget() {
+  const cx = gridW / 2, cz = gridH / 2;
+  const now = Date.now();
+  if (now < killCamUntil && killCamTarget) {
+    cameraTarget.set(killCamTarget.x + 0.5 + 2.5, 5, killCamTarget.y + 0.5 + 3.5);
+    cameraLookAt.set(killCamTarget.x + 0.5, 0.5, killCamTarget.y + 0.5);
+    return;
+  }
+  if (cameraMode === 'follow' && followPlayerId) {
+    const obj = playerMeshes.get(followPlayerId);
+    if (obj) {
+      const p = obj.group.position;
+      cameraTarget.set(p.x, 6.5, p.z + 5.5);
+      cameraLookAt.set(p.x, 0.2, p.z - 0.5);
+      return;
+    }
+  }
+  // Overview
+  cameraTarget.set(cx, Math.max(gridH * 1.0, 14), gridH + 7);
+  cameraLookAt.set(cx, 0, cz - 1);
 }
 
 function resize() {
@@ -101,12 +154,14 @@ function rebuildWalls(walls, version) {
       if (v === 1) {
         const m = new THREE.Mesh(wallGeom, MAT.wall);
         m.position.set(x + 0.5, 0.5, y + 0.5);
-        m.castShadow = true; m.receiveShadow = true;
+        m.receiveShadow = true;
+        // Ingen castShadow — mindre rot mellom bokser
         scene.add(m); wallMeshes.push(m);
       } else if (v === 2) {
         const m = new THREE.Mesh(crateGeom, MAT.crate);
         m.position.set(x + 0.5, 0.45, y + 0.5);
-        m.castShadow = true; m.receiveShadow = true;
+        m.receiveShadow = true;
+        // Ingen castShadow på kasser heller
         scene.add(m); crateMeshes.set(x + ',' + y, m);
       }
     }
@@ -115,21 +170,15 @@ function rebuildWalls(walls, version) {
 }
 
 const labelCache = new Map();
-function getEmojiLabel(emoji, color) {
-  const key = (emoji || '') + '|' + color;
+function getEmojiLabel(emoji) {
+  const key = emoji || '';
   if (labelCache.has(key)) return labelCache.get(key);
   const cv = document.createElement('canvas');
   cv.width = 128; cv.height = 128;
   const ctx = cv.getContext('2d');
-  // Ring
-  ctx.fillStyle = color;
-  ctx.beginPath(); ctx.arc(64, 64, 56, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.arc(64, 64, 56, 0, Math.PI * 2); ctx.stroke();
-  // Emoji
-  ctx.font = '80px system-ui, Apple Color Emoji, Segoe UI Emoji';
+  ctx.font = '96px system-ui, Apple Color Emoji, Segoe UI Emoji';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(emoji || '😀', 64, 70);
+  ctx.fillText(emoji || '😀', 64, 72);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
@@ -137,46 +186,126 @@ function getEmojiLabel(emoji, color) {
   return tex;
 }
 
+// Bomberman-karakter (hode, hjelm, kropp, belte, emoji-billboard)
+function createBombermanCharacter(color, emoji) {
+  const group = new THREE.Group();
+  const colorObj = new THREE.Color(color);
+
+  // Kropp — rundet kapsel
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: colorObj, roughness: 0.45, metalness: 0.1,
+    emissive: colorObj, emissiveIntensity: 0.1,
+  });
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.26, 0.18, 6, 14), bodyMat);
+  body.position.y = 0.42;
+  body.castShadow = true;
+  group.add(body);
+
+  // Belte (liten sylinder)
+  const belt = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.28, 0.07, 16),
+    MAT.belt
+  );
+  belt.position.y = 0.42;
+  group.add(belt);
+
+  // Hode — liten kule (ansikt)
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.19, 18, 14),
+    MAT.skin
+  );
+  head.position.y = 0.85;
+  head.castShadow = true;
+  group.add(head);
+
+  // Hjelm — halvkule oppå hodet
+  const helmetMat = new THREE.MeshStandardMaterial({
+    color: colorObj, roughness: 0.3, metalness: 0.3,
+    emissive: colorObj, emissiveIntensity: 0.18,
+  });
+  const helmet = new THREE.Mesh(
+    new THREE.SphereGeometry(0.23, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+    helmetMat
+  );
+  helmet.position.y = 0.90;
+  helmet.castShadow = true;
+  group.add(helmet);
+
+  // Antenne på toppen
+  const antStem = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.012, 0.08, 6),
+    MAT.belt
+  );
+  antStem.position.y = 1.15;
+  group.add(antStem);
+  const antTip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.045, 10, 8),
+    new THREE.MeshStandardMaterial({ color: 0xffffaa, emissive: 0xffaa00, emissiveIntensity: 0.8 })
+  );
+  antTip.position.y = 1.22;
+  group.add(antTip);
+
+  // Emoji-etikett over hodet
+  const labelTex = getEmojiLabel(emoji);
+  const label = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.5, 0.5),
+    new THREE.MeshBasicMaterial({ map: labelTex, transparent: true, depthWrite: false })
+  );
+  label.position.y = 1.55;
+  group.add(label);
+
+  return { group, body, head, helmet, label, bodyMat, helmetMat };
+}
+
 function updatePlayer(p) {
   let obj = playerMeshes.get(p.id);
   if (!obj) {
-    const group = new THREE.Group();
-    // Body — kule
-    const body = new THREE.Mesh(
-      new THREE.SphereGeometry(0.34, 20, 16),
-      new THREE.MeshStandardMaterial({
-        color: p.color, roughness: 0.4, metalness: 0.1,
-        emissive: new THREE.Color(p.color), emissiveIntensity: 0.15,
-      })
-    );
-    body.position.y = 0.4;
-    body.castShadow = true;
-    group.add(body);
-    // Emoji billboard over hodet
-    const labelTex = getEmojiLabel(p.emoji, p.color);
-    const label = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.75, 0.75),
-      new THREE.MeshBasicMaterial({ map: labelTex, transparent: true, depthWrite: false })
-    );
-    label.position.y = 1.2;
-    group.add(label);
-    scene.add(group);
-    obj = { group, body, label, shield: null };
+    obj = createBombermanCharacter(p.color, p.emoji);
+    obj.shield = null;
+    scene.add(obj.group);
     playerMeshes.set(p.id, obj);
   }
-  obj.group.position.set(p.x + 0.5, 0, p.y + 0.5);
+  // Posisjon
+  const tx = p.x + 0.5, tz = p.y + 0.5;
+  // Smooth interpolasjon
+  obj.group.position.x += (tx - obj.group.position.x) * 0.35;
+  obj.group.position.z += (tz - obj.group.position.z) * 0.35;
+  // Snap ved initiell posisjon
+  if (Math.abs(tx - obj.group.position.x) > 2) obj.group.position.x = tx;
+  if (Math.abs(tz - obj.group.position.z) > 2) obj.group.position.z = tz;
+
   obj.group.visible = p.alive || p.respawnIn > 0;
-  obj.body.material.opacity = p.alive ? 1 : 0.25;
-  obj.body.material.transparent = !p.alive;
-  obj.label.material.opacity = p.alive ? 1 : 0.25;
-  // Shield-ring
+  const alpha = p.alive ? 1 : 0.35;
+  obj.bodyMat.opacity = alpha;
+  obj.bodyMat.transparent = !p.alive;
+  obj.helmetMat.opacity = alpha;
+  obj.helmetMat.transparent = !p.alive;
+
+  // Rotasjon basert på bevegelse (enkelt: faktisk posisjon vs forrige frame)
+  if (!obj._lastX) obj._lastX = obj.group.position.x;
+  if (!obj._lastZ) obj._lastZ = obj.group.position.z;
+  const dx = obj.group.position.x - obj._lastX;
+  const dz = obj.group.position.z - obj._lastZ;
+  if (Math.hypot(dx, dz) > 0.01) {
+    const targetAngle = Math.atan2(dx, dz);
+    // Smooth rotasjon
+    let cur = obj.group.rotation.y;
+    let diff = targetAngle - cur;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    obj.group.rotation.y = cur + diff * 0.25;
+  }
+  obj._lastX = obj.group.position.x;
+  obj._lastZ = obj.group.position.z;
+
+  // Skjold-ring
   if (p.shield > 0 && !obj.shield) {
     const shield = new THREE.Mesh(
-      new THREE.TorusGeometry(0.48, 0.06, 10, 28),
-      new THREE.MeshBasicMaterial({ color: 0x7ed4ff, transparent: true, opacity: 0.75 })
+      new THREE.TorusGeometry(0.38, 0.05, 10, 28),
+      new THREE.MeshBasicMaterial({ color: 0x7ed4ff, transparent: true, opacity: 0.8 })
     );
     shield.rotation.x = Math.PI / 2;
-    shield.position.y = 0.4;
+    shield.position.y = 0.42;
     obj.group.add(shield);
     obj.shield = shield;
   } else if (p.shield === 0 && obj.shield) {
@@ -189,11 +318,9 @@ export function update(bombSnap) {
   if (!bombSnap || !scene) return;
   resize();
 
-  // Walls/crates
   if (bombSnap.walls && bombSnap.wallsVersion !== lastWallsVersion) {
     rebuildWalls(bombSnap.walls, bombSnap.wallsVersion);
   } else if (bombSnap.walls) {
-    // Removed crates (quick check each update)
     for (const [key, mesh] of crateMeshes) {
       const [x, y] = key.split(',').map(Number);
       if (bombSnap.walls[y * gridW + x] !== 2) {
@@ -203,17 +330,17 @@ export function update(bombSnap) {
     }
   }
 
-  // Players
+  // Spillere
   const seenPids = new Set();
   for (const p of bombSnap.players) { updatePlayer(p); seenPids.add(p.id); }
   for (const [pid, o] of playerMeshes) if (!seenPids.has(pid)) { scene.remove(o.group); playerMeshes.delete(pid); }
 
-  // Make emoji labels face camera
+  // Label billboards mot kameraet
   for (const o of playerMeshes.values()) {
     if (o.label && camera) o.label.lookAt(camera.position);
   }
 
-  // Bombs
+  // Bomber
   const seenBombs = new Set();
   for (const b of bombSnap.bombs) {
     const key = b.x + ',' + b.y;
@@ -264,7 +391,7 @@ export function update(bombSnap) {
       gem.position.y = 0.55;
       gem.castShadow = true;
       group.add(gem);
-      const pointLight = new THREE.PointLight(PU_COLOR[u.type] || 0xffffff, 0.6, 2.5);
+      const pointLight = new THREE.PointLight(PU_COLOR[u.type] || 0xffffff, 0.5, 2.2);
       pointLight.position.y = 0.55;
       group.add(pointLight);
       group.position.set(u.x + 0.5, 0, u.y + 0.5);
@@ -277,7 +404,7 @@ export function update(bombSnap) {
   }
   for (const [key, o] of powerupMeshes) if (!seenPu.has(key)) { scene.remove(o.group); powerupMeshes.delete(key); }
 
-  // Explosions — rekreeres hver update (kortvarige)
+  // Eksplosjoner
   for (const o of explosionObjects) scene.remove(o);
   explosionObjects = [];
   for (const e of bombSnap.explosions) {
@@ -287,7 +414,7 @@ export function update(bombSnap) {
       new THREE.SphereGeometry(scale, 12, 12),
       new THREE.MeshBasicMaterial({ color: 0xffaa30, transparent: true, opacity: f * 0.85 })
     );
-    mesh.position.set(e.x + 0.5, 0.4, e.y + 0.5);
+    mesh.position.set(e.x + 0.5, 0.5, e.y + 0.5);
     scene.add(mesh);
     explosionObjects.push(mesh);
     const light = new THREE.PointLight(0xff8030, 2.5 * f, 3);
@@ -298,7 +425,13 @@ export function update(bombSnap) {
 }
 
 export function render() {
-  if (renderer && scene && camera) renderer.render(scene, camera);
+  if (!renderer || !scene || !camera) return;
+  // Oppdater kamera (glatt følge / killcam / overview)
+  computeCameraTarget();
+  camera.position.lerp(cameraTarget, 0.15);
+  tmpLookAt.lerp(cameraLookAt, 0.2);
+  camera.lookAt(tmpLookAt);
+  renderer.render(scene, camera);
 }
 
 export function dispose() {
@@ -314,5 +447,7 @@ export function dispose() {
   powerupMeshes.clear();
   explosionObjects = [];
   lastWallsVersion = -1;
+  killCamUntil = 0;
+  killCamTarget = null;
   labelCache.clear();
 }

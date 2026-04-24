@@ -994,9 +994,38 @@ let bombTimerRAF = null;
 socket.on('bomb:tick', s => {
   if (s.walls) bombWallsCache = s.walls;
   else if (bombWallsCache) s.walls = bombWallsCache;
+  const prev = bombSnap;
   bombSnap = s;
+  // Detekter døde spillere for kill-cam
+  if (prev && prev.players && s.players) {
+    for (const np of s.players) {
+      const op = prev.players.find(x => x.id === np.id);
+      if (op && op.alive && !np.alive) {
+        // Spiller X døde — trigger kill-cam på dødsstedet
+        bomb3d.triggerKillCam(np.x, np.y, 2500);
+        showKillBanner(np.name, np.emoji);
+        window.sfx?.wrong?.();
+        break; // én kill-cam om gangen
+      }
+    }
+  }
   // rendering skjer i bombAnimateTimer RAF-loop
 });
+
+function showKillBanner(name, emoji) {
+  const old = document.getElementById('killBanner');
+  if (old) old.remove();
+  const el = document.createElement('div');
+  el.id = 'killBanner';
+  el.className = 'kill-banner';
+  el.innerHTML = `<span class="kill-icon">💀</span> <b>${esc(name)}</b> ble sprengt ${emoji || '💣'}`;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('in'));
+  setTimeout(() => {
+    el.classList.remove('in');
+    setTimeout(() => el.remove(), 400);
+  }, 2200);
+}
 
 function renderBomb() {
   const showCountdown = bombSnap && !bombSnap.started;

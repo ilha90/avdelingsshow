@@ -1,5 +1,6 @@
 // player.js — spiller-siden (mobil/laptop)
 import { avatarFor } from '/avatars.js';
+import * as bomb3d from '/bomb3d.js';
 const socket = io({
   transports: ['websocket', 'polling'],
   upgrade: true,
@@ -578,7 +579,28 @@ function renderBombPlayer() {
     bombActiveDirs.delete(d);
     emitBombDirs();
   };
-  drawBombMini();
+  // Init 3D-scenen (følge-kamera på egen spiller)
+  const bombCanvas = document.getElementById('playerBombCanvas');
+  if (bombCanvas && bombSnap?.grid) {
+    const myId = bombSnap.players.find(p => p.name === me)?.id || null;
+    bomb3d.init(bombCanvas, bombSnap.grid.w, bombSnap.grid.h, {
+      cameraMode: 'follow',
+      followPlayerId: myId,
+    });
+    bomb3d.update(bombSnap);
+  }
+  startPlayerBombRAF();
+}
+
+let playerBombRAF = null;
+function startPlayerBombRAF() {
+  if (playerBombRAF) cancelAnimationFrame(playerBombRAF);
+  function tick() {
+    if (state?.phase !== 'bomb') { playerBombRAF = null; return; }
+    if (bombSnap) bomb3d.render();
+    playerBombRAF = requestAnimationFrame(tick);
+  }
+  tick();
 }
 
 function sendBombMove(dir) {
@@ -605,82 +627,14 @@ function updateBombPlayer() {
 }
 
 function drawBombMini() {
-  const canvas = document.getElementById('playerBombCanvas');
-  if (!canvas || !bombSnap) return;
-  const ctx = canvas.getContext('2d');
-  const cell = Math.min(canvas.width / bombSnap.grid.w, canvas.height / bombSnap.grid.h);
-  const offX = (canvas.width - cell * bombSnap.grid.w) / 2;
-  const offY = (canvas.height - cell * bombSnap.grid.h) / 2;
-  // Bakgrunn
-  ctx.fillStyle = '#1a2e1f';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // Vegger
-  const W = bombSnap.grid.w;
-  for (let y = 0; y < bombSnap.grid.h; y++) {
-    for (let x = 0; x < W; x++) {
-      const v = bombSnap.walls[y * W + x];
-      if (v === 1) { ctx.fillStyle = '#3a3a45'; ctx.fillRect(offX + x*cell, offY + y*cell, cell, cell); }
-      else if (v === 2) { ctx.fillStyle = '#8a5f35'; ctx.fillRect(offX + x*cell+1, offY + y*cell+1, cell-2, cell-2); }
-    }
-  }
-  // Powerups (fargekodet)
-  const PU_COLOR = { bomb: '#e54b4b', range: '#ffbe0b', shield: '#3a86ff', gold: '#d4af37' };
-  for (const u of bombSnap.powerups) {
-    ctx.fillStyle = PU_COLOR[u.type] || '#fff';
-    ctx.beginPath(); ctx.arc(offX + u.x*cell + cell/2, offY + u.y*cell + cell/2, cell * 0.35, 0, Math.PI * 2); ctx.fill();
-  }
-  // Bomber
-  for (const b of bombSnap.bombs) {
-    const pulse = 1 + 0.15 * Math.sin(Date.now() / 100);
-    ctx.fillStyle = '#000';
-    ctx.beginPath(); ctx.arc(offX + b.x*cell + cell/2, offY + b.y*cell + cell/2, cell * 0.42 * pulse, 0, Math.PI * 2); ctx.fill();
-  }
-  // Eksplosjoner
-  for (const e of bombSnap.explosions) {
-    ctx.fillStyle = `rgba(255,180,60,${e.tLeft / 700})`;
-    ctx.fillRect(offX + e.x*cell, offY + e.y*cell, cell, cell);
-  }
-  // ANDRE spillere (dempet)
-  for (const p of bombSnap.players) {
-    if (!p.alive || p.name === me) continue;
-    ctx.globalAlpha = 0.45;
-    ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(offX + p.x*cell + cell/2, offY + p.y*cell + cell/2, cell * 0.4, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-  // MIN spiller — hvit ring + pulserende glow + "DU"-pil
-  const my = bombSnap.players.find(p => p.name === me);
-  if (my && my.alive) {
-    const cx = offX + my.x*cell + cell/2, cy = offY + my.y*cell + cell/2;
-    const pulse = 1 + 0.18 * Math.sin(Date.now() / 200);
-    // Glow
-    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 1.2);
-    glow.addColorStop(0, my.color);
-    glow.addColorStop(1, 'transparent');
-    ctx.globalAlpha = 0.5;
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 1.1 * pulse, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = 1;
-    // Hoved-sirkel
-    ctx.shadowColor = my.color; ctx.shadowBlur = 20;
-    ctx.fillStyle = my.color;
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.5, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
-    // Hvit ring + DU-pil
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.58 * pulse, 0, Math.PI * 2); ctx.stroke();
-    ctx.fillStyle = '#fff';
-    const py = cy - cell * 0.95 - 4 * pulse;
-    ctx.beginPath();
-    ctx.moveTo(cx, py);
-    ctx.lineTo(cx - 6, py - 8);
-    ctx.lineTo(cx + 6, py - 8);
-    ctx.closePath();
-    ctx.fill();
-  }
+  if (!bombSnap) return;
+  bomb3d.update(bombSnap);
+  bomb3d.render();
 }
 
 function renderBombEndPlayer() {
+  bomb3d.dispose();
+  if (playerBombRAF) { cancelAnimationFrame(playerBombRAF); playerBombRAF = null; }
   const my = myBombPlayer();
   const sorted = bombSnap ? [...bombSnap.players].sort((a, b) => b.score - a.score) : [];
   const rank = sorted.findIndex(p => p.name === me) + 1;
