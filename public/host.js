@@ -86,8 +86,10 @@ const PHASE_LABELS = {
   bomb: 'Bomberman', 'bomb-end': 'Bomberman – resultat', end: 'Ferdig',
 };
 
-socket.emit = socket.emit;  // (nå styres host:hello via hostHello() over)
-fetch('/connect-url').then(r => r.json()).then(j => { connectUrl = j.url; if (state) render(); });
+fetch('/connect-url')
+  .then(r => r.json())
+  .then(j => { connectUrl = j.url; if (state) render(); })
+  .catch(() => { connectUrl = window.location.origin; if (state) render(); });
 
 // Fullscreen button
 document.getElementById('fullscreenBtn')?.addEventListener('click', () => {
@@ -280,11 +282,11 @@ function softUpdateCounts() {
 function triggerPhaseEffects(prev, s) {
   if (!prev) return;
   if (prev.phase !== s.phase) {
-    if (s.phase === 'reveal') { window.sfx?.reveal(); stopSpeaking(); }
     if (s.phase === 'wheel') { window.sfx?.spin(); stopSpeaking(); }
     if (s.phase === 'end') { stopSpeaking(); window.sfx?.fanfare(); window.confetti?.burst(); setTimeout(() => window.confetti?.burst(), 600); setTimeout(() => window.confetti?.burst(), 1400); window.sfx?.applause(); }
     if (s.phase === 'vote-result') { window.sfx?.reveal(); stopSpeaking(); }
     if (s.phase === 'scatter-review') { window.sfx?.reveal(); stopSpeaking(); }
+    if (s.phase === 'reveal') stopSpeaking(); // lyd spilles i renderReveal basert på riktig/feil
   }
   // TTS: les opp nye spørsmål / avstemninger / icebreaker-prompts
   if (s.phase === 'question' && prev.phase !== 'question' && s.question && s.question.text) {
@@ -936,7 +938,7 @@ socket.on('bomb:tick', s => {
   if (s.walls) bombWallsCache = s.walls;
   else if (bombWallsCache) s.walls = bombWallsCache;
   bombSnap = s;
-  if (state?.phase === 'bomb') drawBomb();
+  // rendering skjer i bombAnimateTimer RAF-loop
 });
 
 function renderBomb() {
@@ -1112,11 +1114,14 @@ function bombAnimateTimer() {
     const cdEl = document.getElementById('bombCd');
     if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(bombSnap.timeLeft / 1000))}s`;
     if (cdEl && !bombSnap.started) cdEl.textContent = Math.max(1, Math.ceil(bombSnap.countdownLeft / 1000));
-    drawBomb();  // Re-draw hver frame for smooth explosion/pulse
+    // Re-draw for smooth animation av eksplosjoner/pulser
+    drawBomb();
     bombTimerRAF = requestAnimationFrame(tick);
   }
   tick();
 }
+
+// bomb:tick oppdaterer bare snapshot, drawBomb i RAF-loop håndterer rendering
 
 function renderBombEnd() {
   const players = bombSnap ? [...bombSnap.players].sort((a, b) => b.score - a.score) : [];
