@@ -626,3 +626,9 @@ body::before {
 .pad-btn.pad-bomb:active { transform: scale(.92); box-shadow: 0 0 30px rgba(229,75,75,.7); }
 @keyframes bombBtnPulse { 0%,100% { box-shadow: 0 0 20px rgba(229,75,75,.4); } 50% { box-shadow: 0 0 32px rgba(229,75,75,.7); } }
 .bomb-stats { color: var(--ink-2); font-size: 14px; font-weight: 500; }
+
+/* Mini-arena på spillerens skjerm */
+.player-mini-canvas { display: block; width: 100%; max-width: 420px; height: auto;
+  aspect-ratio: 40 / 25; margin: 14px auto; border-radius: 12px;
+  border: 2px solid var(--card-b); background: #0b0d1a;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4); image-rendering: crisp-edges; }

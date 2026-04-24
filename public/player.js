@@ -241,11 +241,12 @@ function renderSnakePlayer() {
       <div class="snake-player-top">
         <div class="snake-player-info" style="color:${color}">
           ${my?.emoji || '🐍'} <b>${my ? my.score + ' p' : '0 p'}</b>
-          ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · dør ... respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
+          ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 🪦 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
           ${my && !my.alive && my.respawnIn === 0 ? `<span class="snake-dead"> · 🪦</span>` : ''}
         </div>
         ${snakeSnap && !snakeSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
       </div>
+      <canvas id="playerSnakeCanvas" class="player-mini-canvas" width="400" height="250"></canvas>
       <div class="snake-pad" id="snakePad">
         <button class="pad-btn pad-up" data-dir="up">▲</button>
         <div class="pad-row">
@@ -288,6 +289,7 @@ function renderSnakePlayer() {
     else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') sendSnakeDir('left');
     else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') sendSnakeDir('right');
   };
+  drawSnakeMini();
 }
 
 function sendSnakeDir(dir) {
@@ -305,6 +307,47 @@ function updateSnakePlayer() {
       ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 🪦 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
       ${!my.alive && my.respawnIn === 0 ? `<span class="snake-dead"> · 🪦</span>` : ''}`;
     info.style.color = my.color;
+  }
+  drawSnakeMini();
+}
+
+function drawSnakeMini() {
+  const canvas = document.getElementById('playerSnakeCanvas');
+  if (!canvas || !snakeSnap) return;
+  const ctx = canvas.getContext('2d');
+  const cell = Math.min(canvas.width / snakeSnap.grid.w, canvas.height / snakeSnap.grid.h);
+  const offX = (canvas.width - cell * snakeSnap.grid.w) / 2;
+  const offY = (canvas.height - cell * snakeSnap.grid.h) / 2;
+  // Bakgrunn
+  ctx.fillStyle = '#0b0d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = 'rgba(212,175,55,0.25)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(offX, offY, cell * snakeSnap.grid.w, cell * snakeSnap.grid.h);
+  // Mat
+  for (const f of snakeSnap.food) {
+    ctx.fillStyle = '#d4af37';
+    ctx.beginPath();
+    ctx.arc(offX + f.x * cell + cell/2, offY + f.y * cell + cell/2, cell * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Slanger
+  for (const s of snakeSnap.snakes) {
+    if (!s.body.length) continue;
+    const isMe = s.name === me;
+    ctx.globalAlpha = s.alive ? (isMe ? 1 : 0.6) : 0.2;
+    ctx.fillStyle = s.color;
+    for (let i = 1; i < s.body.length; i++) {
+      const seg = s.body[i];
+      ctx.fillRect(offX + seg.x * cell + 0.5, offY + seg.y * cell + 0.5, cell - 1, cell - 1);
+    }
+    const head = s.body[0];
+    if (isMe && s.alive) {
+      ctx.shadowColor = s.color; ctx.shadowBlur = 10;
+    }
+    ctx.fillRect(offX + head.x * cell, offY + head.y * cell, cell, cell);
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -342,6 +385,7 @@ function renderBombPlayer() {
         </div>
         ${bombSnap && !bombSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
       </div>
+      <canvas id="playerBombCanvas" class="player-mini-canvas" width="400" height="240"></canvas>
       <div class="bomb-pad" id="bombPad">
         <div class="bomb-pad-grid">
           <div></div>
@@ -400,6 +444,7 @@ function renderBombPlayer() {
       sendBombMove('stop');
     }
   };
+  drawBombMini();
 }
 
 function sendBombMove(dir) {
@@ -416,6 +461,60 @@ function updateBombPlayer() {
       <span class="bomb-stats"> · 💣×${my.bombsMax} · ▶${my.range}${my.kills ? ' · ☠️' + my.kills : ''}</span>
       ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 💀 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}`;
     info.style.color = my.color;
+  }
+  drawBombMini();
+}
+
+function drawBombMini() {
+  const canvas = document.getElementById('playerBombCanvas');
+  if (!canvas || !bombSnap) return;
+  const ctx = canvas.getContext('2d');
+  const cell = Math.min(canvas.width / bombSnap.grid.w, canvas.height / bombSnap.grid.h);
+  const offX = (canvas.width - cell * bombSnap.grid.w) / 2;
+  const offY = (canvas.height - cell * bombSnap.grid.h) / 2;
+  // Bakgrunn
+  ctx.fillStyle = '#1a2e1f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Vegger
+  const W = bombSnap.grid.w;
+  for (let y = 0; y < bombSnap.grid.h; y++) {
+    for (let x = 0; x < W; x++) {
+      const v = bombSnap.walls[y * W + x];
+      if (v === 1) { ctx.fillStyle = '#3a3a45'; ctx.fillRect(offX + x*cell, offY + y*cell, cell, cell); }
+      else if (v === 2) { ctx.fillStyle = '#8a5f35'; ctx.fillRect(offX + x*cell+1, offY + y*cell+1, cell-2, cell-2); }
+    }
+  }
+  // Powerups
+  for (const u of bombSnap.powerups) {
+    ctx.fillStyle = u.type === 'bomb' ? '#e54b4b' : '#ffbe0b';
+    ctx.beginPath(); ctx.arc(offX + u.x*cell + cell/2, offY + u.y*cell + cell/2, cell * 0.35, 0, Math.PI * 2); ctx.fill();
+  }
+  // Bomber
+  for (const b of bombSnap.bombs) {
+    const pulse = 1 + 0.15 * Math.sin(Date.now() / 100);
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(offX + b.x*cell + cell/2, offY + b.y*cell + cell/2, cell * 0.42 * pulse, 0, Math.PI * 2); ctx.fill();
+  }
+  // Eksplosjoner
+  for (const e of bombSnap.explosions) {
+    ctx.fillStyle = `rgba(255,180,60,${e.tLeft / 700})`;
+    ctx.fillRect(offX + e.x*cell, offY + e.y*cell, cell, cell);
+  }
+  // Spillere
+  for (const p of bombSnap.players) {
+    if (!p.alive) continue;
+    const isMe = p.name === me;
+    ctx.globalAlpha = isMe ? 1 : 0.8;
+    if (isMe) { ctx.shadowColor = p.color; ctx.shadowBlur = 8; }
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(offX + p.x*cell + cell/2, offY + p.y*cell + cell/2, cell * 0.45, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    if (isMe) {
+      // Ekstra marker rund deg
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(offX + p.x*cell + cell/2, offY + p.y*cell + cell/2, cell * 0.5, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
   }
 }
 
