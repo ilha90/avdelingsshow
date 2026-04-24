@@ -821,3 +821,21 @@ body.self-panel-open .host-controls { padding-right: 440px; transition: padding-
   pointer-events: none; }
 .kill-banner.in { opacity: 1; transform: translate(-50%, 0); }
 .kill-banner .kill-icon { font-size: 34px; filter: drop-shadow(0 0 12px #ff5050); }
+
+/* ============ Historisk leaderboard-modal ============ */
+.lb-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.lb-chip { padding: 8px 14px; border-radius: 999px; background: var(--card); border: 1px solid var(--card-b);
+  color: var(--ink); font-family: inherit; font-size: 13px; cursor: pointer; transition: all .15s; }
+.lb-chip:hover { background: rgba(255,255,255,.08); }
+.lb-chip.active { background: rgba(0,168,119,.3); border-color: var(--gold-2); color: var(--gold-2); font-weight: 600; }
+.lb-list { max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.lb-row { display: grid; grid-template-columns: 48px 1fr auto auto; gap: 14px; align-items: center;
+  padding: 10px 14px; background: var(--card); border: 1px solid var(--card-b); border-radius: 10px; font-size: 15px; }
+.lb-row.top { background: linear-gradient(90deg, rgba(212,175,55,.18), rgba(212,175,55,.03));
+  border-color: rgba(212,175,55,.4); }
+.lb-rank { font-size: 22px; font-weight: 800; text-align: center; color: var(--gold-2); }
+.lb-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-stats { color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+.lb-score { font-weight: 800; color: var(--gold-2); font-size: 18px; text-align: right; min-width: 70px; }
+.lb-empty { text-align: center; color: var(--ink-2); padding: 30px; font-size: 15px; }
+.lobby-right h3 { display: flex; align-items: center; gap: 10px; }

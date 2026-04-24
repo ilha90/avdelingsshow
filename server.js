@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import QRCode from 'qrcode';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import os from 'os';
 import { QUIZ_CATEGORIES, MOST_LIKELY, SCATTERGORIES, ICEBREAKERS, TEAM_NAMES } from './public/data.js';
 
@@ -67,6 +68,71 @@ app.get('/qr', async (req, res) => {
 });
 app.get('/connect-url', (req, res) => {
   res.json({ url: publicUrl(req) });
+});
+
+// ==== Persistent score-board ====
+const SCORES_FILE = join(__dirname, 'scores.json');
+const SCORE_MIN_PLAYERS = 4;
+const SCORE_GAMES = new Set(['quiz', 'lightning', 'snake', 'bomb', 'scatter', 'lie']);
+let scoresData = { players: {}, updatedAt: 0 };
+function loadScores() {
+  try {
+    if (existsSync(SCORES_FILE)) {
+      scoresData = JSON.parse(readFileSync(SCORES_FILE, 'utf-8'));
+      if (!scoresData.players) scoresData.players = {};
+    }
+  } catch (e) { console.warn('[scores] load failed:', e?.message || e); }
+}
+let saveTimer = null;
+function saveScores() {
+  if (saveTimer) return; // debounce 500ms
+  saveTimer = setTimeout(() => {
+    try {
+      writeFileSync(SCORES_FILE, JSON.stringify(scoresData, null, 2));
+    } catch (e) { console.warn('[scores] save failed:', e?.message || e); }
+    saveTimer = null;
+  }, 500);
+}
+function recordScores(gameType, playerList) {
+  if (!SCORE_GAMES.has(gameType)) return;
+  if (!Array.isArray(playerList) || playerList.length < SCORE_MIN_PLAYERS) return;
+  for (const p of playerList) {
+    if (!p?.name || typeof p.score !== 'number') continue;
+    const name = String(p.name).slice(0, SANITIZE_NAME_MAX);
+    if (!scoresData.players[name]) scoresData.players[name] = {};
+    const entry = scoresData.players[name][gameType] || { totalScore: 0, gamesPlayed: 0, bestScore: 0 };
+    entry.totalScore += p.score;
+    entry.gamesPlayed += 1;
+    if (p.score > entry.bestScore) entry.bestScore = p.score;
+    entry.lastPlayed = Date.now();
+    scoresData.players[name][gameType] = entry;
+  }
+  scoresData.updatedAt = Date.now();
+  saveScores();
+}
+app.get('/scores', (req, res) => {
+  const game = String(req.query.game || 'all');
+  const result = [];
+  for (const [name, games] of Object.entries(scoresData.players)) {
+    if (game === 'all') {
+      let total = 0, played = 0, best = 0;
+      for (const g of Object.values(games)) {
+        total += g.totalScore || 0;
+        played += g.gamesPlayed || 0;
+        if ((g.bestScore || 0) > best) best = g.bestScore;
+      }
+      if (total > 0) result.push({ name, totalScore: total, gamesPlayed: played, bestScore: best });
+    } else if (games[game]) {
+      result.push({
+        name,
+        totalScore: games[game].totalScore,
+        gamesPlayed: games[game].gamesPlayed,
+        bestScore: games[game].bestScore || 0,
+      });
+    }
+  }
+  result.sort((a, b) => b.totalScore - a.totalScore);
+  res.json({ game, minPlayers: SCORE_MIN_PLAYERS, scores: result.slice(0, 100) });
 });
 
 const PORT = process.env.PORT || 3000;
@@ -324,6 +390,9 @@ function scheduleAutoAdvance() {
 function nextQuestion() {
   clearAutoAdvance();
   if (game.qIndex + 1 >= game.questions.length) {
+    // Quiz/lyn-runde ferdig — persist score
+    const gt = game.lightning ? 'lightning' : 'quiz';
+    recordScores(gt, [...game.players.values()].map(p => ({ name: p.name, score: p.score })));
     game.phase = 'end';
     broadcast();
     return;
@@ -521,6 +590,8 @@ function endScatter() {
       if (team) team.score += delta;
     }
   }
+  // Persist score hvis ≥4 spillere
+  recordScores('scatter', [...game.players.values()].map(p => ({ name: p.name, score: p.lastDelta || 0 })));
   game.phase = 'scatter-review';
   broadcast();
 }
@@ -586,6 +657,8 @@ function nextLieTurn() {
   game.lieRound.idx++;
   if (game.lieRound.idx >= game.lieRound.order.length) {
     // Done with all players -> leaderboard, deretter end
+    // Persist score hvis ≥4 spillere (bruker akkumulert score-delta fra løgn-runden)
+    recordScores('lie', [...game.players.values()].map(p => ({ name: p.name, score: p.score })));
     game.phase = 'leaderboard';
     broadcast();
     scheduleAutoAdvance();
@@ -872,6 +945,8 @@ function endSnake() {
       if (team) team.score += s.score;
     }
   }
+  // Persist score hvis minst 4 spillere
+  recordScores('snake', [...game.snake.snakes.values()].map(s => ({ name: s.name, score: s.score })));
   game.phase = 'snake-end';
   broadcast();
 }
@@ -1223,6 +1298,8 @@ function endBomberman() {
       if (team) team.score += p.score;
     }
   }
+  // Persist score hvis ≥4 spillere
+  recordScores('bomb', [...game.bomb.players.values()].map(p => ({ name: p.name, score: p.score })));
   game.phase = 'bomb-end';
   broadcast();
 }
@@ -1656,6 +1733,7 @@ function getLocalIPs() {
 }
 
 http.listen(PORT, async () => {
+  loadScores();
   const ips = getLocalIPs();
   const url = ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}`;
   console.log('\n╔══════════════════════════════════════════════╗');

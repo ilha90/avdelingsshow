@@ -115,8 +115,9 @@ function computeCameraTarget() {
     const obj = playerMeshes.get(followPlayerId);
     if (obj) {
       const p = obj.group.position;
-      cameraTarget.set(p.x, 6.5, p.z + 5.5);
-      cameraLookAt.set(p.x, 0.2, p.z - 0.5);
+      // Lengre unna — viser større oversikt rundt spilleren
+      cameraTarget.set(p.x, 11, p.z + 9);
+      cameraLookAt.set(p.x, 0, p.z - 0.5);
       return;
     }
   }

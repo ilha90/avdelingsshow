@@ -410,7 +410,9 @@ function renderLobby() {
         ${renderAiBox()}
       </div>
       <div class="lobby-right">
-        <h3>Spillere <span class="count">${p.length}</span></h3>
+        <h3>Spillere <span class="count">${p.length}</span>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="openLeaderboardModal()" title="Se historisk topplist">🏆 Topplist</button>
+        </h3>
         ${p.length === 0
           ? '<div class="empty-hint">Venter på at noen skal bli med…</div>'
           : (state.teamMode
@@ -1244,6 +1246,64 @@ function renderControls() {
 }
 
 // ============ GAME MENU (modal) ============
+// Leaderboard-modal (persisterte historiske score)
+window.openLeaderboardModal = async () => {
+  document.getElementById('lbModal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'lbModal';
+  m.className = 'game-menu-overlay open';
+  m.innerHTML = `
+    <div class="game-menu" style="max-width:680px" onclick="event.stopPropagation()">
+      <button class="menu-close" onclick="document.getElementById('lbModal').remove()">✕</button>
+      <h2>🏆 Historisk topplist</h2>
+      <p class="menu-sub">Alle spillere som har deltatt — minimum 4 må være med for at score skal telle.</p>
+      <div class="lb-filter">
+        ${[
+          ['all', '🌟 Alle spill'],
+          ['quiz', '🧠 Quiz'],
+          ['lightning', '⚡ Lyn-runde'],
+          ['bomb', '💣 Bomberman'],
+          ['snake', '🐍 Slange'],
+          ['scatter', '📝 Kategori'],
+          ['lie', '🤥 2 sannheter'],
+        ].map(([k, label]) => `<button class="lb-chip ${k === 'all' ? 'active' : ''}" data-g="${k}">${label}</button>`).join('')}
+      </div>
+      <div id="lbList" class="lb-list">Laster…</div>
+    </div>`;
+  m.addEventListener('click', () => m.remove());
+  document.body.appendChild(m);
+  async function loadList(game) {
+    const list = document.getElementById('lbList');
+    list.innerHTML = 'Laster…';
+    try {
+      const r = await fetch('/scores?game=' + encodeURIComponent(game));
+      const j = await r.json();
+      const scores = j.scores || [];
+      if (!scores.length) {
+        list.innerHTML = `<div class="lb-empty">Ingen historikk enda. Spill minst én runde med 4+ spillere for å bli med på listen! 🎮</div>`;
+        return;
+      }
+      list.innerHTML = scores.map((s, i) => `
+        <div class="lb-row ${i < 3 ? 'top' : ''}">
+          <div class="lb-rank">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1)}</div>
+          <div class="lb-name">${esc(s.name)}</div>
+          <div class="lb-stats">${s.gamesPlayed} spill · best ${s.bestScore} p</div>
+          <div class="lb-score">${s.totalScore} p</div>
+        </div>`).join('');
+    } catch (e) {
+      list.innerHTML = `<div class="lb-empty">Kunne ikke hente score: ${esc(String(e?.message || e))}</div>`;
+    }
+  }
+  m.querySelectorAll('.lb-chip').forEach(b => {
+    b.addEventListener('click', () => {
+      m.querySelectorAll('.lb-chip').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      loadList(b.dataset.g);
+    });
+  });
+  loadList('all');
+};
+
 window.openGameMenu = () => {
   if (!state || state.players.length === 0) {
     showToast('Venter på spillere — be dem skanne QR-koden først 📱');
