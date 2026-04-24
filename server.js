@@ -993,13 +993,17 @@ io.on('connection', (socket) => {
   // Send initial state to new socket (fikser hvit skjerm)
   socket.emit('state', publicState());
 
-  socket.on('host:hello', () => {
+  socket.on('host:hello', (password) => {
+    // Sjekk passord
+    if (HOST_PASSWORD && password !== HOST_PASSWORD) {
+      socket.emit('host:denied', { reason: 'password' });
+      return;
+    }
     // Forhindre at en tilfeldig bruker overtar host-rollen når det allerede er en
     if (game.hostId && game.hostId !== socket.id) {
-      // Sjekk om eksisterende host-socket fortsatt er tilkoblet
       const existingSocket = io.sockets.sockets.get(game.hostId);
       if (existingSocket && existingSocket.connected) {
-        socket.emit('host:denied');
+        socket.emit('host:denied', { reason: 'taken' });
         return;
       }
     }

@@ -3,6 +3,66 @@ import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } f
 import { avatarFor, colorFor } from '/avatars.js';
 import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest, listVoices as ttsVoices, getVoiceURI as ttsGetVoice, setVoice as ttsSetVoice, getCurrentVoice as ttsCur, hasSupport as ttsSupport } from '/tts.js';
 const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
+
+// ==== Passord på host ====
+function hostHello() {
+  const pw = sessionStorage.getItem('host-pw') || '';
+  socket.emit('host:hello', pw);
+}
+socket.on('host:ok', () => { /* OK, continue */ });
+socket.on('host:denied', ({ reason } = {}) => {
+  if (reason === 'taken') {
+    alert('En annen vert er allerede koblet til. Åpne siden på nytt etter at de har lukket fanen sin.');
+    return;
+  }
+  promptHostPassword();
+});
+
+function promptHostPassword() {
+  const overlay = document.createElement('div');
+  overlay.id = 'hostPwOverlay';
+  overlay.className = 'game-menu-overlay open';
+  overlay.style.zIndex = '100000';
+  overlay.innerHTML = `
+    <div class="game-menu" style="max-width:440px; text-align:center" onclick="event.stopPropagation()">
+      <h2 style="font-size:32px">🔒 Host-passord</h2>
+      <p class="menu-sub">Kun verten kan kjøre showet</p>
+      <input id="hostPwInp" type="password" placeholder="Passord" autocomplete="off"
+        style="width:100%; padding:16px 20px; border-radius:12px; border:2px solid var(--card-b);
+        background:var(--card); color:var(--ink); font-size:18px; font-family:inherit; text-align:center; margin-bottom:14px">
+      <div id="hostPwErr" style="color:var(--red); font-size:14px; min-height:18px; margin-bottom:10px"></div>
+      <button class="btn btn-primary btn-lg" id="hostPwBtn" style="width:100%">Logg inn</button>
+    </div>`;
+  document.body.appendChild(overlay);
+  const inp = document.getElementById('hostPwInp');
+  const btn = document.getElementById('hostPwBtn');
+  const err = document.getElementById('hostPwErr');
+  setTimeout(() => inp.focus(), 50);
+  const go = () => {
+    const v = inp.value.trim();
+    if (!v) { err.textContent = 'Skriv inn passord'; return; }
+    sessionStorage.setItem('host-pw', v);
+    err.textContent = '';
+    btn.textContent = 'Sjekker…';
+    btn.disabled = true;
+    // Lytt én gang på resultat
+    const onOk = () => { socket.off('host:denied', onDenied); overlay.remove(); };
+    const onDenied = ({ reason } = {}) => {
+      socket.off('host:ok', onOk);
+      if (reason === 'taken') { overlay.remove(); alert('En annen vert er allerede tilkoblet.'); return; }
+      err.textContent = 'Feil passord';
+      sessionStorage.removeItem('host-pw');
+      btn.textContent = 'Logg inn'; btn.disabled = false; inp.value = ''; inp.focus();
+    };
+    socket.once('host:ok', onOk);
+    socket.once('host:denied', onDenied);
+    socket.emit('host:hello', v);
+  };
+  btn.addEventListener('click', go);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+}
+
+hostHello();
 const main = document.getElementById('main');
 const controls = document.getElementById('controls');
 const phaseTag = document.getElementById('phaseTag');
@@ -26,7 +86,7 @@ const PHASE_LABELS = {
   bomb: 'Bomberman', 'bomb-end': 'Bomberman – resultat', end: 'Ferdig',
 };
 
-socket.emit('host:hello');
+socket.emit = socket.emit;  // (nå styres host:hello via hostHello() over)
 fetch('/connect-url').then(r => r.json()).then(j => { connectUrl = j.url; if (state) render(); });
 
 // Fullscreen button
