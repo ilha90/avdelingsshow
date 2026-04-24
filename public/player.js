@@ -77,12 +77,24 @@ socket.on('state', s => {
     if (s.phase === 'question') { chosenThisQ = null; }
     if (s.phase === 'voting') { votedThisRound = null; }
     if (s.phase === 'scatter-play') { scatterDraft = {}; }
+    if (s.phase === 'lie-collect') { lieDraft = { s1: '', s2: '', s3: '', lieIdx: -1 }; lieSubmitted = false; }
+    if (s.phase === 'lie-play') { lieVoteCast = null; lastLieTurnId = null; }
     if (s.phase === 'reveal' && me) {
       const m = currentMe();
       if (m?.lastCorrect === true) window.sfx?.correct();
       else if (m?.lastCorrect === false) window.sfx?.wrong();
     }
+    if (s.phase === 'lie-reveal' && me) {
+      const m = currentMe();
+      if (m?.lastCorrect === true) window.sfx?.correct();
+      else if (m?.lastCorrect === false) window.sfx?.wrong();
+    }
     if (s.phase === 'end') window.sfx?.fanfare();
+  }
+  // Skip re-render hvis spiller er midt i lie-collect og ikke har sendt — ellers mister de input-focus
+  if (prev && prev.phase === s.phase && s.phase === 'lie-collect' && !lieSubmitted && me) {
+    const stillNotSubmitted = !(s.lieCollect?.submittedIds || []).includes(currentMe()?.id);
+    if (stillNotSubmitted) { lastPhase = s.phase; return; }
   }
   lastPhase = s.phase;
   render();
@@ -151,6 +163,9 @@ function render() {
     case 'scatter-play': return renderScatterPlay();
     case 'scatter-review': return renderScatterReview();
     case 'icebreaker':   return renderIcebreaker();
+    case 'lie-collect':  return renderLieCollect();
+    case 'lie-play':     return renderLiePlay();
+    case 'lie-reveal':   return renderLieReveal();
     case 'snake':        return renderSnakePlayer();
     case 'snake-end':    return renderSnakeEndPlayer();
     case 'bomb':         return renderBombPlayer();
@@ -825,6 +840,181 @@ function renderIcebreaker() {
       <div class="icebreaker-target" style="font-size:30px; ${mine ? 'color:var(--gold-2)' : ''}">${mine ? '🎤 Du er valgt!' : esc(state.icebreakerTarget)}</div>
       <div class="icebreaker-prompt" style="font-size:22px; margin-top:20px">${esc(state.icebreakerPrompt)}</div>
       ${mine ? '<p style="color:var(--ink-2); margin-top:20px">Del svaret ditt med gruppen 😊</p>' : '<p style="color:var(--ink-2); margin-top:20px">Hør på storskjermen.</p>'}
+    </div>
+    ${reactionBar()}`;
+}
+
+// ============ 2 SANNHETER, 1 LØGN ============
+let lieDraft = { s1: '', s2: '', s3: '', lieIdx: -1 };
+let lieSubmitted = false;
+let lieVoteCast = null;
+let lastLieTurnId = null;
+
+function renderLieCollect() {
+  const m = currentMe();
+  const lc = state.lieCollect || { submittedIds: [] };
+  const iSubmitted = lc.submittedIds.includes(m.id) || lieSubmitted;
+  if (iSubmitted) {
+    const waiting = state.players.length - lc.submittedIds.length;
+    screen.innerHTML = `${headerHtml()}
+      <div class="player-state waiting">
+        <h2>Sendt inn ✓</h2>
+        <p>${waiting > 0 ? `Venter på ${waiting} til…` : 'Alle er ferdige — starter snart!'}</p>
+        <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
+      </div>`;
+    return;
+  }
+  screen.innerHTML = `${headerHtml()}
+    <div class="player-state lie-input">
+      <div class="lie-input-title">🤥 2 sannheter og 1 løgn</div>
+      <div class="lie-input-sub">Skriv 3 ting om deg selv. Velg hvilken som er løgnen.</div>
+      <div class="lie-input-fields">
+        ${[0,1,2].map(i => `
+          <div class="lie-input-row ${lieDraft.lieIdx === i ? 'is-lie' : ''}">
+            <textarea id="lieInp${i}" rows="2" maxlength="120" placeholder="Påstand ${i+1}">${esc(['s1','s2','s3'][i] && lieDraft[['s1','s2','s3'][i]] || '')}</textarea>
+            <label class="lie-mark">
+              <input type="radio" name="lieMark" value="${i}" ${lieDraft.lieIdx === i ? 'checked' : ''}>
+              <span>Løgn</span>
+            </label>
+          </div>
+        `).join('')}
+      </div>
+      <button id="lieSendBtn" class="btn btn-primary btn-lg" style="width:100%; margin-top:14px" disabled>Send inn</button>
+      <p style="color:var(--ink-2); font-size:13px; margin-top:10px">De andre spillerne skal prøve å gjette hvilken som er løgnen din.</p>
+    </div>`;
+
+  const inputs = [0,1,2].map(i => document.getElementById('lieInp' + i));
+  const radios = document.querySelectorAll('input[name="lieMark"]');
+  const sendBtn = document.getElementById('lieSendBtn');
+
+  function refreshBtn() {
+    const allFilled = inputs.every(x => x.value.trim().length > 0);
+    const hasLie = lieDraft.lieIdx >= 0;
+    sendBtn.disabled = !(allFilled && hasLie);
+  }
+
+  inputs.forEach((inp, i) => {
+    inp.addEventListener('input', () => {
+      lieDraft[['s1','s2','s3'][i]] = inp.value;
+      refreshBtn();
+    });
+  });
+  radios.forEach(r => {
+    r.addEventListener('change', () => {
+      lieDraft.lieIdx = Number(r.value);
+      document.querySelectorAll('.lie-input-row').forEach((el, idx) => {
+        el.classList.toggle('is-lie', idx === lieDraft.lieIdx);
+      });
+      refreshBtn();
+    });
+  });
+  sendBtn.addEventListener('click', () => {
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sender…';
+    socket.emit('player:lie-submit', {
+      s1: lieDraft.s1.trim(),
+      s2: lieDraft.s2.trim(),
+      s3: lieDraft.s3.trim(),
+      lieIdx: lieDraft.lieIdx,
+    });
+    lieSubmitted = true;
+    setTimeout(() => render(), 100);
+  });
+  refreshBtn();
+}
+
+function renderLiePlay() {
+  const m = currentMe();
+  const lp = state.liePlay;
+  if (!lp) return renderWaiting('Venter…');
+  // Reset vote når ny spiller kommer på tur
+  if (lastLieTurnId !== lp.currentId) {
+    lastLieTurnId = lp.currentId;
+    lieVoteCast = null;
+  }
+  const isMine = lp.currentId === m.id;
+  if (isMine) {
+    screen.innerHTML = `${headerHtml()}
+      <div class="player-state waiting">
+        <div style="font-size:60px">🎭</div>
+        <h2>Dine påstander vises nå</h2>
+        <p>De andre prøver å gjette løgnen din. Se på storskjermen.</p>
+        <div class="lie-mini-stmts">
+          ${lp.statements.map((s, i) => `<div class="lie-mini-stmt ${i === lp.statements.findIndex(x => x) ? '' : ''}">${i+1}. ${esc(s)}</div>`).join('')}
+        </div>
+      </div>`;
+    return;
+  }
+  if (lieVoteCast != null) {
+    const waiting = Math.max(0, state.players.length - 1 - lp.votedIds.length);
+    screen.innerHTML = `${headerHtml()}
+      <div class="player-state waiting">
+        <h2>Stemme registrert ✓</h2>
+        <p>Du tror nr. ${lieVoteCast + 1} er løgnen.</p>
+        <p style="color:var(--ink-2); margin-top:8px">${waiting > 0 ? `Venter på ${waiting} til…` : 'Alle har stemt!'}</p>
+        <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
+      </div>`;
+    return;
+  }
+  screen.innerHTML = `${headerHtml()}
+    <div class="player-state lie-vote">
+      <div class="lie-vote-head">
+        <span class="lie-vote-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</span>
+        <div>
+          <div class="lie-vote-label">Hvilken er løgnen?</div>
+          <div class="lie-vote-name">${esc(lp.currentName)}</div>
+        </div>
+      </div>
+      <div class="lie-vote-btns">
+        ${lp.statements.map((s, i) => `
+          <button class="lie-vote-btn" onclick="castLieVote(${i})">
+            <span class="lie-vote-num">${i + 1}</span>
+            <span class="lie-vote-text">${esc(s)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>`;
+}
+
+window.castLieVote = (idx) => {
+  if (lieVoteCast != null) return;
+  lieVoteCast = idx;
+  socket.emit('player:lie-vote', idx);
+  buzz(30);
+  render();
+};
+
+function renderLieReveal() {
+  const m = currentMe();
+  const lp = state.liePlay;
+  if (!lp) return renderWaiting('Venter…');
+  const isMine = lp.currentId === m.id;
+  const lieIdx = lp.lieDisplayIdx;
+  const delta = m.lastDelta || 0;
+  const correct = m.lastCorrect;
+  let headline, sub;
+  if (isMine) {
+    headline = delta > 0 ? `+${delta} poeng 🎭` : 'Ingen lot seg lure 😅';
+    sub = delta > 0 ? `Du lurte ${delta / 50} spiller${delta / 50 === 1 ? '' : 'e'}!` : 'Prøv vanskeligere løgner neste gang.';
+  } else if (correct === true) {
+    headline = `+${delta} poeng ✓`;
+    sub = 'Du avslørte løgnen!';
+  } else if (correct === false) {
+    headline = 'Feil gjetning ✗';
+    sub = `Løgnen var nr. ${lieIdx + 1}.`;
+  } else {
+    headline = 'Runde ferdig';
+    sub = `Løgnen var nr. ${lieIdx + 1}.`;
+  }
+  screen.innerHTML = `${headerHtml()}
+    <div class="player-state lie-reveal">
+      <div class="lie-reveal-head">
+        <div class="lie-reveal-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</div>
+        <div class="lie-reveal-name">${esc(lp.currentName)}</div>
+      </div>
+      <div class="lie-reveal-lie">Løgnen: <b>${esc(lp.statements[lieIdx] || '')}</b></div>
+      <h2 class="lie-reveal-headline ${correct === true || (isMine && delta > 0) ? 'ok' : (correct === false ? 'bad' : '')}">${headline}</h2>
+      <p class="lie-reveal-sub">${sub}</p>
     </div>
     ${reactionBar()}`;
 }

@@ -83,7 +83,9 @@ const PHASE_LABELS = {
   voting: 'Avstemning', 'vote-result': 'Avstemning – resultat',
   'scatter-play': 'Kategori-kamp', 'scatter-review': 'Gjennomgang',
   icebreaker: 'Bli-kjent', snake: 'Slange-kamp', 'snake-end': 'Slange – resultat',
-  bomb: 'Bomberman', 'bomb-end': 'Bomberman – resultat', end: 'Ferdig',
+  bomb: 'Bomberman', 'bomb-end': 'Bomberman – resultat',
+  'lie-collect': '2 sannheter, 1 løgn – innsending', 'lie-play': '2 sannheter, 1 løgn', 'lie-reveal': 'Løgn – fasit',
+  end: 'Ferdig',
 };
 
 fetch('/connect-url')
@@ -286,6 +288,7 @@ function triggerPhaseEffects(prev, s) {
     if (s.phase === 'end') { stopSpeaking(); window.sfx?.fanfare(); window.confetti?.burst(); setTimeout(() => window.confetti?.burst(), 600); setTimeout(() => window.confetti?.burst(), 1400); window.sfx?.applause(); }
     if (s.phase === 'vote-result') { window.sfx?.reveal(); stopSpeaking(); }
     if (s.phase === 'scatter-review') { window.sfx?.reveal(); stopSpeaking(); }
+    if (s.phase === 'lie-reveal') { window.sfx?.reveal(); stopSpeaking(); }
     if (s.phase === 'reveal') stopSpeaking(); // lyd spilles i renderReveal basert på riktig/feil
   }
   // TTS: les opp nye spørsmål / avstemninger / icebreaker-prompts
@@ -325,6 +328,9 @@ function render() {
     case 'snake-end': renderSnakeEnd(); break;
     case 'bomb': renderBomb(); break;
     case 'bomb-end': renderBombEnd(); break;
+    case 'lie-collect': renderLieCollect(); break;
+    case 'lie-play': renderLiePlay(); break;
+    case 'lie-reveal': renderLieReveal(); break;
     case 'end': renderEnd(); break;
   }
   renderControls();
@@ -788,6 +794,109 @@ function renderIcebreaker() {
     </div>`;
 }
 
+// ============ 2 SANNHETER, 1 LØGN ============
+function renderLieCollect() {
+  const lc = state.lieCollect || { submittedIds: [], totalPlayers: 0 };
+  const total = state.players.length;
+  const submitted = new Set(lc.submittedIds);
+  const submittedCount = submitted.size;
+  main.innerHTML = `
+    <div class="lie-screen lie-collect-screen">
+      <div class="lie-title">🤥 2 sannheter og 1 løgn</div>
+      <div class="lie-sub">Alle spillere skriver inn <b>3 påstander om seg selv</b> — 2 sanne, 1 løgn — på telefonen sin.</div>
+      <div class="lie-progress">
+        <div class="lie-progress-num">${submittedCount} / ${total}</div>
+        <div class="lie-progress-label">spillere er ferdig</div>
+        <div class="lie-progress-bar"><div class="lie-progress-fill" style="width:${total ? (submittedCount / total * 100) : 0}%"></div></div>
+      </div>
+      <div class="lie-submitters">
+        ${state.players.map(p => `
+          <div class="lie-sub-chip ${submitted.has(p.id) ? 'ready' : ''}">
+            <span class="avatar-sm">${p.emoji || avatarFor(p.name)}</span>
+            <span class="lie-sub-name">${esc(p.name)}</span>
+            <span class="lie-sub-status">${submitted.has(p.id) ? '✓' : '…'}</span>
+          </div>
+        `).join('')}
+      </div>
+      ${submittedCount >= 2 ? `<div class="lie-hint">Klar til å starte når du vil — trykk "Start runde" nedenfor.</div>` : `<div class="lie-hint lie-hint-wait">Venter på minst 2 innsendinger…</div>`}
+    </div>`;
+}
+
+function renderLiePlay() {
+  const lp = state.liePlay;
+  if (!lp) { main.innerHTML = `<div class="lie-screen"><div class="lie-title">Venter…</div></div>`; return; }
+  const total = state.players.length;
+  const votersTotal = Math.max(0, total - 1); // minus submitter
+  const votedCount = lp.votedIds.length;
+  main.innerHTML = `
+    <div class="lie-screen lie-play-screen">
+      <div class="lie-turn">Tur ${lp.turnIdx} / ${lp.totalTurns}</div>
+      <div class="lie-player-header">
+        <span class="lie-player-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</span>
+        <div class="lie-player-info">
+          <div class="lie-player-label">Hvem lyver?</div>
+          <div class="lie-player-name">${esc(lp.currentName)}</div>
+        </div>
+      </div>
+      <div class="lie-statements">
+        ${lp.statements.map((s, i) => `
+          <div class="lie-statement">
+            <div class="lie-stmt-num">${i + 1}</div>
+            <div class="lie-stmt-text">${esc(s)}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="lie-vote-status">${votedCount} / ${votersTotal} har stemt</div>
+    </div>`;
+}
+
+function renderLieReveal() {
+  const lp = state.liePlay;
+  if (!lp) { main.innerHTML = `<div class="lie-screen"><div class="lie-title">Venter…</div></div>`; return; }
+  const lieIdx = lp.lieDisplayIdx;
+  const bd = lp.voteBreakdown || [0, 0, 0];
+  const names = lp.voterNames || [[], [], []];
+  const totalVotes = bd.reduce((a, b) => a + b, 0);
+  const fooled = bd.filter((_, i) => i !== lieIdx).reduce((a, b) => a + b, 0);
+  const submitter = state.players.find(p => p.id === lp.currentId);
+  const submitterDelta = submitter ? submitter.lastDelta : 0;
+  main.innerHTML = `
+    <div class="lie-screen lie-reveal-screen">
+      <div class="lie-turn">Tur ${lp.turnIdx} / ${lp.totalTurns}</div>
+      <div class="lie-player-header">
+        <span class="lie-player-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</span>
+        <div class="lie-player-info">
+          <div class="lie-player-label">Løgnen var…</div>
+          <div class="lie-player-name">${esc(lp.currentName)}</div>
+        </div>
+      </div>
+      <div class="lie-statements reveal">
+        ${lp.statements.map((s, i) => {
+          const isLie = i === lieIdx;
+          const count = bd[i] || 0;
+          const pct = totalVotes ? Math.round(count / totalVotes * 100) : 0;
+          return `
+            <div class="lie-statement ${isLie ? 'is-lie' : 'is-truth'}">
+              <div class="lie-stmt-num">${isLie ? '🤥' : '✓'}</div>
+              <div class="lie-stmt-body">
+                <div class="lie-stmt-text">${esc(s)}</div>
+                <div class="lie-stmt-votes">
+                  <div class="lie-votes-bar"><div class="lie-votes-fill ${isLie ? 'lie' : 'truth'}" style="width:${pct}%"></div></div>
+                  <div class="lie-votes-meta">${count} stemme${count === 1 ? '' : 'r'} · ${esc((names[i] || []).join(', ') || '–')}</div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+      <div class="lie-reveal-summary">
+        ${fooled > 0
+          ? `🎭 ${esc(lp.currentName)} lurte ${fooled} spiller${fooled === 1 ? '' : 'e'} (+${submitterDelta} poeng til løgneren)`
+          : `👀 Ingen lot seg lure — ${esc(lp.currentName)} fikk ingen bonus.`}
+      </div>
+    </div>`;
+}
+
 // ============ SNAKE ============
 let snakeSnap = null;
 let snakeTimerRAF = null;
@@ -1233,6 +1342,16 @@ function renderControls() {
   } else if (state.phase === 'bomb-end') {
     html = `<button class="btn btn-primary" onclick="act('host:start-bomb')">💣 Ny runde</button>
             <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
+  } else if (state.phase === 'lie-collect') {
+    const lc = state.lieCollect || { submittedIds: [] };
+    const canStart = lc.submittedIds.length >= 2;
+    html = `<button class="btn btn-primary" ${canStart ? '' : 'disabled'} onclick="act('host:start-lie-round')">▶ Start runde</button>
+            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
+  } else if (state.phase === 'lie-play') {
+    html = `<button class="btn btn-ghost" onclick="act('host:end-lie-vote')">Avslutt stemming</button>
+            <button class="btn btn-ghost btn-sm" onclick="act('host:skip-lie')">⏭ Hopp over</button>`;
+  } else if (state.phase === 'lie-reveal') {
+    html = `<button class="btn btn-primary" onclick="act('host:skip-lie')">Neste spiller →</button>`;
   } else if (state.phase === 'end') {
     html = `<button class="btn btn-primary" onclick="act('host:reset')">← Ny runde</button>`;
   }
@@ -1283,6 +1402,7 @@ window.openGameMenu = () => {
         <div class="menu-section-title">🎉 Sosiale spill</div>
         <div class="menu-grid">
           <button class="menu-card social" onclick="pickGame('host:start-voting')"><div class="emoji">🗳️</div><b>Hvem er mest sannsynlig</b><span>Anonyme avstemninger</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-lie')"><div class="emoji">🤥</div><b>2 sannheter, 1 løgn</b><span>Hvem er flinkest til å lyve?</span></button>
           <button class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, fem kategorier</span></button>
           <button class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></button>
           <button class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></button>

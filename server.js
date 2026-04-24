@@ -102,6 +102,9 @@ const game = {
   // Icebreaker specific
   icebreakerPrompt: null,
   icebreakerTarget: null,
+  // Lie-game (2 sannheter og 1 løgn) specific
+  lieRound: null,
+  lieTimer: null,
   // Snake specific
   snake: null,
   snakeTickInterval: null,
@@ -158,6 +161,38 @@ function publicState() {
     scatterReview: game.phase === 'scatter-review' ? buildScatterReview() : null,
     icebreakerPrompt: game.icebreakerPrompt,
     icebreakerTarget: game.icebreakerTarget,
+    lieCollect: game.phase === 'lie-collect' && game.lieRound ? {
+      submittedIds: [...game.lieRound.submissions.keys()],
+      totalPlayers: game.players.size,
+    } : null,
+    liePlay: (game.phase === 'lie-play' || game.phase === 'lie-reveal') && game.lieRound ? (() => {
+      const pid = game.lieRound.currentPid;
+      const sub = game.lieRound.submissions.get(pid);
+      const pl = game.players.get(pid);
+      if (!sub || !pl) return null;
+      const statements = game.lieRound.shuffleOrder.map(i => sub.s[i]);
+      const lieDisplayIdx = game.lieRound.shuffleOrder.indexOf(sub.lieIdx);
+      const voteBreakdown = [0, 0, 0];
+      const voterNames = [[], [], []];
+      for (const [voterPid, v] of game.lieRound.votes) {
+        voteBreakdown[v] = (voteBreakdown[v] || 0) + 1;
+        const voter = game.players.get(voterPid);
+        if (voter) voterNames[v].push(voter.name);
+      }
+      return {
+        currentId: pid,
+        currentName: pl.name,
+        currentEmoji: pl.emoji || null,
+        statements,
+        turnIdx: game.lieRound.idx + 1,
+        totalTurns: game.lieRound.order.length,
+        votedIds: [...game.lieRound.votes.keys()],
+        voteBreakdown,
+        voterNames: game.phase === 'lie-reveal' ? voterNames : null,
+        lieDisplayIdx: game.phase === 'lie-reveal' ? lieDisplayIdx : -1,
+        roundTimeMs: LIE_VOTE_TIME,
+      };
+    })() : null,
   };
 }
 
@@ -332,8 +367,10 @@ function resetToLobby() {
   snakeCleanTimers();
   bombCleanTimers();
   clearAutoAdvance();
+  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
   game.snake = null;
   game.bomb = null;
+  game.lieRound = null;
   game.phase = 'lobby';
   game.mode = null;
   game.category = null;
@@ -496,6 +533,121 @@ function drawIcebreaker() {
   game.icebreakerPrompt = ICEBREAKERS[Math.floor(Math.random() * ICEBREAKERS.length)];
   game.icebreakerTarget = players[Math.floor(Math.random() * players.length)].name;
   broadcast();
+}
+
+// ---- 2 sannheter og 1 løgn ----
+const LIE_VOTE_TIME = 30000;
+const LIE_REVEAL_TIME = 7000;
+
+function startLieGame() {
+  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
+  game.phase = 'lie-collect';
+  game.mode = 'lie';
+  game.lieRound = {
+    submissions: new Map(), // pid -> { s: [s1,s2,s3], lieIdx }
+    order: [],
+    idx: -1,
+    currentPid: null,
+    shuffleOrder: [0, 1, 2],
+    votes: new Map(),       // voterPid -> displayIdx
+  };
+  for (const p of game.players.values()) {
+    p.answered = false;
+    p.lastDelta = 0;
+    p.lastCorrect = null;
+  }
+  broadcast();
+}
+
+function startLiePlayRound() {
+  if (!game.lieRound) return;
+  const order = [...game.lieRound.submissions.keys()];
+  shuffle(order);
+  game.lieRound.order = order;
+  game.lieRound.idx = -1;
+  nextLieTurn();
+}
+
+function nextLieTurn() {
+  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
+  if (!game.lieRound) return;
+  game.lieRound.idx++;
+  if (game.lieRound.idx >= game.lieRound.order.length) {
+    // Done with all players -> leaderboard, deretter end
+    game.phase = 'leaderboard';
+    broadcast();
+    scheduleAutoAdvance();
+    return;
+  }
+  const pid = game.lieRound.order[game.lieRound.idx];
+  const sub = game.lieRound.submissions.get(pid);
+  if (!sub || !game.players.has(pid)) { nextLieTurn(); return; }
+  game.lieRound.currentPid = pid;
+  game.lieRound.shuffleOrder = shuffle([0, 1, 2]);
+  game.lieRound.votes = new Map();
+  for (const p of game.players.values()) {
+    p.answered = false;
+    p.lastDelta = 0;
+    p.lastCorrect = null;
+  }
+  game.phase = 'lie-play';
+  broadcast();
+  const startedIdx = game.lieRound.idx;
+  game.lieTimer = setTimeout(() => {
+    if (game.phase === 'lie-play' && game.lieRound && game.lieRound.idx === startedIdx) endLieTurn();
+  }, LIE_VOTE_TIME + 500);
+}
+
+function endLieTurn() {
+  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
+  if (!game.lieRound) return;
+  const pid = game.lieRound.currentPid;
+  const sub = game.lieRound.submissions.get(pid);
+  if (!sub) { nextLieTurn(); return; }
+  const lieDisplayIdx = game.lieRound.shuffleOrder.indexOf(sub.lieIdx);
+  let fooled = 0;
+  for (const [voterPid, vote] of game.lieRound.votes) {
+    if (voterPid === pid) continue;
+    const voter = game.players.get(voterPid);
+    if (!voter) continue;
+    if (vote === lieDisplayIdx) {
+      voter.score += 100;
+      voter.lastDelta = 100;
+      voter.lastCorrect = true;
+    } else {
+      voter.lastDelta = 0;
+      voter.lastCorrect = false;
+      fooled++;
+    }
+  }
+  const submitter = game.players.get(pid);
+  if (submitter) {
+    const bonus = fooled * 50;
+    submitter.score += bonus;
+    submitter.lastDelta = bonus;
+    submitter.lastCorrect = null;
+    if (game.teamMode && submitter.teamId != null) {
+      const t = game.teams.find(x => x.id === submitter.teamId);
+      if (t) t.score += bonus;
+    }
+  }
+  if (game.teamMode) {
+    for (const [voterPid, vote] of game.lieRound.votes) {
+      if (vote === lieDisplayIdx) {
+        const voter = game.players.get(voterPid);
+        if (voter && voter.teamId != null) {
+          const t = game.teams.find(x => x.id === voter.teamId);
+          if (t) t.score += 100;
+        }
+      }
+    }
+  }
+  game.phase = 'lie-reveal';
+  broadcast();
+  const curIdx = game.lieRound.idx;
+  game.lieTimer = setTimeout(() => {
+    if (game.phase === 'lie-reveal' && game.lieRound && game.lieRound.idx === curIdx) nextLieTurn();
+  }, LIE_REVEAL_TIME);
 }
 
 // ---- Snake game ----
@@ -1112,6 +1264,41 @@ io.on('connection', (socket) => {
     broadcast();
   });
 
+  socket.on('player:lie-submit', (data) => {
+    if (game.phase !== 'lie-collect') return;
+    if (!game.lieRound) return;
+    const p = game.players.get(socket.id);
+    if (!p) return;
+    const s1 = String(data?.s1 || '').trim().slice(0, 120);
+    const s2 = String(data?.s2 || '').trim().slice(0, 120);
+    const s3 = String(data?.s3 || '').trim().slice(0, 120);
+    const lieIdx = Number(data?.lieIdx);
+    if (!s1 || !s2 || !s3) return;
+    if (![0, 1, 2].includes(lieIdx)) return;
+    game.lieRound.submissions.set(socket.id, { s: [s1, s2, s3], lieIdx });
+    p.answered = true;
+    broadcast();
+  });
+
+  socket.on('player:lie-vote', (displayIdx) => {
+    if (game.phase !== 'lie-play') return;
+    if (!game.lieRound) return;
+    const n = Number(displayIdx);
+    if (![0, 1, 2].includes(n)) return;
+    if (socket.id === game.lieRound.currentPid) return; // kan ikke stemme på seg selv
+    const p = game.players.get(socket.id);
+    if (!p) return;
+    if (game.lieRound.votes.has(socket.id)) return; // kan ikke endre
+    game.lieRound.votes.set(socket.id, n);
+    p.answered = true;
+    broadcast();
+    // Auto-avslutt når alle (unntatt submitter) har stemt
+    const voters = [...game.players.keys()].filter(id => id !== game.lieRound.currentPid);
+    if (game.lieRound.votes.size >= voters.length) {
+      setTimeout(() => { if (game.phase === 'lie-play') endLieTurn(); }, 400);
+    }
+  });
+
   // ---- Host controls ----
   const isHost = () => socket.id === game.hostId;
 
@@ -1213,6 +1400,30 @@ io.on('connection', (socket) => {
   socket.on('host:icebreaker', () => {
     if (!isHost() || !game.players.size) return;
     drawIcebreaker();
+  });
+
+  socket.on('host:start-lie', () => {
+    if (!isHost()) return;
+    if (game.players.size < 2) return;
+    startLieGame();
+  });
+
+  socket.on('host:start-lie-round', () => {
+    if (!isHost()) return;
+    if (game.phase !== 'lie-collect' || !game.lieRound) return;
+    if (game.lieRound.submissions.size < 2) return;
+    startLiePlayRound();
+  });
+
+  socket.on('host:skip-lie', () => {
+    if (!isHost()) return;
+    if (game.phase === 'lie-play') endLieTurn();
+    else if (game.phase === 'lie-reveal') nextLieTurn();
+  });
+
+  socket.on('host:end-lie-vote', () => {
+    if (!isHost() || game.phase !== 'lie-play') return;
+    endLieTurn();
   });
 
   socket.on('host:start-snake', () => {
