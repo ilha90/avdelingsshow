@@ -1,15 +1,15 @@
-/* Avdelingsshow — global stil */
+/* Avdelingsshow — global stil (DNB-farger) */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg-1: #0b0d1a;
-  --bg-2: #181c3a;
-  --bg-3: #241a3d;
-  --gold: #d4af37;
-  --gold-2: #f5d77a;
-  --ink: #f3f1e8;
-  --ink-2: #b9b6a6;
+  --bg-1: #002d36;
+  --bg-2: #003f48;
+  --bg-3: #005a55;
+  --gold: #00a877;
+  --gold-2: #5de0ae;
+  --ink: #f0f5f2;
+  --ink-2: #a5b5b0;
   --card: rgba(255,255,255,0.06);
-  --card-b: rgba(255,255,255,0.12);
+  --card-b: rgba(93,224,174,0.15);
   --red: #e54b4b;
   --blue: #3a86ff;
   --yellow: #ffbe0b;
@@ -29,8 +29,8 @@ body { position: relative; }
 body::before {
   content: ''; position: fixed; inset: -20%;
   background:
-    radial-gradient(circle at 20% 30%, rgba(212,175,55,.12), transparent 40%),
-    radial-gradient(circle at 80% 70%, rgba(58,134,255,.12), transparent 45%);
+    radial-gradient(circle at 20% 30%, rgba(0,200,150,.18), transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(93,224,174,.12), transparent 45%);
   filter: blur(40px); z-index: 0; pointer-events: none;
   animation: drift 20s ease-in-out infinite alternate;
 }
