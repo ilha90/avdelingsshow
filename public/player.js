@@ -281,6 +281,10 @@ function renderSnakePlayer() {
     const t = e.touches ? e.touches[0] : e;
     touchStart = { x: t.clientX, y: t.clientY };
   };
+  const onMove = e => {
+    // Blokker scroll/zoom under spill
+    if (e.cancelable) e.preventDefault();
+  };
   const onEnd = e => {
     if (!touchStart) return;
     const t = e.changedTouches ? e.changedTouches[0] : e;
@@ -292,6 +296,7 @@ function renderSnakePlayer() {
     touchStart = null;
   };
   screenEl.addEventListener('touchstart', onStart, { passive: true });
+  screenEl.addEventListener('touchmove', onMove, { passive: false });
   screenEl.addEventListener('touchend', onEnd, { passive: true });
   // Keyboard (desktop)
   window.onkeydown = (e) => {
@@ -456,6 +461,7 @@ function renderBombPlayer() {
   let touchStart = null;
   const onStart = e => { const t = e.touches ? e.touches[0] : e; touchStart = { x: t.clientX, y: t.clientY, dir: null }; };
   const onMove = e => {
+    if (e.cancelable) e.preventDefault(); // blokker scroll/zoom
     if (!touchStart) return;
     const t = e.touches ? e.touches[0] : e;
     const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
@@ -466,7 +472,7 @@ function renderBombPlayer() {
   };
   const onEnd = () => { touchStart = null; sendBombMove('stop'); };
   screen.addEventListener('touchstart', onStart, { passive: true });
-  screen.addEventListener('touchmove', onMove, { passive: true });
+  screen.addEventListener('touchmove', onMove, { passive: false });
   screen.addEventListener('touchend', onEnd, { passive: true });
 
   // Keyboard

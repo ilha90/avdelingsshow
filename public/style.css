@@ -607,7 +607,7 @@ body::before {
 .snake-score-resp { font-size: 12px; color: var(--ink-2); }
 
 /* ============ Snake — player ============ */
-.snake-player { display: flex; flex-direction: column; gap: 16px; align-items: center; user-select: none; }
+.snake-player { display: flex; flex-direction: column; gap: 16px; align-items: center; user-select: none; touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; }
 .snake-player-top { width: 100%; text-align: center; }
 .snake-player-info { font-size: 22px; font-weight: 700; padding: 14px 20px;
   background: var(--card); border: 2px solid var(--card-b); border-radius: 14px; display: inline-block; }
