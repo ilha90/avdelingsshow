@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="nb">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Avdelingsshow</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- BAKGRUNN — animerte partikler -->
+<canvas id="bg-canvas"></canvas>
+
+<!-- KONFETTI-LAG -->
+<canvas id="confetti-canvas"></canvas>
+
+<!-- GARDINER -->
+<div id="curtain-left" class="curtain"></div>
+<div id="curtain-right" class="curtain"></div>
+
+<!-- INTRO-SPLASH -->
+<div id="intro-splash">
+  <div class="intro-stars">
+    <span>✦</span><span>✦</span><span>✦</span><span>✦</span><span>✦</span>
+  </div>
+  <div class="intro-logo">
+    <div class="intro-mark">✦</div>
+    <div class="intro-title">
+      <span>A</span><span>v</span><span>d</span><span>e</span><span>l</span><span>i</span><span>n</span><span>g</span><span>s</span><span>s</span><span>h</span><span>o</span><span>w</span>
+    </div>
+    <div class="intro-sub">Trykk for å starte</div>
+  </div>
+</div>
+
+<!-- TOP-KONTROLLER -->
+<div class="top-controls">
+  <button class="icon-btn" id="mute-btn" title="Lyd på/av">🔊</button>
+  <button class="icon-btn" id="fs-btn" title="Fullskjerm (F)">⛶</button>
+</div>
+
+<!-- NEDTELLING -->
+<div id="countdown-overlay" class="countdown-overlay">
+  <div class="countdown-number" id="countdown-num">3</div>
+</div>
+
+<!-- HJEM / MENY -->
+<section id="hub" class="screen active">
+  <header class="hub-header">
+    <div class="logo">
+      <span class="logo-mark">✦</span>
+      <span class="logo-text">Avdelingsshow</span>
+    </div>
+    <div class="tagline">Velg en aktivitet — eller kjør alle i rekkefølge</div>
+  </header>
+
+  <div class="game-grid">
+    <button class="game-card" data-game="quiz">
+      <div class="card-emoji">🧠</div>
+      <div class="card-title">Quiz-show</div>
+      <div class="card-desc">Klassisk trivia i runder. Lag eller enkeltspillere.</div>
+      <div class="card-meta">15 spørsmål · 5–20 min</div>
+    </button>
+
+    <button class="game-card" data-game="wheel">
+      <div class="card-emoji">🎡</div>
+      <div class="card-title">Lykkehjulet</div>
+      <div class="card-desc">Legg inn navn, spinn, og få en morsom utfordring.</div>
+      <div class="card-meta">Icebreaker · 5–15 min</div>
+    </button>
+
+    <button class="game-card" data-game="emoji">
+      <div class="card-emoji">🎬</div>
+      <div class="card-title">Emoji-gåter</div>
+      <div class="card-desc">Gjett filmen, sangen eller uttrykket ut fra emojis.</div>
+      <div class="card-meta">20 gåter · 10 min</div>
+    </button>
+
+    <button class="game-card" data-game="kategori">
+      <div class="card-emoji">🔤</div>
+      <div class="card-title">Kategori-kamp</div>
+      <div class="card-desc">Tilfeldig bokstav + 5 kategorier. Skriv raskest!</div>
+      <div class="card-meta">Lag · 10–15 min</div>
+    </button>
+
+    <button class="game-card" data-game="blikjent">
+      <div class="card-emoji">💬</div>
+      <div class="card-title">Bli-kjent-kort</div>
+      <div class="card-desc">Trekk et kort — svar eller gi stafetten videre.</div>
+      <div class="card-meta">Uforpliktende · 5–20 min</div>
+    </button>
+
+    <button class="game-card" data-game="sannheter">
+      <div class="card-emoji">🎭</div>
+      <div class="card-title">To sannheter og én løgn</div>
+      <div class="card-desc">Én person skriver tre påstander. Resten gjetter.</div>
+      <div class="card-meta">Klassiker · 10–20 min</div>
+    </button>
+  </div>
+
+  <footer class="hub-footer">Laget for avdelingen • Trykk på et spill for å starte</footer>
+</section>
+
+<!-- QUIZ -->
+<section id="game-quiz" class="screen">
+  <button class="back-btn">← Tilbake</button>
+  <div class="quiz-setup" id="quiz-setup">
+    <h1>Quiz-show</h1>
+    <p class="setup-sub">Hvor mange lag / spillere?</p>
+    <div class="team-list" id="team-list"></div>
+    <div class="setup-row">
+      <input type="text" id="team-name-input" placeholder="Navn på lag eller spiller" maxlength="24">
+      <button class="btn primary" id="add-team-btn">Legg til</button>
+    </div>
+    <button class="btn big primary" id="start-quiz-btn" disabled>Start quiz</button>
+  </div>
+
+  <div class="quiz-play" id="quiz-play" style="display:none">
+    <div class="quiz-header">
+      <div class="q-progress" id="q-progress">1 / 15</div>
+      <div class="q-streak" id="q-streak"></div>
+      <div class="q-timer" id="q-timer">20</div>
+    </div>
+    <div class="q-question" id="q-question"></div>
+    <div class="q-answers" id="q-answers"></div>
+    <div class="q-reveal" id="q-reveal" style="display:none">
+      <div class="reveal-text" id="reveal-text"></div>
+      <div class="score-table" id="score-table"></div>
+      <button class="btn primary" id="next-q-btn">Neste spørsmål →</button>
+    </div>
+  </div>
+
+  <div class="quiz-end" id="quiz-end" style="display:none">
+    <h1>🏆 Resultat</h1>
+    <div id="podium" class="podium"></div>
+    <div class="final-table" id="final-table"></div>
+    <button class="btn primary" id="quiz-again-btn">Spill igjen</button>
+  </div>
+</section>
+
+<!-- LYKKEHJUL -->
+<section id="game-wheel" class="screen">
+  <button class="back-btn">← Tilbake</button>
+  <h1>Lykkehjulet</h1>
+  <div class="wheel-wrap">
+    <div class="wheel-pointer">▼</div>
+    <canvas id="wheel-canvas" width="520" height="520"></canvas>
+    <button class="spin-btn" id="spin-btn">SPINN</button>
+  </div>
+  <div class="wheel-result" id="wheel-result"></div>
+  <div class="wheel-controls">
+    <input type="text" id="wheel-name-input" placeholder="Legg til navn" maxlength="18">
+    <button class="btn" id="wheel-add-btn">Legg til</button>
+    <button class="btn" id="wheel-clear-btn">Tøm</button>
+    <label class="checkbox-row">
+      <input type="checkbox" id="wheel-challenge" checked>
+      Trekk også en utfordring
+    </label>
+  </div>
+  <div class="wheel-list" id="wheel-list"></div>
+</section>
+
+<!-- EMOJI-GÅTER -->
+<section id="game-emoji" class="screen">
+  <button class="back-btn">← Tilbake</button>
+  <div class="emoji-header">
+    <h1>Emoji-gåter</h1>
+    <div class="emoji-progress" id="emoji-progress">1 / 20</div>
+  </div>
+  <div class="emoji-card">
+    <div class="emoji-big" id="emoji-big"></div>
+    <div class="emoji-category" id="emoji-category"></div>
+    <div class="emoji-answer" id="emoji-answer" style="display:none"></div>
+    <div class="emoji-buttons">
+      <button class="btn" id="emoji-reveal-btn">Vis fasit</button>
+      <button class="btn primary" id="emoji-next-btn">Neste →</button>
+    </div>
+  </div>
+</section>
+
+<!-- KATEGORI-KAMP -->
+<section id="game-kategori" class="screen">
+  <button class="back-btn">← Tilbake</button>
+  <h1>Kategori-kamp</h1>
+  <div class="kategori-intro" id="kategori-intro">
+    <p class="setup-sub">Alle skriver ett ord i hver kategori som begynner på bokstaven. 60 sekunder. Unike svar gir poeng!</p>
+    <button class="btn big primary" id="kategori-start-btn">Trekk bokstav og kategorier</button>
+  </div>
+  <div class="kategori-play" id="kategori-play" style="display:none">
+    <div class="kategori-letter">
+      <div class="letter-label">Bokstav</div>
+      <div class="letter-big" id="letter-big">A</div>
+    </div>
+    <div class="kategori-list" id="kategori-list"></div>
+    <div class="kategori-timer" id="kategori-timer">60</div>
+    <div class="kategori-buttons">
+      <button class="btn" id="kategori-stop-btn">Stopp tiden</button>
+      <button class="btn primary" id="kategori-next-btn">Ny runde</button>
+    </div>
+  </div>
+</section>
+
+<!-- BLI-KJENT -->
+<section id="game-blikjent" class="screen">
+  <button class="back-btn">← Tilbake</button>
+  <h1>Bli-kjent-kort</h1>
+  <div class="blikjent-deck">
+    <div class="blikjent-card" id="blikjent-card">
+      <div class="card-back">
+        <div class="back-emblem">✦</div>
+        <div class="back-text">Trekk et kort</div>
+      </div>
+      <div class="card-front" id="blikjent-front"></div>
+    </div>
+  </div>
+  <div class="blikjent-buttons">
+    <button class="btn primary" id="blikjent-draw-btn">Trekk kort</button>
+    <button class="btn" id="blikjent-reset-btn">Stokk på nytt</button>
+  </div>
+  <div class="blikjent-count" id="blikjent-count"></div>
+</section>
+
+<!-- SANNHETER OG LØGN -->
+<section id="game-sannheter" class="screen">
+  <button class="back-btn">← Tilbake</button>
+  <h1>To sannheter og én løgn</h1>
+  <div class="sannheter-step" id="sann-step-1">
+    <p class="setup-sub">Skriv tre påstander om deg selv. To sanne, én falsk.</p>
+    <input type="text" class="sann-input" id="sann1" placeholder="Påstand 1" maxlength="80">
+    <input type="text" class="sann-input" id="sann2" placeholder="Påstand 2" maxlength="80">
+    <input type="text" class="sann-input" id="sann3" placeholder="Påstand 3" maxlength="80">
+    <p class="setup-sub small">Hvilken er løgnen?</p>
+    <div class="sann-pick">
+      <button class="pill-btn" data-lie="0">Påstand 1</button>
+      <button class="pill-btn" data-lie="1">Påstand 2</button>
+      <button class="pill-btn" data-lie="2">Påstand 3</button>
+    </div>
+    <button class="btn big primary" id="sann-show-btn" disabled>Vis til gjengen</button>
+  </div>
+  <div class="sannheter-step" id="sann-step-2" style="display:none">
+    <p class="setup-sub">Hvilken tror dere er løgnen?</p>
+    <div class="sann-cards" id="sann-cards"></div>
+    <button class="btn" id="sann-reveal-btn">Avslør</button>
+    <button class="btn primary" id="sann-new-btn" style="display:none">Ny spiller</button>
+  </div>
+</section>
+
+<script src="data.js"></script>
+<script src="effects.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

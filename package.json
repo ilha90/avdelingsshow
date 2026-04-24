@@ -1,0 +1,15 @@
+{
+  "name": "avdelings-show",
+  "version": "1.0.0",
+  "description": "Live multiplayer quiz for avdelingssamling",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "qrcode": "^1.5.3"
+  }
+}

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8">
+  <title>Avdelingsshow — Vert</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <canvas id="confetti"></canvas>
+  <div id="floaters"></div>
+  <div id="trophies"></div>
+  <div id="app">
+    <div class="host-top">
+      <div class="brand">
+        <span class="dot"></span>
+        <div>
+          <small>Live</small>
+          <h1>Avdelingsshow</h1>
+        </div>
+      </div>
+      <div class="top-right">
+        <button id="helpBtn" class="icon-btn" title="Tastatursnarveier (?)">?</button>
+        <div class="tts-wrap">
+          <button id="ttsBtn" class="icon-btn" title="Les opp spørsmål">🎙️</button>
+          <div id="ttsMenu" class="tts-menu"></div>
+        </div>
+        <button id="fullscreenBtn" class="icon-btn" title="Fullskjerm">⛶</button>
+        <button id="soundToggle" class="icon-btn" title="Lyd av/på">🔊</button>
+        <div class="phase-tag" id="phaseTag">Lobby</div>
+      </div>
+    </div>
+    <div class="host-main" id="main"></div>
+    <div class="host-controls" id="controls"></div>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="/sound.js"></script>
+  <script type="module" src="/confetti.js"></script>
+  <script type="module" src="/host.js"></script>
+</body>
+</html>
