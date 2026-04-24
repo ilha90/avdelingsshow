@@ -36,6 +36,26 @@ document.getElementById('fullscreenBtn')?.addEventListener('click', () => {
 });
 document.getElementById('helpBtn')?.addEventListener('click', () => openHelpModal());
 
+// ===== "Bli med selv" sidepanel =====
+const selfPanel = document.getElementById('selfPanel');
+const selfPanelFrame = document.getElementById('selfPanelFrame');
+const selfPlayBtn = document.getElementById('selfPlayBtn');
+function toggleSelfPanel(forceOpen) {
+  const willOpen = forceOpen != null ? forceOpen : !selfPanel.classList.contains('open');
+  if (willOpen) {
+    if (!selfPanelFrame.src) selfPanelFrame.src = '/';
+    selfPanel.classList.add('open');
+    document.body.classList.add('self-panel-open');
+    selfPlayBtn.classList.add('active');
+  } else {
+    selfPanel.classList.remove('open');
+    document.body.classList.remove('self-panel-open');
+    selfPlayBtn.classList.remove('active');
+  }
+}
+selfPlayBtn?.addEventListener('click', () => toggleSelfPanel());
+document.getElementById('selfPanelClose')?.addEventListener('click', () => toggleSelfPanel(false));
+
 // ===== TTS-meny i topp-bar =====
 const ttsBtn = document.getElementById('ttsBtn');
 const ttsMenu = document.getElementById('ttsMenu');

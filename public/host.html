@@ -20,6 +20,7 @@
         </div>
       </div>
       <div class="top-right">
+        <button id="selfPlayBtn" class="icon-btn" title="Bli med selv som spiller">🙋</button>
         <button id="helpBtn" class="icon-btn" title="Tastatursnarveier (?)">?</button>
         <div class="tts-wrap">
           <button id="ttsBtn" class="icon-btn" title="Les opp spørsmål">🎙️</button>
@@ -32,6 +33,14 @@
     </div>
     <div class="host-main" id="main"></div>
     <div class="host-controls" id="controls"></div>
+  </div>
+  <!-- Sidepanel for host som også vil spille (iframe, isolert) -->
+  <div id="selfPanel" class="self-panel">
+    <div class="self-panel-bar">
+      <span class="self-panel-title">🙋 Meg som spiller</span>
+      <button id="selfPanelClose" title="Lukk">✕</button>
+    </div>
+    <iframe id="selfPanelFrame" title="Du som spiller"></iframe>
   </div>
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="/sound.js"></script>

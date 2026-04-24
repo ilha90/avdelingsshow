@@ -632,3 +632,30 @@ body::before {
   aspect-ratio: 40 / 25; margin: 14px auto; border-radius: 12px;
   border: 2px solid var(--card-b); background: #0b0d1a;
   box-shadow: 0 8px 24px rgba(0,0,0,.4); image-rendering: crisp-edges; }
+
+/* ============ Host-som-spiller sidepanel ============ */
+.self-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 420px;
+  background: var(--bg-1); border-left: 1px solid var(--card-b); box-shadow: -20px 0 60px rgba(0,0,0,.5);
+  transform: translateX(100%); transition: transform .3s cubic-bezier(.2,.8,.4,1);
+  z-index: 9500; display: flex; flex-direction: column; }
+.self-panel.open { transform: translateX(0); }
+.self-panel-bar { display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 16px; background: linear-gradient(90deg, rgba(212,175,55,.15), transparent);
+  border-bottom: 1px solid var(--card-b); }
+.self-panel-title { font-weight: 700; font-size: 14px; letter-spacing: .5px; }
+.self-panel-bar button { background: var(--card); border: 1px solid var(--card-b); color: var(--ink);
+  width: 32px; height: 32px; border-radius: 8px; font-size: 15px; cursor: pointer; transition: background .15s; }
+.self-panel-bar button:hover { background: rgba(229,75,75,.2); border-color: var(--red); color: var(--red); }
+.self-panel iframe { flex: 1; border: 0; background: var(--bg-1); }
+.icon-btn.active { background: rgba(212,175,55,.25); border: 1px solid var(--gold); }
+
+/* Flytt host-hovedinnholdet litt til venstre når panelet er åpent, så vi ser alt */
+body.self-panel-open .host-main,
+body.self-panel-open .host-top,
+body.self-panel-open .host-controls { padding-right: 440px; transition: padding-right .3s; }
+@media (max-width: 900px) {
+  .self-panel { width: 100%; }
+  body.self-panel-open .host-main,
+  body.self-panel-open .host-top,
+  body.self-panel-open .host-controls { padding-right: 0; }
+}
