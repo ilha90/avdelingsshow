@@ -1,6 +1,7 @@
 // player.js — spiller-siden (mobil/laptop)
 import { avatarFor } from '/avatars.js';
 import * as bomb3d from '/bomb3d.js';
+import * as snake3d from '/snake3d.js';
 const socket = io({
   transports: ['websocket', 'polling'],
   upgrade: true,
@@ -53,9 +54,19 @@ socket.on('reconnect_attempt', () => { connected = false; updateConnBadge(); });
 
 // ===== Snake tick =====
 let snakeSnap = null;
+let playerSnakeNeedsInit = true;
 socket.on('snake:tick', s => {
   snakeSnap = s;
-  if (state?.phase === 'snake') updateSnakePlayer();
+  if (state?.phase !== 'snake') return;
+  if (playerSnakeNeedsInit && s.grid) {
+    const canvas = document.getElementById('playerSnakeCanvas');
+    if (canvas) {
+      snake3d.init(canvas, s.grid.w, s.grid.h);
+      playerSnakeNeedsInit = false;
+      startPlayerSnakeRAF();
+    }
+  }
+  updateSnakePlayer();
 });
 
 // ===== Bomberman tick =====
@@ -341,7 +352,15 @@ function renderSnakePlayer() {
     else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') sendSnakeDir('left');
     else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') sendSnakeDir('right');
   };
-  drawSnakeMini();
+  // Init Snake 3D
+  const snakeCanvas = document.getElementById('playerSnakeCanvas');
+  playerSnakeNeedsInit = true;
+  if (snakeCanvas && snakeSnap?.grid) {
+    snake3d.init(snakeCanvas, snakeSnap.grid.w, snakeSnap.grid.h);
+    snake3d.update(snakeSnap);
+    playerSnakeNeedsInit = false;
+  }
+  startPlayerSnakeRAF();
 }
 
 function sendSnakeDir(dir) {
@@ -370,71 +389,25 @@ function updateSnakePlayer() {
 }
 
 function drawSnakeMini() {
-  const canvas = document.getElementById('playerSnakeCanvas');
-  if (!canvas || !snakeSnap) return;
-  const ctx = canvas.getContext('2d');
-  const cell = Math.min(canvas.width / snakeSnap.grid.w, canvas.height / snakeSnap.grid.h);
-  const offX = (canvas.width - cell * snakeSnap.grid.w) / 2;
-  const offY = (canvas.height - cell * snakeSnap.grid.h) / 2;
-  // Bakgrunn
-  ctx.fillStyle = '#0b0d1a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = 'rgba(93,224,174,0.2)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(offX, offY, cell * snakeSnap.grid.w, cell * snakeSnap.grid.h);
-  // Mat
-  for (const f of snakeSnap.food) {
-    ctx.fillStyle = '#5de0ae';
-    ctx.beginPath();
-    ctx.arc(offX + f.x * cell + cell/2, offY + f.y * cell + cell/2, cell * 0.4, 0, Math.PI * 2);
-    ctx.fill();
+  if (!snakeSnap) return;
+  snake3d.update(snakeSnap);
+  snake3d.render();
+}
+
+let playerSnakeRAF = null;
+function startPlayerSnakeRAF() {
+  if (playerSnakeRAF) cancelAnimationFrame(playerSnakeRAF);
+  function tick() {
+    if (state?.phase !== 'snake') { playerSnakeRAF = null; return; }
+    if (snakeSnap) snake3d.render();
+    playerSnakeRAF = requestAnimationFrame(tick);
   }
-  // Tegn andre slanger FØRST (så dempet)
-  for (const s of snakeSnap.snakes) {
-    if (!s.body.length) continue;
-    const isMe = s.name === me;
-    if (isMe) continue;
-    ctx.globalAlpha = s.alive ? 0.35 : 0.15;
-    ctx.fillStyle = s.color;
-    for (const seg of s.body) {
-      ctx.fillRect(offX + seg.x * cell + 0.5, offY + seg.y * cell + 0.5, cell - 1, cell - 1);
-    }
-  }
-  ctx.globalAlpha = 1;
-  // Tegn MIN slange med full kraft + glow + puls
-  const my = snakeSnap.snakes.find(s => s.name === me);
-  if (my && my.body.length) {
-    const pulse = 1 + 0.15 * Math.sin(Date.now() / 200);
-    ctx.fillStyle = my.color;
-    ctx.globalAlpha = my.alive ? 1 : 0.4;
-    for (let i = 1; i < my.body.length; i++) {
-      const seg = my.body[i];
-      ctx.fillRect(offX + seg.x * cell, offY + seg.y * cell, cell, cell);
-    }
-    const head = my.body[0];
-    if (my.alive) { ctx.shadowColor = my.color; ctx.shadowBlur = 18; }
-    ctx.fillRect(offX + head.x * cell - 0.5, offY + head.y * cell - 0.5, cell + 1, cell + 1);
-    ctx.shadowBlur = 0;
-    // Hvit omriss rundt hode
-    if (my.alive) {
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-      ctx.strokeRect(offX + head.x * cell + 0.5, offY + head.y * cell + 0.5, cell - 1, cell - 1);
-      // DU-pil over hodet
-      const px = offX + head.x * cell + cell/2;
-      const py = offY + head.y * cell - 6 * pulse;
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.moveTo(px, py);
-      ctx.lineTo(px - 5, py - 6);
-      ctx.lineTo(px + 5, py - 6);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
-  }
+  tick();
 }
 
 function renderSnakeEndPlayer() {
+  snake3d.dispose();
+  if (playerSnakeRAF) { cancelAnimationFrame(playerSnakeRAF); playerSnakeRAF = null; }
   const my = mySnake();
   const sorted = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
   const rank = sorted.findIndex(s => s.name === me) + 1;
@@ -615,10 +588,10 @@ function renderBombPlayer() {
   // Hent lagret zoom og sett på bomb3d
   const savedZoom = parseFloat(localStorage.getItem('bomb-zoom') || '1.6');
   bomb3d.setZoom(savedZoom);
-  const myIdForZoom = bombSnap.players.find(p => p.name === me)?.id || null;
-  // Zoom-modus: <1.5 = følge spilleren, ellers oversikt
+  // Zoom-modus: <1.4 = følge spilleren, ellers oversikt
   function applyZoomMode(z) {
-    if (z <= 1.4) bomb3d.setCameraMode('follow', myIdForZoom);
+    const myId = bombSnap?.players?.find(p => p.name === me)?.id || null;
+    if (z <= 1.4 && myId) bomb3d.setCameraMode('follow', myId);
     else bomb3d.setCameraMode('overview');
   }
   applyZoomMode(savedZoom);
@@ -632,8 +605,8 @@ function renderBombPlayer() {
     localStorage.setItem('bomb-zoom', String(next));
     buzz(10);
   }
-  zIn?.addEventListener('click', () => bumpZoom(-0.3));
-  zOut?.addEventListener('click', () => bumpZoom(+0.3));
+  zIn?.addEventListener('pointerdown', (e) => { e.preventDefault(); bumpZoom(-0.3); });
+  zOut?.addEventListener('pointerdown', (e) => { e.preventDefault(); bumpZoom(+0.3); });
   startPlayerBombRAF();
 }
 

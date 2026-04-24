@@ -111,40 +111,43 @@ export function speak(text) {
     if (!cachedVoice) cachedVoice = pickVoice();
   }
 
-  try {
-    // Rens køen først — kansellerer eventuelt pågående tale
+  const u = new SpeechSynthesisUtterance(String(text).slice(0, 500));
+  if (cachedVoice) {
+    u.voice = cachedVoice;
+    u.lang = cachedVoice.lang || 'nb-NO';
+  } else {
+    u.lang = 'nb-NO';
+  }
+  const p = PRESETS[presetKey] || PRESETS.normal;
+  u.rate = p.rate;
+  u.pitch = p.pitch;
+  u.volume = 1;
+  u.onstart = () => { console.log('[TTS] start:', String(text).slice(0, 40)); notify('speaking'); };
+  u.onend = () => { console.log('[TTS] end'); notify('idle'); };
+  u.onerror = (e) => {
+    const err = e?.error || 'unknown';
+    // "canceled" og "interrupted" er normale — oppstår når stopSpeaking kalles
+    if (err !== 'canceled' && err !== 'interrupted') console.warn('[TTS] error:', err);
+    notify('idle');
+  };
+
+  // Hvis engine allerede snakker/har kø, cancel først og vent litt (Chrome-bug fix)
+  if (speechSynthesis.speaking || speechSynthesis.pending) {
     speechSynthesis.cancel();
-
-    const u = new SpeechSynthesisUtterance(String(text).slice(0, 500));
-    if (cachedVoice) {
-      u.voice = cachedVoice;
-      u.lang = cachedVoice.lang || 'nb-NO';
-    } else {
-      u.lang = 'nb-NO';
-    }
-    const p = PRESETS[presetKey] || PRESETS.normal;
-    u.rate = p.rate;
-    u.pitch = p.pitch;
-    u.volume = 1;
-    u.onstart = () => { console.log('[TTS] start:', String(text).slice(0, 40)); notify('speaking'); };
-    u.onend = () => notify('idle');
-    u.onerror = (e) => { console.warn('[TTS] error:', e?.error || e); notify('error'); };
-
-    // Krav fra Chrome: speak må følge kort etter cancel for å fungere
-    // Vi kjører det i neste microtask så cancel rekker å fullføre
-    Promise.resolve().then(() => {
+    setTimeout(() => {
       try {
         speechSynthesis.speak(u);
-        // Safety-check: hvis engine er pauset, gjenoppta
         if (speechSynthesis.paused) speechSynthesis.resume();
-      } catch (e) {
-        console.warn('[TTS] speak failed:', e);
-        notify('error');
-      }
-    });
-  } catch (e) {
-    console.warn('[TTS] speak outer failed:', e);
-    notify('error');
+      } catch (e) { console.warn('[TTS] speak retry failed:', e); }
+    }, 150);
+  } else {
+    try {
+      speechSynthesis.speak(u);
+      if (speechSynthesis.paused) speechSynthesis.resume();
+    } catch (e) {
+      console.warn('[TTS] speak failed:', e);
+      notify('error');
+    }
   }
 }
 
