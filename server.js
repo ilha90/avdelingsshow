@@ -9,6 +9,18 @@ import os from 'os';
 import { QUIZ_CATEGORIES, MOST_LIKELY, SCATTERGORIES, ICEBREAKERS, TEAM_NAMES } from './public/data.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Feilsikring: Ikke krasj serveren på uventede feil
+process.on('uncaughtException', (e) => console.error('[Uncaught]', e?.stack || e));
+process.on('unhandledRejection', (e) => console.error('[UnhandledRejection]', e?.stack || e));
+
+const MAX_PLAYERS = 100;
+const SANITIZE_NAME_MAX = 20;
+const SANITIZE_EMOJI_MAX = 6;
+
+// Track brukte spørsmål per kategori i denne sesjonen — unngå gjentak mellom runder
+const usedQuestions = new Map(); // categoryKey -> Set of question texts
+
 const app = express();
 const http = createServer(app);
 const io = new Server(http, {
@@ -169,6 +181,7 @@ function startQuestion() {
 function revealAnswer() {
   if (game.phase !== 'question') return;
   const q = game.questions[game.qIndex];
+  if (!q) return;
   const teamDeltas = new Map();
   const trophies = [];
   const firstCorrect = game.answerOrder.find(sid => {
@@ -221,9 +234,35 @@ function revealAnswer() {
   game.phase = 'reveal';
   if (trophies.length) io.emit('trophies', trophies);
   broadcast();
+  // Auto-advance etter 5s hvis hosten ikke gjør noe
+  scheduleAutoAdvance();
+}
+
+let autoAdvanceTimer = null;
+function clearAutoAdvance() {
+  if (autoAdvanceTimer) { clearTimeout(autoAdvanceTimer); autoAdvanceTimer = null; }
+}
+function scheduleAutoAdvance() {
+  clearAutoAdvance();
+  const curIdx = game.qIndex;
+  autoAdvanceTimer = setTimeout(() => {
+    if (game.phase !== 'reveal' || game.qIndex !== curIdx) return;
+    // Hver 3. spørsmål OG på siste: vis leaderboard før vi går videre
+    const shouldShowBoard = ((curIdx + 1) % 3 === 0) || (curIdx + 1 >= game.questions.length);
+    if (shouldShowBoard) {
+      game.phase = 'leaderboard';
+      broadcast();
+      autoAdvanceTimer = setTimeout(() => {
+        if (game.phase === 'leaderboard') nextQuestion();
+      }, 6000);
+    } else {
+      nextQuestion();
+    }
+  }, 5000);
 }
 
 function nextQuestion() {
+  clearAutoAdvance();
   if (game.qIndex + 1 >= game.questions.length) {
     game.phase = 'end';
     broadcast();
@@ -239,13 +278,24 @@ function startQuizGame(categoryKey, lightning = false) {
   game.mode = 'quiz';
   game.category = categoryKey;
   game.lightning = !!lightning;
+  // Track brukte spørsmål — ikke gjenta i samme sesjon
+  if (!usedQuestions.has(categoryKey)) usedQuestions.set(categoryKey, new Set());
+  const used = usedQuestions.get(categoryKey);
+  const countWant = lightning ? Math.min(12, cat.questions.length) : game.questionCount;
+  let available = cat.questions.filter(q => !used.has(q.q));
+  // Hvis vi har for få ubrukte, reset bassenget (men hold de siste få som "nylig brukt")
+  if (available.length < countWant) {
+    used.clear();
+    available = [...cat.questions];
+  }
+  const selected = shuffle([...available]).slice(0, countWant);
+  selected.forEach(q => used.add(q.q));
   if (lightning) {
     game.timeLimit = 5000;
-    game.questions = shuffle([...cat.questions]).slice(0, Math.min(12, cat.questions.length));
   } else {
     game.timeLimit = game.configTimeLimit;
-    game.questions = shuffle([...cat.questions]).slice(0, game.questionCount);
   }
+  game.questions = selected;
   game.qIndex = -1;
   for (const p of game.players.values()) {
     p.score = 0; p.streak = 0; p.bestStreak = 0; p.totalCorrect = 0;
@@ -266,6 +316,7 @@ function shuffle(arr) {
 function resetToLobby() {
   snakeCleanTimers();
   bombCleanTimers();
+  clearAutoAdvance();
   game.snake = null;
   game.bomb = null;
   game.phase = 'lobby';
@@ -513,6 +564,14 @@ function startSnake() {
 
 const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
 function snakeTick() {
+  try {
+    snakeTickInner();
+  } catch (e) {
+    console.error('[SnakeTick error]', e);
+  }
+}
+
+function snakeTickInner() {
   const sd = game.snake;
   if (!sd || !sd.started) return;
   const now = Date.now();
@@ -757,6 +816,14 @@ function startBomberman() {
 }
 
 function bombermanTick() {
+  try {
+    bombermanTickInner();
+  } catch (e) {
+    console.error('[BombTick error]', e);
+  }
+}
+
+function bombermanTickInner() {
   const b = game.bomb;
   if (!b || !b.started) return;
   const { grid, W, idx } = b.map;
@@ -926,31 +993,43 @@ io.on('connection', (socket) => {
   socket.emit('state', publicState());
 
   socket.on('host:hello', () => {
+    // Forhindre at en tilfeldig bruker overtar host-rollen når det allerede er en
+    if (game.hostId && game.hostId !== socket.id) {
+      // Sjekk om eksisterende host-socket fortsatt er tilkoblet
+      const existingSocket = io.sockets.sockets.get(game.hostId);
+      if (existingSocket && existingSocket.connected) {
+        socket.emit('host:denied');
+        return;
+      }
+    }
     game.hostId = socket.id;
     socket.emit('host:ok');
     broadcast();
   });
 
   socket.on('player:join', (name, emoji) => {
-    const clean = String(name || '').trim().slice(0, 20);
-    if (!clean) return;
-    const taken = [...game.players.values()].some(p => p.name.toLowerCase() === clean.toLowerCase());
-    if (taken) { socket.emit('join:error', 'Navnet er allerede i bruk'); return; }
-    let teamId = null;
-    if (game.teamMode && game.teams.length) {
-      const sizes = game.teams.map(t => ({ id: t.id, n: [...game.players.values()].filter(p => p.teamId === t.id).length }));
-      sizes.sort((a, b) => a.n - b.n);
-      teamId = sizes[0].id;
-    }
-    const cleanEmoji = typeof emoji === 'string' && emoji.length <= 6 ? emoji : null;
-    game.players.set(socket.id, {
-      name: clean, emoji: cleanEmoji, teamId, score: 0, streak: 0, bestStreak: 0,
-      answered: false, lastDelta: 0, lastCorrect: null,
-      vote: null, scatterAnswers: null,
-      totalCorrect: 0, totalWrong: 0, totalSkipped: 0, fastestMs: null, firstCount: 0,
-    });
-    socket.emit('join:ok', { name: clean, teamId, emoji: cleanEmoji });
-    broadcast();
+    try {
+      if (game.players.size >= MAX_PLAYERS) { socket.emit('join:error', 'Spillet er fullt'); return; }
+      const clean = String(name || '').trim().slice(0, SANITIZE_NAME_MAX);
+      if (!clean) { socket.emit('join:error', 'Skriv et navn'); return; }
+      const taken = [...game.players.values()].some(p => p.name.toLowerCase() === clean.toLowerCase());
+      if (taken) { socket.emit('join:error', 'Navnet er allerede i bruk'); return; }
+      let teamId = null;
+      if (game.teamMode && game.teams.length) {
+        const sizes = game.teams.map(t => ({ id: t.id, n: [...game.players.values()].filter(p => p.teamId === t.id).length }));
+        sizes.sort((a, b) => a.n - b.n);
+        teamId = sizes[0].id;
+      }
+      const cleanEmoji = typeof emoji === 'string' && emoji.length <= SANITIZE_EMOJI_MAX ? emoji : null;
+      game.players.set(socket.id, {
+        name: clean, emoji: cleanEmoji, teamId, score: 0, streak: 0, bestStreak: 0,
+        answered: false, lastDelta: 0, lastCorrect: null,
+        vote: null, scatterAnswers: null,
+        totalCorrect: 0, totalWrong: 0, totalSkipped: 0, fastestMs: null, firstCount: 0,
+      });
+      socket.emit('join:ok', { name: clean, teamId, emoji: cleanEmoji });
+      broadcast();
+    } catch (e) { console.error('[join error]', e); socket.emit('join:error', 'Noe gikk galt'); }
   });
 
   socket.on('player:answer', (choice) => {
