@@ -132,6 +132,7 @@ function myTeam() {
 }
 
 function render() {
+  try {
   if (wasKicked) {
     screen.innerHTML = `<div class="player-login"><h1>Du ble fjernet 👋</h1><p>Last siden på nytt for å bli med igjen.</p><button class="input-group" onclick="location.reload()" style="margin-top:20px; padding:14px 28px; background:var(--gold); color:#111; border:none; border-radius:12px; font-weight:700; cursor:pointer">Last på nytt</button></div>`;
     return;
@@ -156,6 +157,7 @@ function render() {
     case 'bomb-end':     return renderBombEndPlayer();
     case 'end':          return renderEnd();
   }
+  } catch (e) { console.error('[player render]', e); }
 }
 
 // ============ LOGIN ============

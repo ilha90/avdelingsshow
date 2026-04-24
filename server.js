@@ -18,6 +18,15 @@ const MAX_PLAYERS = 100;
 const SANITIZE_NAME_MAX = 20;
 const SANITIZE_EMOJI_MAX = 6;
 const HOST_PASSWORD = process.env.HOST_PASSWORD || 'dnb';
+const rateBuckets = new Map(); // socketId:key -> last timestamp
+function rateLimit(sid, key, minMs) {
+  const bucket = sid + ':' + key;
+  const now = Date.now();
+  const last = rateBuckets.get(bucket) || 0;
+  if (now - last < minMs) return false;
+  rateBuckets.set(bucket, now);
+  return true;
+}
 
 // Track brukte spørsmål per kategori i denne sesjonen — unngå gjentak mellom runder
 const usedQuestions = new Map(); // categoryKey -> Set of question texts
@@ -89,6 +98,7 @@ const game = {
   scatterLetter: null,
   scatterCategories: [],
   scatterSubmissions: new Map(),  // socketId -> [word, word, word, word, word]
+  scatterEndTimer: null,
   // Icebreaker specific
   icebreakerPrompt: null,
   icebreakerTarget: null,
@@ -409,6 +419,7 @@ function endVoting() {
 // ---- Scattergories ----
 const SCATTER_TIME = 60000;
 function startScatter() {
+  if (game.scatterEndTimer) { clearTimeout(game.scatterEndTimer); game.scatterEndTimer = null; }
   game.phase = 'scatter-play';
   game.mode = 'scatter';
   game.scatterLetter = SCATTERGORIES.letters[Math.floor(Math.random() * SCATTERGORIES.letters.length)];
@@ -418,12 +429,13 @@ function startScatter() {
   game.questionStartedAt = Date.now();
   broadcast();
   const started = game.questionStartedAt;
-  setTimeout(() => {
+  game.scatterEndTimer = setTimeout(() => {
     if (game.phase === 'scatter-play' && game.questionStartedAt === started) endScatter();
   }, SCATTER_TIME + 500);
 }
 
 function endScatter() {
+  if (game.scatterEndTimer) { clearTimeout(game.scatterEndTimer); game.scatterEndTimer = null; }
   // Score: 100 pr ord som starter med letter (case insensitive) og er unikt blant innsendinger for samme kategori
   const letter = (game.scatterLetter || '').toLowerCase();
   const counts = game.scatterCategories.map(() => new Map()); // catIdx -> word -> count
@@ -1063,6 +1075,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('player:react', (emoji) => {
+    if (!rateLimit(socket.id, 'react', 200)) return;
     const allowed = ['🔥','❤️','😂','👏','💪','😱','🎉','🙌','💯','🤯'];
     if (!allowed.includes(emoji)) return;
     const p = game.players.get(socket.id);
@@ -1303,13 +1316,27 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    if (game.players.has(socket.id)) {
-      game.players.delete(socket.id);
+    try {
+      if (game.players.has(socket.id)) {
+        game.players.delete(socket.id);
+      }
+      if (game.answers && game.answers.has(socket.id)) game.answers.delete(socket.id);
+      if (Array.isArray(game.answerOrder)) game.answerOrder = game.answerOrder.filter(sid => sid !== socket.id);
+      if (game.snake && game.snake.snakes && game.snake.snakes.has(socket.id)) {
+        game.snake.snakes.delete(socket.id);
+      }
+      if (game.bomb && game.bomb.players && game.bomb.players.has(socket.id)) {
+        game.bomb.players.delete(socket.id);
+        game.bomb.bombs = game.bomb.bombs.filter(bb => bb.ownerId !== socket.id);
+      }
+      // Rydde rate-bucket
+      for (const key of rateBuckets.keys()) {
+        if (key.startsWith(socket.id + ':')) rateBuckets.delete(key);
+      }
       broadcast();
-    }
+    } catch (e) { console.error('[disconnect cleanup]', e); }
     if (socket.id === game.hostId) {
       game.hostId = null;
-      // Auto-reset til lobby når vert lukker
       resetToLobby();
     }
   });

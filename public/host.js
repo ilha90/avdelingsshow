@@ -254,6 +254,7 @@ function triggerPhaseEffects(prev, s) {
 }
 
 function render() {
+  try {
   if (!state) return;
   phaseTag.textContent = PHASE_LABELS[state.phase] || state.phase;
   if (timerRAF) { cancelAnimationFrame(timerRAF); timerRAF = null; }
@@ -278,6 +279,7 @@ function render() {
     case 'end': renderEnd(); break;
   }
   renderControls();
+  } catch (e) { console.error('[host render error]', e); }
 }
 
 // ============ COUNTDOWN ============
