@@ -596,8 +596,9 @@ body::before {
 .snake-top .snake-title { font-size: 22px; font-weight: 700; }
 .snake-top .snake-info { color: var(--ink-2); font-size: 14px; }
 .snake-arena { display: grid; grid-template-columns: 1fr 320px; gap: 20px; flex: 1; min-height: 0; }
-.snake-canvas-wrap { position: relative; background: #0b0d1a; border: 2px solid var(--card-b); border-radius: 14px; overflow: hidden; }
-.snake-canvas-wrap canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 240px); image-rendering: crisp-edges; }
+.snake-canvas-wrap { position: relative; background: #0b0d1a; border: 2px solid var(--card-b); border-radius: 14px; overflow: hidden;
+  aspect-ratio: 5 / 3; max-height: calc(100vh - 240px); max-width: 100%; }
+.snake-canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; image-rendering: auto; }
 .snake-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(11,13,26,0.7); backdrop-filter: blur(4px); }
 .snake-countdown { font-size: 240px; font-weight: 900; line-height: 1;
   background: linear-gradient(135deg, var(--gold), var(--gold-2), #fff);
