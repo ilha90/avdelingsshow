@@ -712,14 +712,17 @@ function snakeRespawn(sid, snake) {
 function startSnake() {
   if (!game.players.size) return;
   snakeCleanTimers();
-  const duration = Math.max(15000, Math.min(300000, game.snakeDuration || SNAKE_DURATION_DEFAULT));
+  const rawDur = game.snakeDuration;
+  const isInfinite = rawDur === 0;
+  const duration = isInfinite ? 0 : Math.max(15000, Math.min(300000, rawDur || SNAKE_DURATION_DEFAULT));
   game.phase = 'snake';
   game.mode = 'snake';
   game.snake = {
     snakes: new Map(),
     food: [],
     startedAt: Date.now() + 3000, // 3s countdown
-    endAt: Date.now() + 3000 + duration,
+    endAt: isInfinite ? Number.MAX_SAFE_INTEGER : Date.now() + 3000 + duration,
+    isInfinite,
     started: false,
   };
   let colorIdx = 0;
@@ -742,7 +745,7 @@ function startSnake() {
     game.snake.started = true;
     game.snakeTickInterval = setInterval(snakeTick, SNAKE_TICK);
   }, 3000);
-  game.snakeEndTimer = setTimeout(() => endSnake(), 3000 + duration);
+  game.snakeEndTimer = isInfinite ? null : setTimeout(() => endSnake(), 3000 + duration);
 }
 
 const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
@@ -844,7 +847,8 @@ function snakeSnapshot() {
     started: game.snake.started,
     startedAt: game.snake.startedAt,
     endAt: game.snake.endAt,
-    timeLeft: Math.max(0, game.snake.endAt - now),
+    isInfinite: game.snake.isInfinite || false,
+    timeLeft: game.snake.isInfinite ? null : Math.max(0, game.snake.endAt - now),
     countdownLeft: Math.max(0, game.snake.startedAt - now),
     snakes: [...game.snake.snakes.entries()].map(([sid, s]) => ({
       id: sid, name: s.name, emoji: s.emoji, color: s.color,
@@ -964,7 +968,9 @@ function bombRespawnPlayer(sid, player) {
 function startBomberman() {
   if (!game.players.size) return;
   bombCleanTimers();
-  const duration = Math.max(15000, Math.min(300000, game.bombDuration || BOMB_DURATION_DEFAULT));
+  const rawDur = game.bombDuration;
+  const isInfinite = rawDur === 0;
+  const duration = isInfinite ? 0 : Math.max(15000, Math.min(300000, rawDur || BOMB_DURATION_DEFAULT));
   game.phase = 'bomb';
   game.mode = 'bomb';
   const map = bombGenerateMap();
@@ -977,7 +983,8 @@ function startBomberman() {
     explosions: [],
     powerups: [],
     startedAt: Date.now() + 3000,
-    endAt: Date.now() + 3000 + duration,
+    endAt: isInfinite ? Number.MAX_SAFE_INTEGER : Date.now() + 3000 + duration,
+    isInfinite,
     started: false,
     bombCounter: 0,
     wallsVersion: 1,
@@ -1003,7 +1010,7 @@ function startBomberman() {
     game.bomb.started = true;
     game.bombTickInterval = setInterval(bombermanTick, BOMB_TICK);
   }, 3000);
-  game.bombEndTimer = setTimeout(() => endBomberman(), 3000 + duration);
+  game.bombEndTimer = isInfinite ? null : setTimeout(() => endBomberman(), 3000 + duration);
 }
 
 function bombermanTick() {
@@ -1071,9 +1078,9 @@ function bombermanTickInner() {
   // Broadcast snapshot (walls komprimeres av perMessageDeflate)
   io.volatile.emit('bomb:tick', bombSnapshot(true));
 
-  // End hvis bare 1 player alive og >1 spillere totalt, eller tid er ute
+  // End hvis bare 1 player alive og >1 spillere totalt (ikke i uendelig modus — spillere respawner)
   const alive = [...b.players.values()].filter(p => p.alive);
-  if (alive.length <= 1 && b.players.size > 1 && now < b.endAt - 5000) {
+  if (!b.isInfinite && alive.length <= 1 && b.players.size > 1 && now < b.endAt - 5000) {
     // Gi bonus hvis det er en lone survivor, end etter 3 sek
     setTimeout(() => { if (game.phase === 'bomb') endBomberman(); }, 1500);
     b.endAt = now + 1500; // forkort
@@ -1160,7 +1167,8 @@ function bombSnapshot(includeWalls = false) {
     started: b.started,
     startedAt: b.startedAt,
     endAt: b.endAt,
-    timeLeft: Math.max(0, b.endAt - now),
+    isInfinite: b.isInfinite || false,
+    timeLeft: b.isInfinite ? null : Math.max(0, b.endAt - now),
     countdownLeft: Math.max(0, b.startedAt - now),
     players: [...b.players.values()].map(p => ({
       id: p.id, name: p.name, emoji: p.emoji, color: p.color,
@@ -1343,8 +1351,8 @@ io.on('connection', (socket) => {
     if (typeof cfg.timeLimit === 'number') { game.timeLimit = Math.max(5000, Math.min(60000, cfg.timeLimit)); game.configTimeLimit = game.timeLimit; }
     if (typeof cfg.questionCount === 'number') game.questionCount = Math.max(3, Math.min(25, cfg.questionCount));
     if (typeof cfg.leaderboardEvery === 'number') game.leaderboardEvery = Math.max(0, Math.min(20, cfg.leaderboardEvery));
-    if (typeof cfg.snakeDuration === 'number') game.snakeDuration = Math.max(15000, Math.min(300000, cfg.snakeDuration));
-    if (typeof cfg.bombDuration === 'number') game.bombDuration = Math.max(15000, Math.min(300000, cfg.bombDuration));
+    if (typeof cfg.snakeDuration === 'number') game.snakeDuration = cfg.snakeDuration === 0 ? 0 : Math.max(15000, Math.min(300000, cfg.snakeDuration));
+    if (typeof cfg.bombDuration === 'number') game.bombDuration = cfg.bombDuration === 0 ? 0 : Math.max(15000, Math.min(300000, cfg.bombDuration));
     if (typeof cfg.scatterDuration === 'number') game.scatterDuration = Math.max(15000, Math.min(300000, cfg.scatterDuration));
     if (typeof cfg.lieVoteDuration === 'number') game.lieVoteDuration = Math.max(10000, Math.min(120000, cfg.lieVoteDuration));
     if (typeof cfg.lightningDuration === 'number') game.lightningDuration = Math.max(2000, Math.min(30000, cfg.lightningDuration));

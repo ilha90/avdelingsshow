@@ -911,7 +911,7 @@ function renderSnake() {
   main.innerHTML = `
     <div class="snake-screen">
       <div class="snake-top">
-        <div class="snake-time" id="snakeTime">⏱ ${Math.ceil((snakeSnap?.timeLeft || 60000) / 1000)}s</div>
+        <div class="snake-time" id="snakeTime">⏱ ${(snakeSnap?.isInfinite || state.snakeDuration === 0) ? '∞' : Math.ceil((snakeSnap?.timeLeft || 60000) / 1000) + 's'}</div>
         <div class="snake-title">🐍 Slange-kamp</div>
         <div class="snake-info">Spis, og unngå kollisjoner!</div>
       </div>
@@ -1014,7 +1014,7 @@ function snakeAnimateTimer() {
   const cdEl = document.getElementById('snakeCd');
   function tick() {
     if (!snakeSnap || state?.phase !== 'snake') return;
-    if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(snakeSnap.timeLeft / 1000))}s`;
+    if (el) el.textContent = `⏱ ${snakeSnap.isInfinite ? '∞' : Math.max(0, Math.ceil(snakeSnap.timeLeft / 1000)) + 's'}`;
     if (cdEl && !snakeSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(snakeSnap.countdownLeft / 1000)));
     snakeTimerRAF = requestAnimationFrame(tick);
   }
@@ -1055,7 +1055,7 @@ function renderBomb() {
   main.innerHTML = `
     <div class="snake-screen">
       <div class="snake-top">
-        <div class="snake-time" id="bombTime">⏱ ${Math.ceil((bombSnap?.timeLeft || 90000) / 1000)}s</div>
+        <div class="snake-time" id="bombTime">⏱ ${(bombSnap?.isInfinite || state.bombDuration === 0) ? '∞' : Math.ceil((bombSnap?.timeLeft || 90000) / 1000) + 's'}</div>
         <div class="snake-title">💣 Bomberman</div>
         <div class="snake-info">Spreng veggene, knus motstanderen</div>
       </div>
@@ -1340,7 +1340,7 @@ function bombAnimateTimer() {
     if (!bombSnap || state?.phase !== 'bomb') return;
     const el = document.getElementById('bombTime');
     const cdEl = document.getElementById('bombCd');
-    if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(bombSnap.timeLeft / 1000))}s`;
+    if (el) el.textContent = `⏱ ${bombSnap.isInfinite ? '∞' : Math.max(0, Math.ceil(bombSnap.timeLeft / 1000)) + 's'}`;
     if (cdEl && !bombSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(bombSnap.countdownLeft / 1000)));
     // Re-draw for smooth animation av eksplosjoner/pulser
     drawBomb();
@@ -1549,32 +1549,33 @@ window.pickGame = (ev, arg) => {
 
 // Varighets-cycling på menu-cards
 const DUR_OPTS = {
-  snake:    { key: 'snakeDuration',     opts: [30000, 45000, 60000, 90000, 120000, 180000, 240000] },
-  bomb:     { key: 'bombDuration',      opts: [30000, 60000, 90000, 120000, 180000, 240000, 300000] },
+  snake:    { key: 'snakeDuration',     opts: [30000, 45000, 60000, 90000, 120000, 180000, 240000, 0] },
+  bomb:     { key: 'bombDuration',      opts: [30000, 60000, 90000, 120000, 180000, 240000, 300000, 0] },
   scatter:  { key: 'scatterDuration',   opts: [30000, 45000, 60000, 90000, 120000, 180000] },
   lie:      { key: 'lieVoteDuration',   opts: [15000, 20000, 30000, 45000, 60000, 90000] },
   lightning:{ key: 'lightningDuration', opts: [3000, 5000, 7000, 10000, 15000] },
 };
+function fmtDur(ms) { return ms === 0 ? '∞' : (ms / 1000) + 's'; }
 window.cycleDur = (ev, game) => {
   ev.stopPropagation();
   const cfg = DUR_OPTS[game];
   if (!cfg) return;
-  const cur = state[cfg.key] || cfg.opts[0];
+  const cur = state[cfg.key] || 0;
   const idx = cfg.opts.indexOf(cur);
   const next = cfg.opts[(idx + 1) % cfg.opts.length];
   socket.emit('host:config', { [cfg.key]: next });
   // Oppdater alle synlige chips for dette spillet optimistisk
   document.querySelectorAll('.dur-chip[data-dur="' + game + '"]').forEach(el => {
-    el.textContent = '⏱ ' + (next / 1000) + 's';
+    el.textContent = '⏱ ' + fmtDur(next);
   });
   // Oppdater lightning-section-header også
   if (game === 'lightning') {
     const hdr = document.querySelector('.lightning-head-dur');
-    if (hdr) hdr.textContent = (next / 1000) + ' sek';
+    if (hdr) hdr.textContent = fmtDur(next);
   }
 };
 function durChip(game, cur) {
-  return `<span class="dur-chip" data-dur="${game}" onclick="cycleDur(event, '${game}')" title="Klikk for å endre varighet">⏱ ${cur / 1000}s</span>`;
+  return `<span class="dur-chip" data-dur="${game}" onclick="cycleDur(event, '${game}')" title="Klikk for å endre varighet">⏱ ${fmtDur(cur)}</span>`;
 }
 
 // ============ KEYBOARD SHORTCUTS ============
