@@ -1,6 +1,13 @@
 // player.js — spiller-siden (mobil/laptop)
 import { avatarFor } from '/avatars.js';
-const socket = io({ reconnection: true, reconnectionDelay: 500, reconnectionDelayMax: 3000 });
+const socket = io({
+  transports: ['websocket', 'polling'],
+  upgrade: true,
+  rememberUpgrade: true,
+  reconnection: true,
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 3000,
+});
 const screen = document.getElementById('screen');
 let me = null;
 let chosenEmoji = null;  // valgt avatar ved login
@@ -52,7 +59,10 @@ socket.on('snake:tick', s => {
 
 // ===== Bomberman tick =====
 let bombSnap = null;
+let bombWallsCache = null;
 socket.on('bomb:tick', s => {
+  if (s.walls) bombWallsCache = s.walls;
+  else if (bombWallsCache) s.walls = bombWallsCache;
   bombSnap = s;
   if (state?.phase === 'bomb') updateBombPlayer();
 });
@@ -295,6 +305,12 @@ function renderSnakePlayer() {
 function sendSnakeDir(dir) {
   socket.emit('player:snake-dir', dir);
   buzz(10);
+  // Umiddelbar visuell feedback: highlight knappen
+  const pad = document.getElementById('snakePad');
+  if (pad) {
+    pad.querySelectorAll('.pad-btn').forEach(b => b.classList.remove('active-dir'));
+    pad.querySelector(`[data-dir="${dir}"]`)?.classList.add('active-dir');
+  }
 }
 
 function updateSnakePlayer() {
@@ -450,6 +466,11 @@ function renderBombPlayer() {
 function sendBombMove(dir) {
   socket.emit('player:bomb-move', dir);
   if (dir && dir !== 'stop') buzz(10);
+  const pad = document.getElementById('bombPad');
+  if (pad) {
+    pad.querySelectorAll('.pad-btn[data-dir]').forEach(b => b.classList.remove('active-dir'));
+    if (dir && dir !== 'stop') pad.querySelector(`[data-dir="${dir}"]`)?.classList.add('active-dir');
+  }
 }
 
 function updateBombPlayer() {

@@ -11,7 +11,14 @@ import { QUIZ_CATEGORIES, MOST_LIKELY, SCATTERGORIES, ICEBREAKERS, TEAM_NAMES } 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const http = createServer(app);
-const io = new Server(http);
+const io = new Server(http, {
+  // Komprimer payloads over 1 KB
+  perMessageDeflate: { threshold: 1024 },
+  // Hurtigere upgrade til WebSocket
+  transports: ['websocket', 'polling'],
+  pingInterval: 10000,
+  pingTimeout: 20000,
+});
 
 // Utled offentlig URL (fungerer lokalt + Render/Railway/Fly)
 function publicUrl(req) {
@@ -584,7 +591,7 @@ function snakeTick() {
       s.body.pop();
     }
   }
-  io.emit('snake:tick', snakeSnapshot());
+  io.volatile.emit('snake:tick', snakeSnapshot());
 }
 
 function snakeSnapshot() {
@@ -717,13 +724,15 @@ function startBomberman() {
   game.bomb = {
     map,
     players: new Map(),
-    bombs: [],         // {id, x, y, ownerId, explodesAt, range}
-    explosions: [],    // {x, y, endsAt, ownerId}
-    powerups: [],      // {x, y, type: 'bomb'|'range'}
+    bombs: [],
+    explosions: [],
+    powerups: [],
     startedAt: Date.now() + 3000,
     endAt: Date.now() + 3000 + BOMB_DURATION,
     started: false,
     bombCounter: 0,
+    wallsVersion: 1,
+    wallsLastSent: 0,
   };
   let colorIdx = 0;
   let posIdx = 0;
@@ -799,8 +808,8 @@ function bombermanTick() {
     if (explCells.has(p.x + ',' + p.y)) killPlayer(p, null);
   }
 
-  // Broadcast snapshot
-  io.emit('bomb:tick', bombSnapshot());
+  // Broadcast snapshot (walls komprimeres av perMessageDeflate)
+  io.volatile.emit('bomb:tick', bombSnapshot(true));
 
   // End hvis bare 1 player alive og >1 spillere totalt, eller tid er ute
   const alive = [...b.players.values()].filter(p => p.alive);
@@ -831,6 +840,7 @@ function detonateBomb(bomb) {
       addExplosion(nx, ny, bomb.ownerId);
       if (cell === 2) {
         grid[idx(nx, ny)] = 0;
+        b.wallsVersion = (b.wallsVersion || 0) + 1;
         // 40% sjanse for powerup
         if (Math.random() < 0.4) {
           const type = Math.random() < 0.5 ? 'bomb' : 'range';
@@ -869,13 +879,14 @@ function killPlayer(p, byOwnerId) {
   }
 }
 
-function bombSnapshot() {
+function bombSnapshot(includeWalls = false) {
   if (!game.bomb) return null;
   const b = game.bomb;
   const now = Date.now();
   return {
     grid: BOMB_GRID,
-    walls: b.map.grid,
+    walls: includeWalls ? b.map.grid : undefined,
+    wallsVersion: b.wallsVersion || 0,
     started: b.started,
     startedAt: b.startedAt,
     endAt: b.endAt,

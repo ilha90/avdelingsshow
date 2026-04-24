@@ -609,6 +609,7 @@ body::before {
   border: 2px solid var(--card-b); color: var(--ink); cursor: pointer;
   -webkit-tap-highlight-color: transparent; transition: transform .1s, background .1s; }
 .pad-btn:active { transform: scale(.92); background: rgba(212,175,55,.3); border-color: var(--gold); }
+.pad-btn.active-dir { background: rgba(212,175,55,.28); border-color: var(--gold); box-shadow: 0 0 16px rgba(212,175,55,.5); }
 .snake-hint { color: var(--ink-2); font-size: 13px; text-align: center; margin-top: 20px; }
 
 @media (max-width: 900px) {

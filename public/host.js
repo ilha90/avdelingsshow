@@ -2,7 +2,7 @@
 import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } from '/ai.js';
 import { avatarFor, colorFor } from '/avatars.js';
 import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest } from '/tts.js';
-const socket = io();
+const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
 const main = document.getElementById('main');
 const controls = document.getElementById('controls');
 const phaseTag = document.getElementById('phaseTag');
@@ -797,9 +797,12 @@ function renderSnakeEnd() {
 
 // ============ BOMBERMAN ============
 let bombSnap = null;
+let bombWallsCache = null;
 let bombTimerRAF = null;
 
 socket.on('bomb:tick', s => {
+  if (s.walls) bombWallsCache = s.walls;
+  else if (bombWallsCache) s.walls = bombWallsCache;
   bombSnap = s;
   if (state?.phase === 'bomb') drawBomb();
 });
