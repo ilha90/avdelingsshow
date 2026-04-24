@@ -1,7 +1,7 @@
 // host.js — vert-siden (storskjerm)
 import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } from '/ai.js';
 import { avatarFor, colorFor } from '/avatars.js';
-import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest, listVoices as ttsVoices, getVoiceURI as ttsGetVoice, setVoice as ttsSetVoice, getCurrentVoice as ttsCur, hasSupport as ttsSupport } from '/tts.js';
+import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest, listVoices as ttsVoices, getVoiceURI as ttsGetVoice, setVoice as ttsSetVoice, getCurrentVoice as ttsCur, hasSupport as ttsSupport, onState as ttsOnState } from '/tts.js';
 const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
 
 // ==== Passord på host ====
@@ -121,6 +121,12 @@ const ttsBtn = document.getElementById('ttsBtn');
 const ttsMenu = document.getElementById('ttsMenu');
 function refreshTtsBtn() { ttsBtn.textContent = ttsOn() ? '🎙️' : '🔈'; ttsBtn.style.opacity = ttsOn() ? '1' : '.55'; }
 refreshTtsBtn();
+
+// Visuell indikator når TTS snakker
+ttsOnState(s => {
+  if (s === 'speaking') ttsBtn.classList.add('tts-speaking');
+  else ttsBtn.classList.remove('tts-speaking');
+});
 function renderTtsMenu() {
   const cur = ttsPreset();
   const voices = ttsVoices();

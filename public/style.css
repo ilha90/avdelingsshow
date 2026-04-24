@@ -660,6 +660,8 @@ body::before {
 .self-panel-bar button:hover { background: rgba(229,75,75,.2); border-color: var(--red); color: var(--red); }
 .self-panel iframe { flex: 1; border: 0; background: var(--bg-1); }
 .icon-btn.active { background: rgba(212,175,55,.25); border: 1px solid var(--gold); }
+.icon-btn.tts-speaking { animation: ttsSpeakPulse .6s ease-in-out infinite; background: rgba(0,200,150,.3); }
+@keyframes ttsSpeakPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(0,200,150,.6); } 50% { box-shadow: 0 0 0 8px rgba(0,200,150,0); } }
 
 /* Flytt host-hovedinnholdet litt til venstre når panelet er åpent, så vi ser alt */
 body.self-panel-open .host-main,
