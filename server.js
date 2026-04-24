@@ -72,6 +72,10 @@ const game = {
   // Icebreaker specific
   icebreakerPrompt: null,
   icebreakerTarget: null,
+  // Snake specific
+  snake: null,
+  snakeTickInterval: null,
+  snakeEndTimer: null,
   // Config
   questionCount: 10,
 };
@@ -249,6 +253,8 @@ function shuffle(arr) {
 }
 
 function resetToLobby() {
+  snakeCleanTimers();
+  game.snake = null;
   game.phase = 'lobby';
   game.mode = null;
   game.category = null;
@@ -408,6 +414,201 @@ function drawIcebreaker() {
   game.mode = 'icebreaker';
   game.icebreakerPrompt = ICEBREAKERS[Math.floor(Math.random() * ICEBREAKERS.length)];
   game.icebreakerTarget = players[Math.floor(Math.random() * players.length)].name;
+  broadcast();
+}
+
+// ---- Snake game ----
+const SNAKE_GRID = { w: 40, h: 25 };
+const SNAKE_DURATION = 60000;
+const SNAKE_TICK = 140;
+const SNAKE_COLORS = ['#e54b4b','#3a86ff','#ffbe0b','#29c46a','#a855f7','#ff7b00','#14b8a6','#ec4899','#f59e0b','#06b6d4'];
+
+function snakeCleanTimers() {
+  if (game.snakeTickInterval) { clearInterval(game.snakeTickInterval); game.snakeTickInterval = null; }
+  if (game.snakeEndTimer) { clearTimeout(game.snakeEndTimer); game.snakeEndTimer = null; }
+}
+
+function snakeSpawnFood() {
+  if (!game.snake) return;
+  const occupied = new Set();
+  for (const s of game.snake.snakes.values()) {
+    if (!s.alive) continue;
+    s.body.forEach(seg => occupied.add(seg.x + ',' + seg.y));
+  }
+  for (const f of game.snake.food) occupied.add(f.x + ',' + f.y);
+  for (let tries = 0; tries < 50; tries++) {
+    const x = Math.floor(Math.random() * SNAKE_GRID.w);
+    const y = Math.floor(Math.random() * SNAKE_GRID.h);
+    if (!occupied.has(x + ',' + y)) { game.snake.food.push({ x, y }); return; }
+  }
+}
+
+function snakeRespawn(sid, snake) {
+  // Finn tom plass
+  const occupied = new Set();
+  for (const s of game.snake.snakes.values()) {
+    if (!s.alive) continue;
+    s.body.forEach(seg => occupied.add(seg.x + ',' + seg.y));
+  }
+  for (let tries = 0; tries < 200; tries++) {
+    const x = 5 + Math.floor(Math.random() * (SNAKE_GRID.w - 10));
+    const y = 3 + Math.floor(Math.random() * (SNAKE_GRID.h - 6));
+    let ok = true;
+    for (let d = 0; d < 3; d++) if (occupied.has((x-d) + ',' + y)) { ok = false; break; }
+    if (!ok) continue;
+    snake.body = [{x, y}, {x: x-1, y}, {x: x-2, y}];
+    snake.dir = 'right'; snake.nextDir = 'right';
+    snake.alive = true; snake.deadAt = 0;
+    return;
+  }
+}
+
+function startSnake() {
+  if (!game.players.size) return;
+  snakeCleanTimers();
+  game.phase = 'snake';
+  game.mode = 'snake';
+  game.snake = {
+    snakes: new Map(),
+    food: [],
+    startedAt: Date.now() + 3000, // 3s countdown
+    endAt: Date.now() + 3000 + SNAKE_DURATION,
+    started: false,
+  };
+  let colorIdx = 0;
+  for (const [sid, p] of game.players) {
+    const snake = {
+      name: p.name, emoji: p.emoji,
+      color: SNAKE_COLORS[colorIdx++ % SNAKE_COLORS.length],
+      body: [], dir: 'right', nextDir: 'right',
+      alive: false, deadAt: 0, score: 0,
+    };
+    snakeRespawn(sid, snake);
+    game.snake.snakes.set(sid, snake);
+  }
+  // 5 food items to start
+  for (let i = 0; i < 5; i++) snakeSpawnFood();
+  broadcast();
+  // After countdown, start tick-loop
+  setTimeout(() => {
+    if (game.phase !== 'snake' || !game.snake) return;
+    game.snake.started = true;
+    game.snakeTickInterval = setInterval(snakeTick, SNAKE_TICK);
+  }, 3000);
+  game.snakeEndTimer = setTimeout(() => endSnake(), 3000 + SNAKE_DURATION);
+}
+
+const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
+function snakeTick() {
+  const sd = game.snake;
+  if (!sd || !sd.started) return;
+  const now = Date.now();
+  // Handle respawns after 3s
+  for (const [sid, s] of sd.snakes) {
+    if (!s.alive && s.deadAt && now - s.deadAt > 3000 && now < sd.endAt - 2000) {
+      snakeRespawn(sid, s);
+    }
+  }
+  // Build collision map of all live snake cells
+  const cells = new Map();
+  for (const [sid, s] of sd.snakes) {
+    if (!s.alive) continue;
+    s.body.forEach(seg => cells.set(seg.x + ',' + seg.y, sid));
+  }
+  const newHeads = new Map();
+  for (const [sid, s] of sd.snakes) {
+    if (!s.alive) continue;
+    // Ignore opposite-direction requests
+    if (s.nextDir && s.nextDir !== OPPOSITE[s.dir]) s.dir = s.nextDir;
+    const head = s.body[0];
+    const next = { x: head.x, y: head.y };
+    if (s.dir === 'up') next.y--;
+    else if (s.dir === 'down') next.y++;
+    else if (s.dir === 'left') next.x--;
+    else if (s.dir === 'right') next.x++;
+    newHeads.set(sid, next);
+  }
+  // Check collisions & move
+  const dyingNow = new Set();
+  for (const [sid, next] of newHeads) {
+    const s = sd.snakes.get(sid);
+    if (next.x < 0 || next.x >= SNAKE_GRID.w || next.y < 0 || next.y >= SNAKE_GRID.h) {
+      dyingNow.add(sid); continue;
+    }
+    // Check if someone elses head targets same cell (head-to-head collision: both die)
+    for (const [osid, onext] of newHeads) {
+      if (osid !== sid && onext.x === next.x && onext.y === next.y) {
+        dyingNow.add(sid); dyingNow.add(osid);
+      }
+    }
+    if (dyingNow.has(sid)) continue;
+    // Check bodies
+    if (cells.has(next.x + ',' + next.y)) {
+      const ownerSid = cells.get(next.x + ',' + next.y);
+      if (ownerSid === sid) {
+        // Check if it's own tail (tail will move unless eating)
+        const owner = sd.snakes.get(sid);
+        const tail = owner.body[owner.body.length - 1];
+        const tailIsMoving = !sd.food.some(f => f.x === next.x && f.y === next.y);
+        if (!(next.x === tail.x && next.y === tail.y && tailIsMoving)) {
+          dyingNow.add(sid);
+        }
+      } else {
+        dyingNow.add(sid);
+      }
+    }
+  }
+  for (const sid of dyingNow) {
+    const s = sd.snakes.get(sid);
+    s.alive = false; s.deadAt = now;
+  }
+  // Move surviving snakes
+  for (const [sid, next] of newHeads) {
+    const s = sd.snakes.get(sid);
+    if (!s.alive || dyingNow.has(sid)) continue;
+    s.body.unshift(next);
+    const foodIdx = sd.food.findIndex(f => f.x === next.x && f.y === next.y);
+    if (foodIdx >= 0) {
+      sd.food.splice(foodIdx, 1);
+      s.score += 10;
+      snakeSpawnFood();
+      // Randomly spawn extra food for more fun with many players
+      if (sd.food.length < Math.max(5, sd.snakes.size * 2) && Math.random() < 0.3) snakeSpawnFood();
+    } else {
+      s.body.pop();
+    }
+  }
+  io.emit('snake:tick', snakeSnapshot());
+}
+
+function snakeSnapshot() {
+  if (!game.snake) return null;
+  const now = Date.now();
+  return {
+    grid: SNAKE_GRID,
+    started: game.snake.started,
+    startedAt: game.snake.startedAt,
+    endAt: game.snake.endAt,
+    timeLeft: Math.max(0, game.snake.endAt - now),
+    countdownLeft: Math.max(0, game.snake.startedAt - now),
+    snakes: [...game.snake.snakes.entries()].map(([sid, s]) => ({
+      id: sid, name: s.name, emoji: s.emoji, color: s.color,
+      body: s.body, alive: s.alive, score: s.score,
+      respawnIn: !s.alive && s.deadAt ? Math.max(0, 3000 - (now - s.deadAt)) : 0,
+    })),
+    food: game.snake.food,
+  };
+}
+
+function endSnake() {
+  snakeCleanTimers();
+  if (!game.snake) return;
+  // Award main-game points
+  for (const [sid, s] of game.snake.snakes) {
+    const p = game.players.get(sid);
+    if (p) p.score += s.score;
+  }
+  game.phase = 'snake-end';
   broadcast();
 }
 
@@ -592,6 +793,26 @@ io.on('connection', (socket) => {
   socket.on('host:icebreaker', () => {
     if (!isHost() || !game.players.size) return;
     drawIcebreaker();
+  });
+
+  socket.on('host:start-snake', () => {
+    if (!isHost() || !game.players.size) return;
+    startSnake();
+  });
+
+  socket.on('host:end-snake', () => {
+    if (!isHost()) return;
+    if (game.phase === 'snake') endSnake();
+  });
+
+  socket.on('player:snake-dir', (dir) => {
+    if (game.phase !== 'snake' || !game.snake) return;
+    const s = game.snake.snakes.get(socket.id);
+    if (!s || !s.alive) return;
+    if (!['up','down','left','right'].includes(dir)) return;
+    // Ignore if opposite of current dir
+    if (OPPOSITE[s.dir] === dir) return;
+    s.nextDir = dir;
   });
 
   socket.on('host:wheel', () => {

@@ -43,6 +43,13 @@ socket.on('connect', () => {
 socket.on('disconnect', () => { connected = false; updateConnBadge(); });
 socket.on('reconnect_attempt', () => { connected = false; updateConnBadge(); });
 
+// ===== Snake tick =====
+let snakeSnap = null;
+socket.on('snake:tick', s => {
+  snakeSnap = s;
+  if (state?.phase === 'snake') updateSnakePlayer();
+});
+
 // Render login-skjerm umiddelbart
 render();
 
@@ -126,6 +133,8 @@ function render() {
     case 'scatter-play': return renderScatterPlay();
     case 'scatter-review': return renderScatterReview();
     case 'icebreaker':   return renderIcebreaker();
+    case 'snake':        return renderSnakePlayer();
+    case 'snake-end':    return renderSnakeEndPlayer();
     case 'end':          return renderEnd();
   }
 }
@@ -206,6 +215,103 @@ function reactionBar() {
   return `<div class="reaction-bar">
     ${['🔥','❤️','😂','👏','💪','😱','🎉','🤯'].map(e => `<button class="react-btn" onclick="react('${e}')">${e}</button>`).join('')}
   </div>`;
+}
+
+// ============ SNAKE ============
+function mySnake() {
+  if (!snakeSnap) return null;
+  // Match by name (server key er socketId som vi ikke vet selv)
+  return snakeSnap.snakes.find(s => s.name === me);
+}
+
+function renderSnakePlayer() {
+  const my = mySnake();
+  const color = my?.color || '#d4af37';
+  screen.innerHTML = `${headerHtml()}
+    <div class="player-state snake-player">
+      <div class="snake-player-top">
+        <div class="snake-player-info" style="color:${color}">
+          ${my?.emoji || '🐍'} <b>${my ? my.score + ' p' : '0 p'}</b>
+          ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · dør ... respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
+          ${my && !my.alive && my.respawnIn === 0 ? `<span class="snake-dead"> · 🪦</span>` : ''}
+        </div>
+        ${snakeSnap && !snakeSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
+      </div>
+      <div class="snake-pad" id="snakePad">
+        <button class="pad-btn pad-up" data-dir="up">▲</button>
+        <div class="pad-row">
+          <button class="pad-btn pad-left" data-dir="left">◀</button>
+          <button class="pad-btn pad-right" data-dir="right">▶</button>
+        </div>
+        <button class="pad-btn pad-down" data-dir="down">▼</button>
+      </div>
+      <p class="snake-hint">Trykk eller sveip. Unngå vegger og andre slanger.</p>
+    </div>`;
+  // Wire up knappene + swipe
+  const pad = document.getElementById('snakePad');
+  pad.querySelectorAll('.pad-btn').forEach(b => {
+    b.addEventListener('click', () => sendSnakeDir(b.dataset.dir));
+  });
+  // Swipe-gestures på hele skjermen
+  let touchStart = null;
+  const screenEl = screen;
+  const onStart = e => {
+    const t = e.touches ? e.touches[0] : e;
+    touchStart = { x: t.clientX, y: t.clientY };
+  };
+  const onEnd = e => {
+    if (!touchStart) return;
+    const t = e.changedTouches ? e.changedTouches[0] : e;
+    const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+    const absX = Math.abs(dx), absY = Math.abs(dy);
+    if (Math.max(absX, absY) < 30) { touchStart = null; return; }
+    if (absX > absY) sendSnakeDir(dx > 0 ? 'right' : 'left');
+    else sendSnakeDir(dy > 0 ? 'down' : 'up');
+    touchStart = null;
+  };
+  screenEl.addEventListener('touchstart', onStart, { passive: true });
+  screenEl.addEventListener('touchend', onEnd, { passive: true });
+  // Keyboard (desktop)
+  window.onkeydown = (e) => {
+    if (state?.phase !== 'snake') return;
+    if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') sendSnakeDir('up');
+    else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') sendSnakeDir('down');
+    else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') sendSnakeDir('left');
+    else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') sendSnakeDir('right');
+  };
+}
+
+function sendSnakeDir(dir) {
+  socket.emit('player:snake-dir', dir);
+  buzz(10);
+}
+
+function updateSnakePlayer() {
+  // Oppdater bare relevante tall uten full re-render
+  const my = mySnake();
+  const info = screen.querySelector('.snake-player-info');
+  if (info && my) {
+    info.innerHTML = `
+      ${my.emoji || '🐍'} <b>${my.score} p</b>
+      ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 🪦 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
+      ${!my.alive && my.respawnIn === 0 ? `<span class="snake-dead"> · 🪦</span>` : ''}`;
+    info.style.color = my.color;
+  }
+}
+
+function renderSnakeEndPlayer() {
+  const my = mySnake();
+  const sorted = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
+  const rank = sorted.findIndex(s => s.name === me) + 1;
+  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '🐍';
+  screen.innerHTML = `${headerHtml()}
+    <div class="player-state">
+      <div style="font-size:64px; text-align:center">${medal}</div>
+      <h2 style="font-size:26px; text-align:center; margin:10px 0">Plass ${rank} av ${sorted.length}</h2>
+      <p style="color:var(--gold-2); font-size:22px; text-align:center">${my?.score || 0} poeng fra slangen</p>
+      <p style="color:var(--ink-2); text-align:center; margin-top:14px">Poengene ble lagt til hovedscoren din.</p>
+    </div>
+    ${reactionBar()}`;
 }
 
 // ============ LOBBY ============

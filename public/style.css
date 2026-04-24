@@ -571,3 +571,48 @@ body::before {
 @keyframes statIn { from { transform: translateY(30px) scale(.9); opacity: 0; } }
 
 .podium-avatar { font-size: 40px; margin: -10px 0 4px; line-height: 1; }
+
+/* ============ Snake — host ============ */
+.snake-screen { flex: 1; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.snake-top { display: flex; justify-content: space-between; align-items: center; padding: 0 10px; }
+.snake-top .snake-time { font-size: 26px; font-weight: 800; color: var(--gold-2); }
+.snake-top .snake-title { font-size: 22px; font-weight: 700; }
+.snake-top .snake-info { color: var(--ink-2); font-size: 14px; }
+.snake-arena { display: grid; grid-template-columns: 1fr 320px; gap: 20px; flex: 1; min-height: 0; }
+.snake-canvas-wrap { position: relative; background: #0b0d1a; border: 2px solid var(--card-b); border-radius: 14px; overflow: hidden; }
+.snake-canvas-wrap canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 240px); image-rendering: crisp-edges; }
+.snake-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(11,13,26,0.7); backdrop-filter: blur(4px); }
+.snake-countdown { font-size: 240px; font-weight: 900; line-height: 1;
+  background: linear-gradient(135deg, var(--gold), var(--gold-2), #fff);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: cdPulse 1s infinite; }
+.snake-scores { display: flex; flex-direction: column; gap: 8px; max-height: calc(100vh - 240px); overflow-y: auto; padding-right: 4px; }
+.snake-score-row { display: grid; grid-template-columns: 32px 1fr auto auto; gap: 10px; align-items: center;
+  padding: 10px 14px; background: var(--card); border-left: 4px solid; border-radius: 10px; font-size: 15px; }
+.snake-score-row.dead { opacity: .45; }
+.snake-score-rank { font-weight: 800; color: var(--gold-2); text-align: center; }
+.snake-score-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.snake-score-val { font-weight: 800; font-size: 18px; }
+.snake-score-resp { font-size: 12px; color: var(--ink-2); }
+
+/* ============ Snake — player ============ */
+.snake-player { display: flex; flex-direction: column; gap: 16px; align-items: center; user-select: none; }
+.snake-player-top { width: 100%; text-align: center; }
+.snake-player-info { font-size: 22px; font-weight: 700; padding: 14px 20px;
+  background: var(--card); border: 2px solid var(--card-b); border-radius: 14px; display: inline-block; }
+.snake-player-cd { color: var(--gold-2); font-size: 18px; margin-top: 10px; }
+.snake-dead { color: var(--red); font-size: 14px; font-weight: 500; }
+.snake-pad { display: grid; gap: 10px; justify-items: center; margin-top: 20px; width: 100%; max-width: 340px; }
+.snake-pad .pad-row { display: flex; gap: 80px; }
+.pad-btn { width: 90px; height: 90px; font-size: 36px; border: none; border-radius: 20px;
+  background: linear-gradient(180deg, var(--card), rgba(255,255,255,0.02));
+  border: 2px solid var(--card-b); color: var(--ink); cursor: pointer;
+  -webkit-tap-highlight-color: transparent; transition: transform .1s, background .1s; }
+.pad-btn:active { transform: scale(.92); background: rgba(212,175,55,.3); border-color: var(--gold); }
+.snake-hint { color: var(--ink-2); font-size: 13px; text-align: center; margin-top: 20px; }
+
+@media (max-width: 900px) {
+  .snake-arena { grid-template-columns: 1fr; }
+  .snake-scores { max-height: 180px; flex-direction: row; flex-wrap: wrap; overflow-x: auto; }
+  .snake-score-row { min-width: 240px; }
+}

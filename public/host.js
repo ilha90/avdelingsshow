@@ -22,7 +22,7 @@ const PHASE_LABELS = {
   leaderboard: 'Poengtavle', wheel: 'Lykkehjul',
   voting: 'Avstemning', 'vote-result': 'Avstemning – resultat',
   'scatter-play': 'Kategori-kamp', 'scatter-review': 'Gjennomgang',
-  icebreaker: 'Bli-kjent', end: 'Ferdig',
+  icebreaker: 'Bli-kjent', snake: 'Slange-kamp', 'snake-end': 'Slange – resultat', end: 'Ferdig',
 };
 
 socket.emit('host:hello');
@@ -175,6 +175,8 @@ function render() {
     case 'scatter-play': renderScatterPlay(); break;
     case 'scatter-review': renderScatterReview(); break;
     case 'icebreaker': renderIcebreaker(); break;
+    case 'snake': renderSnake(); break;
+    case 'snake-end': renderSnakeEnd(); break;
     case 'end': renderEnd(); break;
   }
   renderControls();
@@ -629,6 +631,147 @@ function renderIcebreaker() {
     </div>`;
 }
 
+// ============ SNAKE ============
+let snakeSnap = null;
+let snakeTimerRAF = null;
+
+socket.on('snake:tick', s => {
+  snakeSnap = s;
+  if (state?.phase === 'snake') drawSnake();
+});
+
+function renderSnake() {
+  const showCountdown = snakeSnap && !snakeSnap.started;
+  main.innerHTML = `
+    <div class="snake-screen">
+      <div class="snake-top">
+        <div class="snake-time" id="snakeTime">⏱ ${Math.ceil((snakeSnap?.timeLeft || 60000) / 1000)}s</div>
+        <div class="snake-title">🐍 Slange-kamp</div>
+        <div class="snake-info">Spis, og unngå kollisjoner!</div>
+      </div>
+      <div class="snake-arena">
+        <div class="snake-canvas-wrap">
+          <canvas id="snakeCanvas" width="1200" height="750"></canvas>
+          ${showCountdown ? `<div class="snake-overlay"><div id="snakeCd" class="snake-countdown">${Math.ceil((snakeSnap.countdownLeft || 3000) / 1000)}</div></div>` : ''}
+        </div>
+        <div class="snake-scores" id="snakeScores"></div>
+      </div>
+    </div>`;
+  drawSnake();
+  snakeAnimateTimer();
+}
+
+function drawSnake() {
+  const canvas = document.getElementById('snakeCanvas');
+  if (!canvas || !snakeSnap) return;
+  const ctx = canvas.getContext('2d');
+  const cell = canvas.width / snakeSnap.grid.w;
+
+  // Bakgrunn
+  ctx.fillStyle = '#0b0d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Rutenett
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= snakeSnap.grid.w; x++) {
+    ctx.beginPath(); ctx.moveTo(x * cell, 0); ctx.lineTo(x * cell, canvas.height); ctx.stroke();
+  }
+  for (let y = 0; y <= snakeSnap.grid.h; y++) {
+    ctx.beginPath(); ctx.moveTo(0, y * cell); ctx.lineTo(canvas.width, y * cell); ctx.stroke();
+  }
+
+  // Tegn mat (gylden pulse)
+  const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+  for (const f of snakeSnap.food) {
+    const cx = f.x * cell + cell/2;
+    const cy = f.y * cell + cell/2;
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.7);
+    grad.addColorStop(0, '#f5d77a');
+    grad.addColorStop(1, 'rgba(245,215,122,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.8 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#d4af37';
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.3 * pulse, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // Tegn snakes
+  for (const s of snakeSnap.snakes) {
+    if (!s.body.length) continue;
+    const alpha = s.alive ? 1 : 0.25;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = s.color;
+    // Body segments (med avrundet look)
+    for (let i = 1; i < s.body.length; i++) {
+      const seg = s.body[i];
+      const r = cell * 0.4;
+      ctx.beginPath();
+      ctx.roundRect(seg.x * cell + cell*0.1, seg.y * cell + cell*0.1, cell * 0.8, cell * 0.8, r);
+      ctx.fill();
+    }
+    // Head (større, med glow)
+    const head = s.body[0];
+    ctx.shadowColor = s.color;
+    ctx.shadowBlur = s.alive ? 14 : 0;
+    ctx.beginPath();
+    ctx.roundRect(head.x * cell + cell*0.05, head.y * cell + cell*0.05, cell * 0.9, cell * 0.9, cell * 0.3);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Emoji på hodet
+    if (s.emoji) {
+      ctx.globalAlpha = alpha;
+      ctx.font = `${cell * 0.75}px system-ui, -apple-system, sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(s.emoji, head.x * cell + cell/2, head.y * cell + cell/2 + 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+  // Oppdater score-panel
+  updateSnakeScores();
+}
+
+function updateSnakeScores() {
+  const el = document.getElementById('snakeScores');
+  if (!el || !snakeSnap) return;
+  const sorted = [...snakeSnap.snakes].sort((a, b) => b.score - a.score);
+  el.innerHTML = sorted.map((s, i) => `
+    <div class="snake-score-row ${s.alive ? '' : 'dead'}" style="border-color:${s.color}">
+      <div class="snake-score-rank">${i + 1}</div>
+      <div class="snake-score-name">${s.emoji || '🐍'} ${esc(s.name)}</div>
+      <div class="snake-score-val" style="color:${s.color}">${s.score}</div>
+      ${!s.alive && s.respawnIn > 0 ? `<div class="snake-score-resp">↺ ${Math.ceil(s.respawnIn/1000)}s</div>` : ''}
+    </div>`).join('');
+}
+
+function snakeAnimateTimer() {
+  if (snakeTimerRAF) cancelAnimationFrame(snakeTimerRAF);
+  const el = document.getElementById('snakeTime');
+  const cdEl = document.getElementById('snakeCd');
+  function tick() {
+    if (!snakeSnap || state?.phase !== 'snake') return;
+    if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(snakeSnap.timeLeft / 1000))}s`;
+    if (cdEl && !snakeSnap.started) cdEl.textContent = Math.max(1, Math.ceil(snakeSnap.countdownLeft / 1000));
+    snakeTimerRAF = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function renderSnakeEnd() {
+  const snakes = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
+  const top3 = snakes.slice(0, 3);
+  main.innerHTML = `
+    <div class="end-screen">
+      <h2>🐍 Slange-resultat 🐍</h2>
+      <div class="podium">
+        ${top3[1] ? `<div class="podium-col p2" style="border-color:${top3[1].color}"><div class="podium-medal">🥈</div><div class="podium-avatar">${top3[1].emoji || '🐍'}</div><div class="podium-name">${esc(top3[1].name)}</div><div class="podium-score">${top3[1].score} p</div></div>` : ''}
+        ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '🐍'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p</div></div>` : ''}
+        ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '🐍'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p</div></div>` : ''}
+      </div>
+      <p style="color: var(--ink-2); font-size: 16px; margin-top: 20px">Poeng er lagt til hovedscoren</p>
+    </div>`;
+  for (let i = 0; i < 3; i++) setTimeout(() => window.confetti?.burst(), i * 500);
+  window.sfx?.fanfare();
+}
+
 // ============ END ============
 function renderEnd() {
   const source = state.teamMode
@@ -712,6 +855,11 @@ function renderControls() {
   } else if (state.phase === 'wheel') {
     html = `<button class="btn btn-ghost" onclick="act('host:wheel')">🎡 Snurr igjen</button>
             <button class="btn btn-primary" onclick="act('host:reset')">← Lobby</button>`;
+  } else if (state.phase === 'snake') {
+    html = `<button class="btn btn-ghost" onclick="act('host:end-snake')">Avslutt runde</button>`;
+  } else if (state.phase === 'snake-end') {
+    html = `<button class="btn btn-primary" onclick="act('host:start-snake')">🐍 Ny runde</button>
+            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
   } else if (state.phase === 'end') {
     html = `<button class="btn btn-primary" onclick="act('host:reset')">← Ny runde</button>`;
   }
@@ -765,6 +913,7 @@ window.openGameMenu = () => {
           <button class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, fem kategorier</span></button>
           <button class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></button>
           <button class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle, 60 sek</span></button>
         </div>
       </div>
     </div>`;
