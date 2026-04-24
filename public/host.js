@@ -131,23 +131,33 @@ refreshTtsBtn();
 // Visuell indikator når TTS snakker (mascot + topbar-knapp)
 const mascotEl = document.getElementById('mascot');
 const mascotBubbleEl = document.getElementById('mascotBubble');
-let lastSpokenText = '';
+let mascotFadeTimer = null;
+function showMascotBubble(text) {
+  if (!mascotEl) return;
+  mascotEl.classList.add('speaking');
+  ttsBtn?.classList.add('tts-speaking');
+  if (mascotBubbleEl) {
+    mascotBubbleEl.textContent = text.length > 160 ? text.slice(0, 157) + '…' : text;
+    mascotBubbleEl.classList.add('visible');
+  }
+  if (mascotFadeTimer) clearTimeout(mascotFadeTimer);
+  // Fade ut etter estimert leselengde (~180ms per tegn, min 2s, max 8s)
+  const estMs = Math.max(2000, Math.min(8000, text.length * 70));
+  mascotFadeTimer = setTimeout(() => {
+    mascotEl.classList.remove('speaking');
+    ttsBtn?.classList.remove('tts-speaking');
+    mascotBubbleEl?.classList.remove('visible');
+  }, estMs);
+}
 function hostSpeak(text) {
-  lastSpokenText = text || '';
-  speak(text);
+  if (!text) return;
+  showMascotBubble(text);       // Vises uansett om TTS virker
+  speak(text);                  // Audio (kan feile stille)
 }
 ttsOnState(s => {
   if (s === 'speaking') {
-    ttsBtn.classList.add('tts-speaking');
+    ttsBtn?.classList.add('tts-speaking');
     mascotEl?.classList.add('speaking');
-    if (mascotBubbleEl && lastSpokenText) {
-      mascotBubbleEl.textContent = lastSpokenText.length > 160 ? lastSpokenText.slice(0, 157) + '…' : lastSpokenText;
-      mascotBubbleEl.classList.add('visible');
-    }
-  } else {
-    ttsBtn.classList.remove('tts-speaking');
-    mascotEl?.classList.remove('speaking');
-    mascotBubbleEl?.classList.remove('visible');
   }
 });
 function renderTtsMenu() {

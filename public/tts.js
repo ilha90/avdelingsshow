@@ -67,25 +67,44 @@ function processQueue() {
   u.rate = 1.0;
   u.pitch = 1.0;
   u.volume = 1;
-  u.onstart = () => { console.log('[TTS]', text.slice(0, 40)); notify('speaking'); };
-  u.onend = () => { processing = false; notify('idle'); processQueue(); };
-  u.onerror = (e) => {
+
+  // Safety timeout: hvis onstart/onend ikke fyrer innen rimelig tid, frigjør køen
+  let timeoutId = null;
+  const clearAndNext = () => {
+    if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
     processing = false;
     notify('idle');
-    const err = e?.error;
-    if (err && err !== 'canceled' && err !== 'interrupted') {
-      console.warn('[TTS] error:', err);
-    }
     processQueue();
   };
 
+  u.onstart = () => {
+    console.log('[TTS]', text.slice(0, 40));
+    notify('speaking');
+    // Sett ny timeout på forventet slutt (~200ms per tegn + padding)
+    if (timeoutId) clearTimeout(timeoutId);
+    const budget = Math.min(30000, text.length * 200 + 3000);
+    timeoutId = setTimeout(clearAndNext, budget);
+  };
+  u.onend = clearAndNext;
+  u.onerror = (e) => {
+    const err = e?.error;
+    if (err && err !== 'canceled' && err !== 'interrupted') console.warn('[TTS] error:', err);
+    clearAndNext();
+  };
+
   try {
-    SS.speak(u);
+    // Reset engine-state før speak (fjerner stuck utterances)
     if (SS.paused) SS.resume();
+    SS.speak(u);
+    // Fallback-timeout hvis onstart aldri fyrer (Chrome-bug)
+    timeoutId = setTimeout(() => {
+      console.warn('[TTS] onstart timeout — frigjør kø');
+      try { SS.cancel(); } catch {}
+      clearAndNext();
+    }, 3500);
   } catch (e) {
     console.warn('[TTS] speak failed:', e);
-    processing = false;
-    processQueue();
+    clearAndNext();
   }
 }
 
