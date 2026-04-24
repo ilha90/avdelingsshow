@@ -903,9 +903,19 @@ function renderLieReveal() {
 let snakeSnap = null;
 let snakeTimerRAF = null;
 
+let snakeNeedsInit = true;
+
 socket.on('snake:tick', s => {
   snakeSnap = s;
-  if (state?.phase === 'snake') drawSnake();
+  if (state?.phase !== 'snake') return;
+  if (snakeNeedsInit && s.grid) {
+    const canvas = document.getElementById('snakeCanvas');
+    if (canvas) {
+      snake3d.init(canvas, s.grid.w, s.grid.h);
+      snakeNeedsInit = false;
+    }
+  }
+  drawSnake();
 });
 
 function renderSnake() {
@@ -926,9 +936,11 @@ function renderSnake() {
       </div>
     </div>`;
   const canvas = document.getElementById('snakeCanvas');
+  snakeNeedsInit = true;
   if (canvas && snakeSnap?.grid) {
     snake3d.init(canvas, snakeSnap.grid.w, snakeSnap.grid.h);
     snake3d.update(snakeSnap);
+    snakeNeedsInit = false;
   }
   snakeAnimateTimer();
 }
@@ -991,25 +1003,33 @@ let bombSnap = null;
 let bombWallsCache = null;
 let bombTimerRAF = null;
 
+let bombNeedsInit = true;
+
 socket.on('bomb:tick', s => {
   if (s.walls) bombWallsCache = s.walls;
   else if (bombWallsCache) s.walls = bombWallsCache;
   const prev = bombSnap;
   bombSnap = s;
+  // Lazy init av 3D-scenen når første tick ankommer
+  if (bombNeedsInit && state?.phase === 'bomb' && s.grid) {
+    const canvas = document.getElementById('bombCanvas');
+    if (canvas) {
+      bomb3d.init(canvas, s.grid.w, s.grid.h);
+      bombNeedsInit = false;
+    }
+  }
   // Detekter døde spillere for kill-cam
   if (prev && prev.players && s.players) {
     for (const np of s.players) {
       const op = prev.players.find(x => x.id === np.id);
       if (op && op.alive && !np.alive) {
-        // Spiller X døde — trigger kill-cam på dødsstedet
         bomb3d.triggerKillCam(np.x, np.y, 2500);
         showKillBanner(np.name, np.emoji);
         window.sfx?.wrong?.();
-        break; // én kill-cam om gangen
+        break;
       }
     }
   }
-  // rendering skjer i bombAnimateTimer RAF-loop
 });
 
 function showKillBanner(name, emoji) {
@@ -1044,11 +1064,13 @@ function renderBomb() {
         <div class="snake-scores" id="bombScores"></div>
       </div>
     </div>`;
-  // Init Three.js-scenen
+  // Init Three.js-scenen (hvis bombSnap har grid) — ellers trigges init av bomb:tick-handleren
   const canvas = document.getElementById('bombCanvas');
+  bombNeedsInit = true;
   if (canvas && bombSnap?.grid) {
     bomb3d.init(canvas, bombSnap.grid.w, bombSnap.grid.h);
-    if (bombSnap) bomb3d.update(bombSnap);
+    bomb3d.update(bombSnap);
+    bombNeedsInit = false;
   }
   bombAnimateTimer();
 }

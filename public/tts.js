@@ -1,5 +1,6 @@
 // tts.js — Text-to-speech robust variant
-let enabled = JSON.parse(localStorage.getItem('tts-on') ?? 'false');
+// Default: PÅ — brukeren kan skru av via menyen.
+let enabled = JSON.parse(localStorage.getItem('tts-on') ?? 'true');
 let presetKey = localStorage.getItem('tts-preset') || 'normal';
 let voiceURI = localStorage.getItem('tts-voice') || '';
 let cachedVoice = null;

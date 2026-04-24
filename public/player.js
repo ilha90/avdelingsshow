@@ -61,11 +61,26 @@ socket.on('snake:tick', s => {
 // ===== Bomberman tick =====
 let bombSnap = null;
 let bombWallsCache = null;
+let playerBombNeedsInit = true;
 socket.on('bomb:tick', s => {
   if (s.walls) bombWallsCache = s.walls;
   else if (bombWallsCache) s.walls = bombWallsCache;
   bombSnap = s;
-  if (state?.phase === 'bomb') updateBombPlayer();
+  if (state?.phase !== 'bomb') return;
+  // Lazy init av 3D-scene når første tick med grid ankommer
+  if (playerBombNeedsInit && s.grid && me) {
+    const canvas = document.getElementById('playerBombCanvas');
+    if (canvas) {
+      const myId = s.players.find(p => p.name === me)?.id || null;
+      bomb3d.init(canvas, s.grid.w, s.grid.h, {
+        cameraMode: 'follow',
+        followPlayerId: myId,
+      });
+      playerBombNeedsInit = false;
+      startPlayerBombRAF();
+    }
+  }
+  updateBombPlayer();
 });
 
 // Render login-skjerm umiddelbart
@@ -581,6 +596,7 @@ function renderBombPlayer() {
   };
   // Init 3D-scenen (følge-kamera på egen spiller)
   const bombCanvas = document.getElementById('playerBombCanvas');
+  playerBombNeedsInit = true;
   if (bombCanvas && bombSnap?.grid) {
     const myId = bombSnap.players.find(p => p.name === me)?.id || null;
     bomb3d.init(bombCanvas, bombSnap.grid.w, bombSnap.grid.h, {
@@ -588,6 +604,7 @@ function renderBombPlayer() {
       followPlayerId: myId,
     });
     bomb3d.update(bombSnap);
+    playerBombNeedsInit = false;
   }
   startPlayerBombRAF();
 }
