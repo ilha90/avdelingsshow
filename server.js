@@ -76,6 +76,10 @@ const game = {
   snake: null,
   snakeTickInterval: null,
   snakeEndTimer: null,
+  // Bomberman specific
+  bomb: null,
+  bombTickInterval: null,
+  bombEndTimer: null,
   // Config
   questionCount: 10,
 };
@@ -254,7 +258,9 @@ function shuffle(arr) {
 
 function resetToLobby() {
   snakeCleanTimers();
+  bombCleanTimers();
   game.snake = null;
+  game.bomb = null;
   game.phase = 'lobby';
   game.mode = null;
   game.category = null;
@@ -612,6 +618,297 @@ function endSnake() {
   broadcast();
 }
 
+// ---- Bomberman ----
+const BOMB_GRID = { w: 25, h: 15 };
+const BOMB_DURATION = 90000;
+const BOMB_TICK = 180;
+const BOMB_FUSE = 2500;
+const BOMB_EXPLOSION_TTL = 700;
+const BOMB_RESPAWN_MS = 5000;
+const BOMB_COLORS = ['#e54b4b','#3a86ff','#ffbe0b','#29c46a','#a855f7','#ff7b00','#14b8a6','#ec4899','#f59e0b','#06b6d4','#84cc16','#a78bfa'];
+
+// Wall-verdier: 0=tom, 1=hard, 2=myk
+function bombGenerateMap() {
+  const W = BOMB_GRID.w, H = BOMB_GRID.h;
+  const grid = new Array(W * H).fill(0);
+  const idx = (x, y) => y * W + x;
+  // Ramme + pillar-mønster (hver annen celle med x/y partall = hard)
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (x === 0 || y === 0 || x === W-1 || y === H-1) grid[idx(x,y)] = 1;
+    else if (x % 2 === 0 && y % 2 === 0) grid[idx(x,y)] = 1;
+  }
+  return { grid, W, H, idx };
+}
+
+function bombSpawnPositions() {
+  const W = BOMB_GRID.w, H = BOMB_GRID.h;
+  // Rekkefølge basert på avstand fra andre spawnpunkter
+  return [
+    {x: 1, y: 1}, {x: W-2, y: H-2}, {x: W-2, y: 1}, {x: 1, y: H-2},
+    {x: Math.floor(W/2), y: 1}, {x: Math.floor(W/2), y: H-2},
+    {x: 1, y: Math.floor(H/2)}, {x: W-2, y: Math.floor(H/2)},
+    {x: Math.floor(W/4), y: 1}, {x: Math.floor(3*W/4), y: H-2},
+    {x: Math.floor(W/4), y: H-2}, {x: Math.floor(3*W/4), y: 1},
+    {x: 1, y: Math.floor(H/4)}, {x: W-2, y: Math.floor(3*H/4)},
+    {x: 1, y: Math.floor(3*H/4)}, {x: W-2, y: Math.floor(H/4)},
+    {x: Math.floor(W/2), y: Math.floor(H/2)},
+    {x: 3, y: 3}, {x: W-4, y: H-4}, {x: W-4, y: 3}, {x: 3, y: H-4},
+  ];
+}
+
+function bombFillSoftWalls(map, spawnPts) {
+  // Fyll 60% av tomme celler med myk vegg, men ikke rundt spawn-punkter
+  const safeCells = new Set();
+  for (const p of spawnPts) {
+    safeCells.add(p.x + ',' + p.y);
+    // 2 celler i hver retning
+    for (const [dx, dy] of [[0,1],[1,0],[0,-1],[-1,0],[1,1],[-1,-1],[1,-1],[-1,1]]) {
+      safeCells.add((p.x+dx) + ',' + (p.y+dy));
+    }
+  }
+  for (let i = 0; i < map.grid.length; i++) {
+    if (map.grid[i] !== 0) continue;
+    const x = i % map.W, y = Math.floor(i / map.W);
+    if (safeCells.has(x + ',' + y)) continue;
+    if (Math.random() < 0.70) map.grid[i] = 2;
+  }
+}
+
+function bombCleanTimers() {
+  if (game.bombTickInterval) { clearInterval(game.bombTickInterval); game.bombTickInterval = null; }
+  if (game.bombEndTimer) { clearTimeout(game.bombEndTimer); game.bombEndTimer = null; }
+}
+
+function bombRespawnPlayer(sid, player) {
+  const positions = bombSpawnPositions();
+  const occupied = new Set();
+  for (const p of game.bomb.players.values()) {
+    if (p.alive) occupied.add(p.x + ',' + p.y);
+  }
+  // Sjekk også vegger
+  const { grid, W, idx } = game.bomb.map;
+  for (const pos of positions) {
+    const key = pos.x + ',' + pos.y;
+    if (occupied.has(key)) continue;
+    if (grid[idx(pos.x, pos.y)] !== 0) continue;
+    player.x = pos.x; player.y = pos.y;
+    player.nextDir = null;
+    player.alive = true; player.deadAt = 0;
+    // Clear cells around spawn of soft walls
+    for (const [dx, dy] of [[0,0],[0,1],[1,0],[0,-1],[-1,0]]) {
+      const nx = pos.x + dx, ny = pos.y + dy;
+      if (nx > 0 && nx < W-1 && ny > 0 && ny < BOMB_GRID.h-1) {
+        if (grid[idx(nx, ny)] === 2) grid[idx(nx, ny)] = 0;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+function startBomberman() {
+  if (!game.players.size) return;
+  bombCleanTimers();
+  game.phase = 'bomb';
+  game.mode = 'bomb';
+  const map = bombGenerateMap();
+  const spawnPts = bombSpawnPositions();
+  bombFillSoftWalls(map, spawnPts);
+  game.bomb = {
+    map,
+    players: new Map(),
+    bombs: [],         // {id, x, y, ownerId, explodesAt, range}
+    explosions: [],    // {x, y, endsAt, ownerId}
+    powerups: [],      // {x, y, type: 'bomb'|'range'}
+    startedAt: Date.now() + 3000,
+    endAt: Date.now() + 3000 + BOMB_DURATION,
+    started: false,
+    bombCounter: 0,
+  };
+  let colorIdx = 0;
+  let posIdx = 0;
+  for (const [sid, p] of game.players) {
+    const color = BOMB_COLORS[colorIdx++ % BOMB_COLORS.length];
+    const pos = spawnPts[posIdx++ % spawnPts.length];
+    game.bomb.players.set(sid, {
+      id: sid, name: p.name, emoji: p.emoji, color,
+      x: pos.x, y: pos.y,
+      nextDir: null, alive: true, deadAt: 0,
+      bombsMax: 1, bombsPlaced: 0, range: 2,
+      score: 0, kills: 0,
+    });
+  }
+  broadcast();
+  setTimeout(() => {
+    if (game.phase !== 'bomb' || !game.bomb) return;
+    game.bomb.started = true;
+    game.bombTickInterval = setInterval(bombermanTick, BOMB_TICK);
+  }, 3000);
+  game.bombEndTimer = setTimeout(() => endBomberman(), 3000 + BOMB_DURATION);
+}
+
+function bombermanTick() {
+  const b = game.bomb;
+  if (!b || !b.started) return;
+  const { grid, W, idx } = b.map;
+  const now = Date.now();
+
+  // Respawn dead players etter BOMB_RESPAWN_MS
+  for (const [sid, p] of b.players) {
+    if (!p.alive && p.deadAt && now - p.deadAt > BOMB_RESPAWN_MS && now < b.endAt - 2000) {
+      bombRespawnPlayer(sid, p);
+    }
+  }
+
+  // Cleanup expired explosions
+  b.explosions = b.explosions.filter(e => e.endsAt > now);
+
+  // Detonate bombs whose time is up
+  const toDetonate = b.bombs.filter(bb => bb.explodesAt <= now);
+  for (const bomb of toDetonate) detonateBomb(bomb);
+  b.bombs = b.bombs.filter(bb => bb.explodesAt > now);
+
+  // Move players
+  const explCells = new Set(b.explosions.map(e => e.x + ',' + e.y));
+  for (const [sid, p] of b.players) {
+    if (!p.alive) continue;
+    if (p.nextDir) {
+      let nx = p.x, ny = p.y;
+      if (p.nextDir === 'up') ny--;
+      else if (p.nextDir === 'down') ny++;
+      else if (p.nextDir === 'left') nx--;
+      else if (p.nextDir === 'right') nx++;
+      if (nx >= 0 && nx < W && ny >= 0 && ny < BOMB_GRID.h) {
+        const cell = grid[idx(nx, ny)];
+        // Blokkert av vegg eller bombe
+        const bombAt = b.bombs.some(bb => bb.x === nx && bb.y === ny);
+        if (cell === 0 && !bombAt) {
+          p.x = nx; p.y = ny;
+          // Pick up powerup
+          const puIdx = b.powerups.findIndex(u => u.x === nx && u.y === ny);
+          if (puIdx >= 0) {
+            const pu = b.powerups[puIdx];
+            if (pu.type === 'bomb') p.bombsMax += 1;
+            else if (pu.type === 'range') p.range += 1;
+            b.powerups.splice(puIdx, 1);
+          }
+        }
+      }
+    }
+    // Sjekk eksplosjon under spiller
+    if (explCells.has(p.x + ',' + p.y)) killPlayer(p, null);
+  }
+
+  // Broadcast snapshot
+  io.emit('bomb:tick', bombSnapshot());
+
+  // End hvis bare 1 player alive og >1 spillere totalt, eller tid er ute
+  const alive = [...b.players.values()].filter(p => p.alive);
+  if (alive.length <= 1 && b.players.size > 1 && now < b.endAt - 5000) {
+    // Gi bonus hvis det er en lone survivor, end etter 3 sek
+    setTimeout(() => { if (game.phase === 'bomb') endBomberman(); }, 1500);
+    b.endAt = now + 1500; // forkort
+  }
+}
+
+function detonateBomb(bomb) {
+  const b = game.bomb;
+  const { grid, W, idx } = b.map;
+  const H = BOMB_GRID.h;
+  const now = Date.now();
+  const owner = b.players.get(bomb.ownerId);
+  if (owner) owner.bombsPlaced = Math.max(0, owner.bombsPlaced - 1);
+
+  // Origin
+  addExplosion(bomb.x, bomb.y, bomb.ownerId);
+  // 4 retninger
+  for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0]]) {
+    for (let r = 1; r <= bomb.range; r++) {
+      const nx = bomb.x + dx * r, ny = bomb.y + dy * r;
+      if (nx < 0 || nx >= W || ny < 0 || ny >= H) break;
+      const cell = grid[idx(nx, ny)];
+      if (cell === 1) break; // hard wall stopper
+      addExplosion(nx, ny, bomb.ownerId);
+      if (cell === 2) {
+        grid[idx(nx, ny)] = 0;
+        // 40% sjanse for powerup
+        if (Math.random() < 0.4) {
+          const type = Math.random() < 0.5 ? 'bomb' : 'range';
+          b.powerups.push({ x: nx, y: ny, type });
+        }
+        break; // soft wall stopper
+      }
+    }
+  }
+}
+
+function addExplosion(x, y, ownerId) {
+  const b = game.bomb;
+  if (b.explosions.some(e => e.x === x && e.y === y)) return;
+  b.explosions.push({ x, y, endsAt: Date.now() + BOMB_EXPLOSION_TTL, ownerId });
+  // Drep spillere som er her
+  for (const p of b.players.values()) {
+    if (p.alive && p.x === x && p.y === y) killPlayer(p, ownerId);
+  }
+  // Detonér andre bomber som er her (chain reaction)
+  const hit = b.bombs.find(bb => bb.x === x && bb.y === y);
+  if (hit) {
+    hit.explodesAt = Date.now(); // neste tick sprenger den
+  }
+  // Fjern powerup hvis truffet
+  b.powerups = b.powerups.filter(u => !(u.x === x && u.y === y));
+}
+
+function killPlayer(p, byOwnerId) {
+  if (!p.alive) return;
+  p.alive = false;
+  p.deadAt = Date.now();
+  if (byOwnerId && byOwnerId !== p.id) {
+    const killer = game.bomb.players.get(byOwnerId);
+    if (killer) { killer.kills += 1; killer.score += 100; }
+  }
+}
+
+function bombSnapshot() {
+  if (!game.bomb) return null;
+  const b = game.bomb;
+  const now = Date.now();
+  return {
+    grid: BOMB_GRID,
+    walls: b.map.grid,
+    started: b.started,
+    startedAt: b.startedAt,
+    endAt: b.endAt,
+    timeLeft: Math.max(0, b.endAt - now),
+    countdownLeft: Math.max(0, b.startedAt - now),
+    players: [...b.players.values()].map(p => ({
+      id: p.id, name: p.name, emoji: p.emoji, color: p.color,
+      x: p.x, y: p.y, alive: p.alive, score: p.score, kills: p.kills,
+      bombsMax: p.bombsMax, range: p.range,
+      respawnIn: !p.alive && p.deadAt ? Math.max(0, BOMB_RESPAWN_MS - (now - p.deadAt)) : 0,
+    })),
+    bombs: b.bombs.map(bb => ({ x: bb.x, y: bb.y, ownerId: bb.ownerId, tLeft: Math.max(0, bb.explodesAt - now) })),
+    explosions: b.explosions.map(e => ({ x: e.x, y: e.y, tLeft: Math.max(0, e.endsAt - now) })),
+    powerups: b.powerups,
+  };
+}
+
+function endBomberman() {
+  bombCleanTimers();
+  if (!game.bomb) return;
+  for (const p of game.bomb.players.values()) {
+    // Bonus for siste overlevende
+    if (p.alive && [...game.bomb.players.values()].filter(x => x.alive).length === 1 && game.bomb.players.size > 1) {
+      p.score += 200;
+    }
+    const mp = game.players.get(p.id);
+    if (mp) mp.score += p.score;
+  }
+  game.phase = 'bomb-end';
+  broadcast();
+}
+
+
 // ---- Socket handlers ----
 io.on('connection', (socket) => {
   // Send initial state to new socket (fikser hvit skjerm)
@@ -813,6 +1110,41 @@ io.on('connection', (socket) => {
     // Ignore if opposite of current dir
     if (OPPOSITE[s.dir] === dir) return;
     s.nextDir = dir;
+  });
+
+  socket.on('host:start-bomb', () => {
+    if (!isHost() || !game.players.size) return;
+    startBomberman();
+  });
+
+  socket.on('host:end-bomb', () => {
+    if (!isHost()) return;
+    if (game.phase === 'bomb') endBomberman();
+  });
+
+  socket.on('player:bomb-move', (dir) => {
+    if (game.phase !== 'bomb' || !game.bomb) return;
+    const p = game.bomb.players.get(socket.id);
+    if (!p || !p.alive) return;
+    if (dir === null || dir === 'stop') { p.nextDir = null; return; }
+    if (!['up','down','left','right'].includes(dir)) return;
+    p.nextDir = dir;
+  });
+
+  socket.on('player:bomb-drop', () => {
+    if (game.phase !== 'bomb' || !game.bomb) return;
+    const p = game.bomb.players.get(socket.id);
+    if (!p || !p.alive) return;
+    if (p.bombsPlaced >= p.bombsMax) return;
+    if (game.bomb.bombs.some(bb => bb.x === p.x && bb.y === p.y)) return;
+    game.bomb.bombs.push({
+      id: ++game.bomb.bombCounter,
+      x: p.x, y: p.y,
+      ownerId: p.id,
+      explodesAt: Date.now() + BOMB_FUSE,
+      range: p.range,
+    });
+    p.bombsPlaced += 1;
   });
 
   socket.on('host:wheel', () => {

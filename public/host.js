@@ -22,7 +22,8 @@ const PHASE_LABELS = {
   leaderboard: 'Poengtavle', wheel: 'Lykkehjul',
   voting: 'Avstemning', 'vote-result': 'Avstemning – resultat',
   'scatter-play': 'Kategori-kamp', 'scatter-review': 'Gjennomgang',
-  icebreaker: 'Bli-kjent', snake: 'Slange-kamp', 'snake-end': 'Slange – resultat', end: 'Ferdig',
+  icebreaker: 'Bli-kjent', snake: 'Slange-kamp', 'snake-end': 'Slange – resultat',
+  bomb: 'Bomberman', 'bomb-end': 'Bomberman – resultat', end: 'Ferdig',
 };
 
 socket.emit('host:hello');
@@ -177,6 +178,8 @@ function render() {
     case 'icebreaker': renderIcebreaker(); break;
     case 'snake': renderSnake(); break;
     case 'snake-end': renderSnakeEnd(); break;
+    case 'bomb': renderBomb(); break;
+    case 'bomb-end': renderBombEnd(); break;
     case 'end': renderEnd(); break;
   }
   renderControls();
@@ -772,6 +775,211 @@ function renderSnakeEnd() {
   window.sfx?.fanfare();
 }
 
+// ============ BOMBERMAN ============
+let bombSnap = null;
+let bombTimerRAF = null;
+
+socket.on('bomb:tick', s => {
+  bombSnap = s;
+  if (state?.phase === 'bomb') drawBomb();
+});
+
+function renderBomb() {
+  const showCountdown = bombSnap && !bombSnap.started;
+  main.innerHTML = `
+    <div class="snake-screen">
+      <div class="snake-top">
+        <div class="snake-time" id="bombTime">⏱ ${Math.ceil((bombSnap?.timeLeft || 90000) / 1000)}s</div>
+        <div class="snake-title">💣 Bomberman</div>
+        <div class="snake-info">Spreng veggene, knus motstanderen</div>
+      </div>
+      <div class="snake-arena">
+        <div class="snake-canvas-wrap">
+          <canvas id="bombCanvas" width="1250" height="750"></canvas>
+          ${showCountdown ? `<div class="snake-overlay"><div id="bombCd" class="snake-countdown">${Math.ceil((bombSnap.countdownLeft || 3000) / 1000)}</div></div>` : ''}
+        </div>
+        <div class="snake-scores" id="bombScores"></div>
+      </div>
+    </div>`;
+  drawBomb();
+  bombAnimateTimer();
+}
+
+function drawBomb() {
+  const canvas = document.getElementById('bombCanvas');
+  if (!canvas || !bombSnap) return;
+  const ctx = canvas.getContext('2d');
+  const cell = Math.floor(canvas.width / bombSnap.grid.w);
+  const totalW = cell * bombSnap.grid.w;
+  const totalH = cell * bombSnap.grid.h;
+  canvas.height = totalH;
+
+  // Bakgrunn (gress)
+  ctx.fillStyle = '#1a2e1f';
+  ctx.fillRect(0, 0, totalW, totalH);
+  // Subtile grass-prikker
+  ctx.fillStyle = 'rgba(255,255,255,0.025)';
+  for (let i = 0; i < 200; i++) {
+    ctx.fillRect(Math.random() * totalW, Math.random() * totalH, 2, 2);
+  }
+
+  // Vegger
+  const W = bombSnap.grid.w;
+  for (let y = 0; y < bombSnap.grid.h; y++) {
+    for (let x = 0; x < W; x++) {
+      const v = bombSnap.walls[y * W + x];
+      if (v === 1) {
+        // Hard mur (mørk stein)
+        const grad = ctx.createLinearGradient(x*cell, y*cell, x*cell, (y+1)*cell);
+        grad.addColorStop(0, '#4a4a55');
+        grad.addColorStop(1, '#2a2a35');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x*cell, y*cell, cell, cell);
+        ctx.strokeStyle = 'rgba(0,0,0,.3)';
+        ctx.strokeRect(x*cell+0.5, y*cell+0.5, cell-1, cell-1);
+      } else if (v === 2) {
+        // Myk mur (tre)
+        const grad = ctx.createLinearGradient(x*cell, y*cell, x*cell, (y+1)*cell);
+        grad.addColorStop(0, '#a06a3f');
+        grad.addColorStop(1, '#6f4721');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x*cell+2, y*cell+2, cell-4, cell-4);
+        ctx.strokeStyle = 'rgba(0,0,0,.4)';
+        ctx.beginPath();
+        ctx.moveTo(x*cell + cell/2, y*cell + 2);
+        ctx.lineTo(x*cell + cell/2, y*cell + cell - 2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Powerups
+  for (const u of bombSnap.powerups) {
+    const cx = u.x * cell + cell/2, cy = u.y * cell + cell/2;
+    const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.5);
+    if (u.type === 'bomb') { grad.addColorStop(0, '#fff'); grad.addColorStop(1, 'rgba(255,80,80,0)'); }
+    else { grad.addColorStop(0, '#fff'); grad.addColorStop(1, 'rgba(255,190,11,0)'); }
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.5 * pulse, 0, Math.PI * 2); ctx.fill();
+    // Icon
+    ctx.fillStyle = u.type === 'bomb' ? '#e54b4b' : '#ffbe0b';
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.25, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${cell * 0.3}px system-ui`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(u.type === 'bomb' ? '+' : '▶', cx, cy + 1);
+  }
+
+  // Bomber
+  for (const b of bombSnap.bombs) {
+    const cx = b.x * cell + cell/2, cy = b.y * cell + cell/2;
+    const f = Math.max(0, b.tLeft / 2500);
+    const pulse = 1 + 0.2 * Math.sin(Date.now() / (100 + f * 300));
+    // Glow
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell);
+    glow.addColorStop(0, 'rgba(229,75,75,.4)');
+    glow.addColorStop(1, 'rgba(229,75,75,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy, cell, 0, Math.PI * 2); ctx.fill();
+    // Body
+    ctx.fillStyle = '#1a1a1a';
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.38 * pulse, 0, Math.PI * 2); ctx.fill();
+    // Fuse
+    ctx.fillStyle = f > 0.5 ? '#ffbe0b' : '#e54b4b';
+    ctx.fillRect(cx - 2, cy - cell * 0.5, 4, cell * 0.15);
+  }
+
+  // Eksplosjoner
+  for (const e of bombSnap.explosions) {
+    const cx = e.x * cell + cell/2, cy = e.y * cell + cell/2;
+    const f = e.tLeft / 700;
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.7);
+    grad.addColorStop(0, `rgba(255,255,220,${f})`);
+    grad.addColorStop(0.4, `rgba(255,180,0,${f * .8})`);
+    grad.addColorStop(1, `rgba(255,60,0,0)`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(e.x * cell, e.y * cell, cell, cell);
+    // Sparks
+    ctx.fillStyle = `rgba(255,200,60,${f})`;
+    for (let i = 0; i < 3; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * cell * 0.4;
+      ctx.fillRect(cx + Math.cos(a)*r, cy + Math.sin(a)*r, 2, 2);
+    }
+  }
+
+  // Spillere
+  for (const p of bombSnap.players) {
+    if (!p.alive && !p.deadAt) continue;
+    const cx = p.x * cell + cell/2, cy = p.y * cell + cell/2;
+    ctx.globalAlpha = p.alive ? 1 : 0.3;
+    // Glow
+    ctx.shadowColor = p.color; ctx.shadowBlur = p.alive ? 16 : 0;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    // Emoji
+    if (p.emoji) {
+      ctx.font = `${cell * 0.6}px system-ui`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(p.emoji, cx, cy + 1);
+    }
+    // Respawn timer
+    if (!p.alive && p.respawnIn > 0) {
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${cell * 0.3}px system-ui`;
+      ctx.fillText(Math.ceil(p.respawnIn / 1000), cx, cy + cell * 0.55);
+    }
+    ctx.globalAlpha = 1;
+  }
+  updateBombScores();
+}
+
+function updateBombScores() {
+  const el = document.getElementById('bombScores');
+  if (!el || !bombSnap) return;
+  const sorted = [...bombSnap.players].sort((a, b) => b.score - a.score);
+  el.innerHTML = sorted.map((s, i) => `
+    <div class="snake-score-row ${s.alive ? '' : 'dead'}" style="border-color:${s.color}">
+      <div class="snake-score-rank">${i + 1}</div>
+      <div class="snake-score-name">${s.emoji || '💣'} ${esc(s.name)}</div>
+      <div class="snake-score-val" style="color:${s.color}">${s.score}</div>
+      ${!s.alive && s.respawnIn > 0 ? `<div class="snake-score-resp">↺ ${Math.ceil(s.respawnIn/1000)}s</div>` : ''}
+      ${s.alive ? `<div class="snake-score-resp">💣×${s.bombsMax} · ▶${s.range}</div>` : ''}
+    </div>`).join('');
+}
+
+function bombAnimateTimer() {
+  if (bombTimerRAF) cancelAnimationFrame(bombTimerRAF);
+  function tick() {
+    if (!bombSnap || state?.phase !== 'bomb') return;
+    const el = document.getElementById('bombTime');
+    const cdEl = document.getElementById('bombCd');
+    if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(bombSnap.timeLeft / 1000))}s`;
+    if (cdEl && !bombSnap.started) cdEl.textContent = Math.max(1, Math.ceil(bombSnap.countdownLeft / 1000));
+    drawBomb();  // Re-draw hver frame for smooth explosion/pulse
+    bombTimerRAF = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function renderBombEnd() {
+  const players = bombSnap ? [...bombSnap.players].sort((a, b) => b.score - a.score) : [];
+  const top3 = players.slice(0, 3);
+  main.innerHTML = `
+    <div class="end-screen">
+      <h2>💣 Bomberman-resultat 💣</h2>
+      <div class="podium">
+        ${top3[1] ? `<div class="podium-col p2" style="border-color:${top3[1].color}"><div class="podium-medal">🥈</div><div class="podium-avatar">${top3[1].emoji || '💣'}</div><div class="podium-name">${esc(top3[1].name)}</div><div class="podium-score">${top3[1].score} p · ${top3[1].kills} kills</div></div>` : ''}
+        ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '💣'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p · ${top3[0].kills} kills</div></div>` : ''}
+        ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '💣'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p · ${top3[2].kills} kills</div></div>` : ''}
+      </div>
+      <p style="color: var(--ink-2); font-size: 16px; margin-top: 20px">Poeng lagt til hovedscoren</p>
+    </div>`;
+  for (let i = 0; i < 3; i++) setTimeout(() => window.confetti?.burst(), i * 500);
+  window.sfx?.fanfare();
+}
+
 // ============ END ============
 function renderEnd() {
   const source = state.teamMode
@@ -860,6 +1068,11 @@ function renderControls() {
   } else if (state.phase === 'snake-end') {
     html = `<button class="btn btn-primary" onclick="act('host:start-snake')">🐍 Ny runde</button>
             <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
+  } else if (state.phase === 'bomb') {
+    html = `<button class="btn btn-ghost" onclick="act('host:end-bomb')">Avslutt runde</button>`;
+  } else if (state.phase === 'bomb-end') {
+    html = `<button class="btn btn-primary" onclick="act('host:start-bomb')">💣 Ny runde</button>
+            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
   } else if (state.phase === 'end') {
     html = `<button class="btn btn-primary" onclick="act('host:reset')">← Ny runde</button>`;
   }
@@ -914,6 +1127,7 @@ window.openGameMenu = () => {
           <button class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></button>
           <button class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></button>
           <button class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle, 60 sek</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-bomb')"><div class="emoji">💣</div><b>Bomberman</b><span>Spreng motstanderen, 90 sek</span></button>
         </div>
       </div>
     </div>`;

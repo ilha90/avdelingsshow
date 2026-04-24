@@ -616,3 +616,13 @@ body::before {
   .snake-scores { max-height: 180px; flex-direction: row; flex-wrap: wrap; overflow-x: auto; }
   .snake-score-row { min-width: 240px; }
 }
+
+/* ============ Bomberman — player pad ============ */
+.bomb-pad { width: 100%; max-width: 340px; margin-top: 20px; }
+.bomb-pad-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.pad-btn.pad-bomb { background: radial-gradient(circle at 30% 30%, #ff8a5b, #d6372b);
+  color: #fff; font-size: 34px; border: 2px solid #ff6b4a;
+  box-shadow: 0 0 20px rgba(229,75,75,.4); animation: bombBtnPulse 2s ease-in-out infinite; }
+.pad-btn.pad-bomb:active { transform: scale(.92); box-shadow: 0 0 30px rgba(229,75,75,.7); }
+@keyframes bombBtnPulse { 0%,100% { box-shadow: 0 0 20px rgba(229,75,75,.4); } 50% { box-shadow: 0 0 32px rgba(229,75,75,.7); } }
+.bomb-stats { color: var(--ink-2); font-size: 14px; font-weight: 500; }
