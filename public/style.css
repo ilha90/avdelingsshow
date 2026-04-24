@@ -506,13 +506,19 @@ body::before {
 .menu-section-title { font-size: 13px; color: var(--ink-2); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px; font-weight: 600; }
 .menu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .menu-card { display: flex; flex-direction: column; gap: 4px; padding: 20px 18px; background: var(--card); border: 2px solid var(--card-b);
-  border-radius: 16px; cursor: pointer; color: var(--ink); font-family: inherit; text-align: left; transition: all .18s; }
+  border-radius: 16px; cursor: pointer; color: var(--ink); font-family: inherit; text-align: left; transition: all .18s; position: relative; }
 .menu-card:hover { transform: translateY(-3px); background: rgba(255,255,255,.1); }
 .menu-card.quiz:hover { border-color: var(--gold); box-shadow: 0 10px 24px rgba(212,175,55,.25); }
 .menu-card.social:hover { border-color: #a855f7; box-shadow: 0 10px 24px rgba(168,85,247,.25); }
 .menu-card .emoji { font-size: 36px; line-height: 1; margin-bottom: 6px; }
 .menu-card b { font-size: 17px; font-weight: 700; }
 .menu-card span { font-size: 13px; color: var(--ink-2); }
+.dur-chip { position: absolute; top: 10px; right: 10px; padding: 4px 10px; border-radius: 999px;
+  background: rgba(0,168,119,.18); border: 1px solid rgba(93,224,174,.35); color: var(--gold-2);
+  font-size: 11px; font-weight: 700; font-family: inherit; letter-spacing: .3px; cursor: pointer;
+  user-select: none; transition: all .15s; white-space: nowrap; }
+.dur-chip:hover { background: rgba(0,168,119,.35); border-color: var(--gold-2); transform: scale(1.06); }
+.dur-chip:active { transform: scale(.95); }
 
 /* Fullscreen-button styling already works via .icon-btn */
 

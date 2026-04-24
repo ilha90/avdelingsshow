@@ -404,25 +404,6 @@ function renderLobby() {
               <option value="10" ${state.leaderboardEvery === 10 ? 'selected' : ''}>Hver 10.</option>
             </select></label>
           </div>
-          <div class="cfg-row">
-            <label>🐍 Slange: <select id="cfgSnakeDur">
-              ${[30000,45000,60000,90000,120000,180000,240000].map(n => `<option value="${n}" ${n === state.snakeDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
-            </select></label>
-            <label>💣 Bomberman: <select id="cfgBombDur">
-              ${[30000,60000,90000,120000,180000,240000,300000].map(n => `<option value="${n}" ${n === state.bombDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
-            </select></label>
-            <label>📝 Kategori: <select id="cfgScatterDur">
-              ${[30000,45000,60000,90000,120000,180000].map(n => `<option value="${n}" ${n === state.scatterDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
-            </select></label>
-          </div>
-          <div class="cfg-row">
-            <label>🤥 Løgn-stemming: <select id="cfgLieDur">
-              ${[15000,20000,30000,45000,60000,90000].map(n => `<option value="${n}" ${n === state.lieVoteDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
-            </select></label>
-            <label>⚡ Lyn-runde: <select id="cfgLightDur">
-              ${[3000,5000,7000,10000,15000].map(n => `<option value="${n}" ${n === state.lightningDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
-            </select></label>
-          </div>
         </div>
         ${renderAiBox()}
       </div>
@@ -455,16 +436,6 @@ function renderLobby() {
   tm?.addEventListener('change', () => socket.emit('host:config', { timeLimit: +tm.value }));
   const lb = document.getElementById('cfgLBEvery');
   lb?.addEventListener('change', () => socket.emit('host:config', { leaderboardEvery: +lb.value }));
-  const snd = document.getElementById('cfgSnakeDur');
-  snd?.addEventListener('change', () => socket.emit('host:config', { snakeDuration: +snd.value }));
-  const bmd = document.getElementById('cfgBombDur');
-  bmd?.addEventListener('change', () => socket.emit('host:config', { bombDuration: +bmd.value }));
-  const scd = document.getElementById('cfgScatterDur');
-  scd?.addEventListener('change', () => socket.emit('host:config', { scatterDuration: +scd.value }));
-  const lid = document.getElementById('cfgLieDur');
-  lid?.addEventListener('change', () => socket.emit('host:config', { lieVoteDuration: +lid.value }));
-  const lgd = document.getElementById('cfgLightDur');
-  lgd?.addEventListener('change', () => socket.emit('host:config', { lightningDuration: +lgd.value }));
 
   // Kick-spiller: klikk på player-chip
   document.querySelectorAll('.player-chip[data-pid], .team-chip[data-pid]').forEach(el => {
@@ -1409,34 +1380,34 @@ window.openGameMenu = () => {
       <div class="menu-section">
         <div class="menu-section-title">🧠 Quiz</div>
         <div class="menu-grid">
-          <button class="menu-card quiz" onclick="pickGame('host:start-quiz','generelt')"><div class="emoji">🌍</div><b>Generelt</b><span>Allmennkunnskap</span></button>
-          <button class="menu-card quiz" onclick="pickGame('host:start-quiz','norge')"><div class="emoji">🇳🇴</div><b>Norge</b><span>Historie og geografi</span></button>
-          <button class="menu-card quiz" onclick="pickGame('host:start-quiz','dnb')"><div class="emoji">🏦</div><b>DNB & Finans</b><span>Bank og økonomi</span></button>
-          <button class="menu-card quiz" onclick="pickGame('host:start-quiz','popkultur')"><div class="emoji">🎬</div><b>Pop-kultur</b><span>Film, musikk, serier</span></button>
-          <button class="menu-card quiz" onclick="pickGame('host:start-quiz','emoji')"><div class="emoji">🎭</div><b>Emoji-gåter</b><span>Gjett film fra emojier</span></button>
+          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','generelt')"><div class="emoji">🌍</div><b>Generelt</b><span>Allmennkunnskap</span></div>
+          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','norge')"><div class="emoji">🇳🇴</div><b>Norge</b><span>Historie og geografi</span></div>
+          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','dnb')"><div class="emoji">🏦</div><b>DNB & Finans</b><span>Bank og økonomi</span></div>
+          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','popkultur')"><div class="emoji">🎬</div><b>Pop-kultur</b><span>Film, musikk, serier</span></div>
+          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','emoji')"><div class="emoji">🎭</div><b>Emoji-gåter</b><span>Gjett film fra emojier</span></div>
         </div>
       </div>
 
       <div class="menu-section">
-        <div class="menu-section-title">⚡ Lyn-runde <span style="color:var(--ink-2); font-weight:400">— ${(state.lightningDuration || 5000) / 1000} sek, dobbel poeng</span></div>
+        <div class="menu-section-title">⚡ Lyn-runde <span style="color:var(--ink-2); font-weight:400">— <span class="lightning-head-dur">${(state.lightningDuration || 5000) / 1000} sek</span>, dobbel poeng</span></div>
         <div class="menu-grid">
-          <button class="menu-card lightning" onclick="pickGame('host:start-lightning','generelt')"><div class="emoji">🌍⚡</div><b>Generelt</b><span>Rask & farlig</span></button>
-          <button class="menu-card lightning" onclick="pickGame('host:start-lightning','norge')"><div class="emoji">🇳🇴⚡</div><b>Norge</b><span>Ingen tid å tenke</span></button>
-          <button class="menu-card lightning" onclick="pickGame('host:start-lightning','popkultur')"><div class="emoji">🎬⚡</div><b>Pop-kultur</b><span>Er du kjapp nok?</span></button>
-          <button class="menu-card lightning" onclick="pickGame('host:start-lightning','emoji')"><div class="emoji">🎭⚡</div><b>Emoji</b><span>Instinkt-gåter</span></button>
+          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','generelt')"><div class="emoji">🌍⚡</div><b>Generelt</b><span>Rask & farlig</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
+          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','norge')"><div class="emoji">🇳🇴⚡</div><b>Norge</b><span>Ingen tid å tenke</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
+          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','popkultur')"><div class="emoji">🎬⚡</div><b>Pop-kultur</b><span>Er du kjapp nok?</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
+          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','emoji')"><div class="emoji">🎭⚡</div><b>Emoji</b><span>Instinkt-gåter</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
         </div>
       </div>
 
       <div class="menu-section">
         <div class="menu-section-title">🎉 Sosiale spill</div>
         <div class="menu-grid">
-          <button class="menu-card social" onclick="pickGame('host:start-voting')"><div class="emoji">🗳️</div><b>Hvem er mest sannsynlig</b><span>Anonyme avstemninger</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-lie')"><div class="emoji">🤥</div><b>2 sannheter, 1 løgn</b><span>${(state.lieVoteDuration || 30000) / 1000}s stemming</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, ${(state.scatterDuration || 60000) / 1000}s</span></button>
-          <button class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></button>
-          <button class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle, ${(state.snakeDuration || 60000) / 1000}s</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-bomb')"><div class="emoji">💣</div><b>Bomberman</b><span>Spreng motstanderen, ${(state.bombDuration || 90000) / 1000}s</span></button>
+          <div class="menu-card social" onclick="pickGame('host:start-voting')"><div class="emoji">🗳️</div><b>Hvem er mest sannsynlig</b><span>Anonyme avstemninger</span></div>
+          <div class="menu-card social" onclick="pickGame('host:start-lie')"><div class="emoji">🤥</div><b>2 sannheter, 1 løgn</b><span>Stem fram løgneren</span>${durChip('lie', state.lieVoteDuration || 30000)}</div>
+          <div class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, fem kategorier</span>${durChip('scatter', state.scatterDuration || 60000)}</div>
+          <div class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></div>
+          <div class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></div>
+          <div class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle</span>${durChip('snake', state.snakeDuration || 60000)}</div>
+          <div class="menu-card social" onclick="pickGame('host:start-bomb')"><div class="emoji">💣</div><b>Bomberman</b><span>Spreng motstanderen</span>${durChip('bomb', state.bombDuration || 90000)}</div>
         </div>
       </div>
     </div>`;
@@ -1456,6 +1427,36 @@ window.pickGame = (ev, arg) => {
   closeGameMenu();
   socket.emit(ev, arg);
 };
+
+// Varighets-cycling på menu-cards
+const DUR_OPTS = {
+  snake:    { key: 'snakeDuration',     opts: [30000, 45000, 60000, 90000, 120000, 180000, 240000] },
+  bomb:     { key: 'bombDuration',      opts: [30000, 60000, 90000, 120000, 180000, 240000, 300000] },
+  scatter:  { key: 'scatterDuration',   opts: [30000, 45000, 60000, 90000, 120000, 180000] },
+  lie:      { key: 'lieVoteDuration',   opts: [15000, 20000, 30000, 45000, 60000, 90000] },
+  lightning:{ key: 'lightningDuration', opts: [3000, 5000, 7000, 10000, 15000] },
+};
+window.cycleDur = (ev, game) => {
+  ev.stopPropagation();
+  const cfg = DUR_OPTS[game];
+  if (!cfg) return;
+  const cur = state[cfg.key] || cfg.opts[0];
+  const idx = cfg.opts.indexOf(cur);
+  const next = cfg.opts[(idx + 1) % cfg.opts.length];
+  socket.emit('host:config', { [cfg.key]: next });
+  // Oppdater alle synlige chips for dette spillet optimistisk
+  document.querySelectorAll('.dur-chip[data-dur="' + game + '"]').forEach(el => {
+    el.textContent = '⏱ ' + (next / 1000) + 's';
+  });
+  // Oppdater lightning-section-header også
+  if (game === 'lightning') {
+    const hdr = document.querySelector('.lightning-head-dur');
+    if (hdr) hdr.textContent = (next / 1000) + ' sek';
+  }
+};
+function durChip(game, cur) {
+  return `<span class="dur-chip" data-dur="${game}" onclick="cycleDur(event, '${game}')" title="Klikk for å endre varighet">⏱ ${cur / 1000}s</span>`;
+}
 
 // ============ KEYBOARD SHORTCUTS ============
 window.addEventListener('keydown', (e) => {
