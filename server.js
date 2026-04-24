@@ -56,7 +56,22 @@ function publicUrl(req) {
   return ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}`;
 }
 
+// No-cache for HTML/JS så oppdateringer slår gjennom umiddelbart
+app.use((req, res, next) => {
+  if (/\.(html|js|css)$/.test(req.path) || req.path === '/' || req.path === '/host') {
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+  }
+  next();
+});
 app.use(express.static(join(__dirname, 'public')));
+// Favicon: en enkel SVG-emoji så 404 forsvinner
+app.get('/favicon.ico', (req, res) => {
+  res.type('image/svg+xml').send(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><text y="52" font-size="52">💣</text></svg>`
+  );
+});
 app.get('/host', (_, res) => res.sendFile(join(__dirname, 'public', 'host.html')));
 app.get('/', (_, res) => res.sendFile(join(__dirname, 'public', 'player.html')));
 app.get('/qr', async (req, res) => {
