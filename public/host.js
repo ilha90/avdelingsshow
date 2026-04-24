@@ -3,6 +3,7 @@ import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } f
 import { avatarFor, colorFor } from '/avatars.js';
 import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest, listVoices as ttsVoices, getVoiceURI as ttsGetVoice, setVoice as ttsSetVoice, getCurrentVoice as ttsCur, hasSupport as ttsSupport, onState as ttsOnState } from '/tts.js';
 import * as bomb3d from '/bomb3d.js';
+import * as snake3d from '/snake3d.js';
 const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
 
 // ==== Passord på host ====
@@ -918,81 +919,24 @@ function renderSnake() {
       </div>
       <div class="snake-arena">
         <div class="snake-canvas-wrap">
-          <canvas id="snakeCanvas" width="1200" height="750"></canvas>
+          <canvas id="snakeCanvas"></canvas>
           ${showCountdown ? `<div class="snake-overlay"><div id="snakeCd" class="snake-countdown">${Math.min(3, Math.max(1, Math.ceil((snakeSnap.countdownLeft || 3000) / 1000)))}</div></div>` : ''}
         </div>
         <div class="snake-scores" id="snakeScores"></div>
       </div>
     </div>`;
-  drawSnake();
+  const canvas = document.getElementById('snakeCanvas');
+  if (canvas && snakeSnap?.grid) {
+    snake3d.init(canvas, snakeSnap.grid.w, snakeSnap.grid.h);
+    snake3d.update(snakeSnap);
+  }
   snakeAnimateTimer();
 }
 
 function drawSnake() {
-  const canvas = document.getElementById('snakeCanvas');
-  if (!canvas || !snakeSnap) return;
-  const ctx = canvas.getContext('2d');
-  const cell = canvas.width / snakeSnap.grid.w;
-
-  // Bakgrunn
-  ctx.fillStyle = '#0b0d1a';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  // Rutenett
-  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
-  ctx.lineWidth = 1;
-  for (let x = 0; x <= snakeSnap.grid.w; x++) {
-    ctx.beginPath(); ctx.moveTo(x * cell, 0); ctx.lineTo(x * cell, canvas.height); ctx.stroke();
-  }
-  for (let y = 0; y <= snakeSnap.grid.h; y++) {
-    ctx.beginPath(); ctx.moveTo(0, y * cell); ctx.lineTo(canvas.width, y * cell); ctx.stroke();
-  }
-
-  // Tegn mat (gylden pulse)
-  const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
-  for (const f of snakeSnap.food) {
-    const cx = f.x * cell + cell/2;
-    const cy = f.y * cell + cell/2;
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.7);
-    grad.addColorStop(0, '#f5d77a');
-    grad.addColorStop(1, 'rgba(245,215,122,0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.8 * pulse, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#d4af37';
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.3 * pulse, 0, Math.PI * 2); ctx.fill();
-  }
-
-  // Tegn snakes
-  for (const s of snakeSnap.snakes) {
-    if (!s.body.length) continue;
-    const alpha = s.alive ? 1 : 0.25;
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = s.color;
-    // Body segments (med avrundet look)
-    for (let i = 1; i < s.body.length; i++) {
-      const seg = s.body[i];
-      const r = cell * 0.4;
-      ctx.beginPath();
-      ctx.roundRect(seg.x * cell + cell*0.1, seg.y * cell + cell*0.1, cell * 0.8, cell * 0.8, r);
-      ctx.fill();
-    }
-    // Head (større, med glow)
-    const head = s.body[0];
-    ctx.shadowColor = s.color;
-    ctx.shadowBlur = s.alive ? 14 : 0;
-    ctx.beginPath();
-    ctx.roundRect(head.x * cell + cell*0.05, head.y * cell + cell*0.05, cell * 0.9, cell * 0.9, cell * 0.3);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    // Emoji på hodet
-    if (s.emoji) {
-      ctx.globalAlpha = alpha;
-      ctx.font = `${cell * 0.75}px system-ui, -apple-system, sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(s.emoji, head.x * cell + cell/2, head.y * cell + cell/2 + 1);
-    }
-    ctx.globalAlpha = 1;
-  }
-  // Oppdater score-panel
+  if (!snakeSnap) return;
+  snake3d.update(snakeSnap);
+  snake3d.render();
   updateSnakeScores();
 }
 
@@ -1017,12 +961,15 @@ function snakeAnimateTimer() {
     if (!snakeSnap || state?.phase !== 'snake') return;
     if (el) el.textContent = `⏱ ${snakeSnap.isInfinite ? '∞' : Math.max(0, Math.ceil(snakeSnap.timeLeft / 1000)) + 's'}`;
     if (cdEl && !snakeSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(snakeSnap.countdownLeft / 1000)));
+    // Re-render 3D scene hver frame for jevn animasjon
+    snake3d.render();
     snakeTimerRAF = requestAnimationFrame(tick);
   }
   tick();
 }
 
 function renderSnakeEnd() {
+  snake3d.dispose();
   const snakes = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
   const top3 = snakes.slice(0, 3);
   main.innerHTML = `
