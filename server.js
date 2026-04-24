@@ -13,20 +13,31 @@ const app = express();
 const http = createServer(app);
 const io = new Server(http);
 
+// Utled offentlig URL (fungerer lokalt + Render/Railway/Fly)
+function publicUrl(req) {
+  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL;
+  if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL;
+  if (req) {
+    const proto = req.headers['x-forwarded-proto'] || (req.connection.encrypted ? 'https' : 'http');
+    const host = req.headers.host;
+    if (host) return `${proto}://${host}`;
+  }
+  const ips = getLocalIPs();
+  return ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}`;
+}
+
 app.use(express.static(join(__dirname, 'public')));
 app.get('/host', (_, res) => res.sendFile(join(__dirname, 'public', 'host.html')));
 app.get('/', (_, res) => res.sendFile(join(__dirname, 'public', 'player.html')));
-app.get('/qr', async (_, res) => {
-  const ips = getLocalIPs();
-  const url = ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}`;
+app.get('/qr', async (req, res) => {
+  const url = publicUrl(req);
   try {
     const buf = await QRCode.toBuffer(url, { width: 400, margin: 1 });
     res.type('png').send(buf);
   } catch { res.status(500).send('qr-feil'); }
 });
-app.get('/connect-url', (_, res) => {
-  const ips = getLocalIPs();
-  res.json({ url: ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}` });
+app.get('/connect-url', (req, res) => {
+  res.json({ url: publicUrl(req) });
 });
 
 const PORT = process.env.PORT || 3000;
