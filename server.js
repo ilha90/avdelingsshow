@@ -17,6 +17,7 @@ process.on('unhandledRejection', (e) => console.error('[UnhandledRejection]', e?
 const MAX_PLAYERS = 100;
 const SANITIZE_NAME_MAX = 20;
 const SANITIZE_EMOJI_MAX = 6;
+const HOST_PASSWORD = process.env.HOST_PASSWORD || 'dnb';
 
 // Track brukte spørsmål per kategori i denne sesjonen — unngå gjentak mellom runder
 const usedQuestions = new Map(); // categoryKey -> Set of question texts

@@ -1,7 +1,7 @@
 // host.js — vert-siden (storskjerm)
 import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } from '/ai.js';
 import { avatarFor, colorFor } from '/avatars.js';
-import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest } from '/tts.js';
+import { speak, stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, getPreset as ttsPreset, setPreset as ttsSetPreset, PRESETS as TTS_PRESETS, testVoice as ttsTest, listVoices as ttsVoices, getVoiceURI as ttsGetVoice, setVoice as ttsSetVoice, getCurrentVoice as ttsCur, hasSupport as ttsSupport } from '/tts.js';
 const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
 const main = document.getElementById('main');
 const controls = document.getElementById('controls');
@@ -63,23 +63,39 @@ function refreshTtsBtn() { ttsBtn.textContent = ttsOn() ? '🎙️' : '🔈'; tt
 refreshTtsBtn();
 function renderTtsMenu() {
   const cur = ttsPreset();
+  const voices = ttsVoices();
+  const curVoiceURI = ttsGetVoice();
+  const curV = ttsCur();
   ttsMenu.innerHTML = `
     <div class="tts-head">
       <b>Les opp spørsmål</b>
       <label class="tts-switch"><input type="checkbox" ${ttsOn() ? 'checked' : ''} id="ttsOnCb">
         <span></span></label>
     </div>
+    ${!ttsSupport() ? `<p class="ai-note" style="color:var(--red)">Nettleseren støtter ikke TTS.</p>` :
+      voices.length === 0 ? `<p class="ai-note" style="color:var(--red)">Fant ingen stemmer. Prøv å oppdatere siden eller bytt nettleser.</p>` : `
+      <label class="ai-note" style="display:flex; flex-direction:column; gap:4px; margin-bottom: 8px">
+        Stemme ${curV ? `(nå: ${curV.name.slice(0, 28)} · ${curV.lang})` : ''}
+        <select id="ttsVoiceSel" style="background:var(--bg-2); color:var(--ink); border:1px solid var(--card-b); border-radius:6px; padding:6px 8px; font-family:inherit; font-size:12px">
+          <option value="">Auto (norsk hvis tilgjengelig)</option>
+          ${voices.map(v => `<option value="${esc(v.uri)}" ${v.uri === curVoiceURI ? 'selected' : ''}>${esc(v.name)} (${v.lang})</option>`).join('')}
+        </select>
+      </label>`}
     <div class="tts-presets">
       ${Object.entries(TTS_PRESETS).map(([k, v]) => `
         <button class="tts-preset ${k === cur ? 'active' : ''}" data-key="${k}">
           <b>${v.label}</b><span>${v.desc}</span>
         </button>`).join('')}
     </div>
-    <button class="btn btn-ghost btn-sm" id="ttsTestBtn">🔊 Test stemmen</button>`;
+    <button class="btn btn-ghost btn-sm" id="ttsTestBtn" style="width:100%">🔊 Test stemmen</button>`;
   ttsMenu.querySelector('#ttsOnCb').addEventListener('change', e => {
     ttsSetOn(e.target.checked);
     if (!e.target.checked) stopSpeaking();
     refreshTtsBtn();
+  });
+  ttsMenu.querySelector('#ttsVoiceSel')?.addEventListener('change', e => {
+    ttsSetVoice(e.target.value);
+    renderTtsMenu();
   });
   ttsMenu.querySelectorAll('.tts-preset').forEach(b => b.addEventListener('click', () => {
     ttsSetPreset(b.dataset.key);
