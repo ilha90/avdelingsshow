@@ -1,7 +1,6 @@
 // host.js — vert-siden (storskjerm)
 import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } from '/ai.js';
 import { avatarFor, colorFor } from '/avatars.js';
-import { speak, stop as stopSpeaking, isOn as ttsOn, setOn as ttsSetOn, test as ttsTest, hasSupport as ttsSupport, onState as ttsOnState } from '/tts.js';
 import * as bomb3d from '/bomb3d.js';
 import * as snake3d from '/snake3d.js';
 const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
@@ -69,7 +68,6 @@ const main = document.getElementById('main');
 const controls = document.getElementById('controls');
 const phaseTag = document.getElementById('phaseTag');
 const floaters = document.getElementById('floaters');
-const trophiesEl = document.getElementById('trophies');
 
 let state = null;
 let connectUrl = '';
@@ -122,67 +120,62 @@ function toggleSelfPanel(forceOpen) {
 selfPlayBtn?.addEventListener('click', () => toggleSelfPanel());
 document.getElementById('selfPanelClose')?.addEventListener('click', () => toggleSelfPanel(false));
 
-// ===== TTS-meny i topp-bar =====
-const ttsBtn = document.getElementById('ttsBtn');
-const ttsMenu = document.getElementById('ttsMenu');
-function refreshTtsBtn() { ttsBtn.textContent = ttsOn() ? '🎙️' : '🔈'; ttsBtn.style.opacity = ttsOn() ? '1' : '.55'; }
-refreshTtsBtn();
-
-// Visuell indikator når TTS snakker (mascot + topbar-knapp)
+// ===== Animert programleder (mascot) =====
 const mascotEl = document.getElementById('mascot');
 const mascotBubbleEl = document.getElementById('mascotBubble');
 let mascotFadeTimer = null;
+
 function showMascotBubble(text) {
-  if (!mascotEl) return;
+  if (!mascotEl || !text) return;
   mascotEl.classList.add('speaking');
-  ttsBtn?.classList.add('tts-speaking');
   if (mascotBubbleEl) {
     mascotBubbleEl.textContent = text.length > 160 ? text.slice(0, 157) + '…' : text;
     mascotBubbleEl.classList.add('visible');
   }
   if (mascotFadeTimer) clearTimeout(mascotFadeTimer);
-  // Fade ut etter estimert leselengde (~180ms per tegn, min 2s, max 8s)
-  const estMs = Math.max(2000, Math.min(8000, text.length * 70));
+  const estMs = Math.max(2200, Math.min(8000, text.length * 80));
   mascotFadeTimer = setTimeout(() => {
     mascotEl.classList.remove('speaking');
-    ttsBtn?.classList.remove('tts-speaking');
     mascotBubbleEl?.classList.remove('visible');
   }, estMs);
 }
+
 function hostSpeak(text) {
   if (!text) return;
-  showMascotBubble(text);       // Vises uansett om TTS virker
-  speak(text);                  // Audio (kan feile stille)
+  showMascotBubble(text);
 }
-ttsOnState(s => {
-  if (s === 'speaking') {
-    ttsBtn?.classList.add('tts-speaking');
-    mascotEl?.classList.add('speaking');
-  }
-});
-function renderTtsMenu() {
-  ttsMenu.innerHTML = `
-    <div class="tts-head">
-      <b>Les opp spørsmål</b>
-      <label class="tts-switch"><input type="checkbox" ${ttsOn() ? 'checked' : ''} id="ttsOnCb">
-        <span></span></label>
-    </div>
-    ${!ttsSupport() ? `<p class="ai-note" style="color:var(--red)">Nettleseren støtter ikke TTS.</p>` : ''}
-    <button class="btn btn-ghost btn-sm" id="ttsTestBtn" style="width:100%; margin-top:10px">🔊 Test stemmen</button>`;
-  ttsMenu.querySelector('#ttsOnCb').addEventListener('change', e => {
-    ttsSetOn(e.target.checked);
-    refreshTtsBtn();
+
+// Mascot rusler rundt i viewport — forhåndsvalgte hjørnesoner, ikke sentrum
+function wanderMascot() {
+  if (!mascotEl) return;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const W = 140, H = 180;
+  // Soner: nede-venstre, nede-høyre, oppe-venstre, oppe-høyre (unngå sentrum)
+  const zones = [
+    { xMin: 20, xMax: Math.min(260, vw * 0.25), yMin: vh - H - 30, yMax: vh - H - 10 },
+    { xMin: Math.max(vw - 260, vw * 0.75 - 140), xMax: vw - W - 20, yMin: vh - H - 30, yMax: vh - H - 10 },
+    { xMin: 20, xMax: Math.min(200, vw * 0.2), yMin: 90, yMax: 180 },
+    { xMin: Math.max(vw - 220, vw * 0.8 - 140), xMax: vw - W - 20, yMin: 90, yMax: 180 },
+  ];
+  const z = zones[Math.floor(Math.random() * zones.length)];
+  const x = z.xMin + Math.random() * Math.max(10, z.xMax - z.xMin);
+  const y = z.yMin + Math.random() * Math.max(10, z.yMax - z.yMin);
+  const duration = 5 + Math.random() * 4; // 5-9s — rolig tempo
+  mascotEl.style.transition = `transform ${duration}s cubic-bezier(.45,0,.25,1)`;
+  mascotEl.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
+  setTimeout(wanderMascot, (duration + 2 + Math.random() * 3) * 1000);
+}
+// Startposisjon (nede-venstre) og begynn å vandre
+if (mascotEl) {
+  const startY = window.innerHeight - 200;
+  mascotEl.style.transform = `translate3d(30px, ${startY}px, 0)`;
+  setTimeout(wanderMascot, 2000);
+  // Hold mascoten innenfor viewport ved resize
+  window.addEventListener('resize', () => {
+    // Bare oppdater hvis den er langt utenfor
   });
-  ttsMenu.querySelector('#ttsTestBtn').addEventListener('click', (e) => { e.stopPropagation(); ttsTest(); });
 }
-ttsBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const open = ttsMenu.classList.toggle('open');
-  if (open) renderTtsMenu();
-});
-document.addEventListener('click', (e) => {
-  if (!ttsMenu.contains(e.target) && e.target !== ttsBtn) ttsMenu.classList.remove('open');
-});
 
 // ===== Live emoji reactions (flytende bobler) =====
 socket.on('reaction', ({ emoji, from }) => spawnFloater(emoji, from));
@@ -200,29 +193,34 @@ function spawnFloater(emoji, from) {
   setTimeout(() => el.remove(), 4000);
 }
 
-// ===== Trophy popups =====
+// ===== Trofé-annonseringer (via mascoten) =====
 socket.on('trophies', (list) => {
-  list.forEach((t, i) => setTimeout(() => spawnTrophy(t), i * 400));
-  // Les opp trofé-annonseringer (med liten delay så ikke de overlapper hverandre)
+  // Annonser gjennom mascoten + fly emoji fra hans posisjon
   list.forEach((t, i) => setTimeout(() => {
-    if (t.type === 'first' && t.name) hostSpeak(`${t.name} var først ute!`);
-    else if (t.type === 'streak' && t.name) hostSpeak(`${t.name} har ${t.label.toLowerCase()}!`);
-    else if (t.type === 'perfect') hostSpeak('Alle svarte riktig!');
-  }, i * 1800 + 400));
+    let msg = '';
+    if (t.type === 'first' && t.name) msg = `${t.name} var først ute! ⚡`;
+    else if (t.type === 'streak' && t.name) msg = `${t.name} — ${t.label} 🔥`;
+    else if (t.type === 'perfect') msg = 'Alle svarte riktig! 💯';
+    else if (t.name) msg = `${t.emoji || '🏆'} ${t.name} — ${t.label}`;
+    else msg = `${t.emoji || '🏆'} ${t.label}`;
+    hostSpeak(msg);
+    spawnTrophyEmoji(t.emoji || '🏆');
+    window.sfx?.fanfare?.();
+  }, i * 1800 + 300));
 });
 
-function spawnTrophy({ emoji, label, name }) {
+// Trofé-emoji fyres fra mascotens posisjon og flyter oppover
+function spawnTrophyEmoji(emoji) {
+  if (!mascotEl) return;
+  const rect = mascotEl.getBoundingClientRect();
   const el = document.createElement('div');
-  el.className = 'trophy-popup';
-  el.innerHTML = `<div class="trophy-emoji">${emoji}</div>
-    <div class="trophy-content">
-      <div class="trophy-label">${esc(label)}</div>
-      ${name ? `<div class="trophy-name">${esc(name)}</div>` : ''}
-    </div>`;
-  trophiesEl.appendChild(el);
-  window.sfx?.fanfare();
-  setTimeout(() => el.classList.add('fade'), 2500);
-  setTimeout(() => el.remove(), 3200);
+  el.className = 'trophy-emoji-float';
+  el.textContent = emoji;
+  el.style.left = (rect.left + rect.width / 2) + 'px';
+  el.style.top = (rect.top + 20) + 'px';
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('fly'), 30);
+  setTimeout(() => el.remove(), 2800);
 }
 
 socket.on('state', s => {

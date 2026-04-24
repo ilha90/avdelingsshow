@@ -857,11 +857,13 @@ body.self-panel-open .host-controls { padding-right: 440px; transition: padding-
 .zoom-btn:hover, .zoom-btn:active { background: rgba(0, 168, 119, .4); transform: scale(.94); }
 
 /* ============ Animert programleder (mascot) ============ */
-.mascot { position: fixed; bottom: 20px; left: 20px; z-index: 1500;
-  width: 120px; pointer-events: none;
+.mascot { position: fixed; top: 0; left: 0; z-index: 1500;
+  width: 140px; pointer-events: none;
   display: flex; flex-direction: column; align-items: center;
-  opacity: 0.55; transition: opacity .3s ease, transform .3s ease; }
-.mascot.speaking { opacity: 1; transform: translateY(-4px); }
+  opacity: 0.75;
+  transform: translate3d(30px, calc(100vh - 220px), 0);
+  will-change: transform; }
+.mascot.speaking { opacity: 1; }
 .mascot-body { position: relative; width: 100px; height: 100px;
   border-radius: 50% 50% 45% 45%;
   background: linear-gradient(135deg, #5de0ae, #00a877 70%, #006e51);
@@ -901,3 +903,10 @@ body.self-panel-open .host-controls { padding-right: 440px; transition: padding-
   opacity: 0; transform: translateY(-6px); transition: opacity .25s, transform .25s;
   max-height: 80px; overflow: hidden; }
 .mascot-bubble.visible { opacity: 1; transform: translateY(0); }
+
+/* ============ Trofé-emoji som flyr fra mascoten ============ */
+.trophy-emoji-float { position: fixed; z-index: 1600; font-size: 48px;
+  pointer-events: none; transform: translate(-50%, -50%) scale(0.3);
+  opacity: 0; transition: transform 2.5s cubic-bezier(.3,1.6,.5,1), opacity 2.5s ease-out;
+  filter: drop-shadow(0 4px 16px rgba(212,175,55,.6)); }
+.trophy-emoji-float.fly { transform: translate(-50%, -180px) scale(1.4) rotate(15deg); opacity: 1; }
