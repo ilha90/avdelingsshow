@@ -240,8 +240,7 @@ function triggerPhaseEffects(prev, s) {
     if (s.phase === 'scatter-review') { window.sfx?.reveal(); stopSpeaking(); }
   }
   // TTS: les opp nye spørsmål / avstemninger / icebreaker-prompts
-  const qChanged = s.qIndex !== (prev.qIndex ?? -99);
-  if (s.phase === 'question' && qChanged && s.question) {
+  if (s.phase === 'question' && prev.phase !== 'question' && s.question && s.question.text) {
     if (!s.question.isEmoji) speak(s.question.text);
   }
   if (s.phase === 'voting' && prev.phase !== 'voting') {
