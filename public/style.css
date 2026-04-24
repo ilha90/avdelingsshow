@@ -51,6 +51,8 @@ body::before {
   border: 1px solid var(--card-b); font-size: 13px; color: var(--ink-2); letter-spacing: 1px; text-transform: uppercase; }
 
 .host-main { flex: 1; padding: 24px 60px; display: flex; flex-direction: column; overflow-y: auto; min-height: 0; }
+.host-main > * { animation: phaseFadeIn .5s cubic-bezier(.2,.8,.4,1) both; }
+@keyframes phaseFadeIn { from { opacity: 0; transform: translateY(14px); } }
 
 /* LOBBY on host */
 .lobby { display: grid; grid-template-columns: 1.1fr 1fr; gap: 36px; flex: 1; align-items: start; min-height: 0; }
@@ -90,11 +92,20 @@ body::before {
 .q-meta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; color: var(--ink-2); font-size: 16px; letter-spacing: 1px; text-transform: uppercase; }
 .q-text { font-size: 54px; font-weight: 700; text-align: center; line-height: 1.2; padding: 30px 20px; max-width: 1200px; margin: 0 auto; }
 .q-emoji { font-size: 120px; text-align: center; letter-spacing: 10px; }
-.timer { height: 14px; background: rgba(255,255,255,.1); border-radius: 999px; overflow: hidden; margin: 20px 0; }
-.timer-bar { height: 100%; background: linear-gradient(90deg, var(--green), var(--yellow), var(--red)); transition: width .1s linear; border-radius: 999px; }
+.timer { height: 14px; background: rgba(255,255,255,.1); border-radius: 999px; overflow: hidden; margin: 20px 0; position: relative; }
+.timer-bar { height: 100%; background: linear-gradient(90deg, var(--green), var(--yellow), var(--red)); transition: width .1s linear; border-radius: 999px; box-shadow: 0 0 20px rgba(212,175,55,.4); }
+.timer-bar.urgent { animation: timerPulse .5s infinite; }
+@keyframes timerPulse { 0%, 100% { box-shadow: 0 0 20px rgba(229,75,75,.6); } 50% { box-shadow: 0 0 40px rgba(229,75,75,.95); } }
+
 .options { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 20px; }
 .option { padding: 26px 30px; border-radius: 18px; font-size: 26px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 18px; min-height: 100px;
-  transition: all .3s; border: 3px solid transparent; }
+  transition: all .3s; border: 3px solid transparent;
+  animation: optionSlideIn .5s cubic-bezier(.34,1.56,.64,1) both; }
+.option:nth-child(1) { animation-delay: .05s; }
+.option:nth-child(2) { animation-delay: .15s; }
+.option:nth-child(3) { animation-delay: .25s; }
+.option:nth-child(4) { animation-delay: .35s; }
+@keyframes optionSlideIn { from { transform: translateY(30px) scale(.9); opacity: 0; } }
 .option .marker { width: 42px; height: 42px; border-radius: 10px; background: rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; font-weight: 800; flex-shrink: 0; }
 .option-0 { background: var(--red); }
 .option-1 { background: var(--blue); }

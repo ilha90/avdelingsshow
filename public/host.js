@@ -1268,8 +1268,9 @@ function animateTimer(startedAt, limit) {
     const elapsed = Date.now() - startedAt;
     const pct = Math.max(0, 1 - elapsed / limit);
     bar.style.width = (pct * 100).toFixed(1) + '%';
-    // Tick sounds in last 5 seconds
     const secondsLeft = Math.ceil((limit - elapsed) / 1000);
+    if (secondsLeft <= 3 && secondsLeft > 0) bar.classList.add('urgent');
+    else bar.classList.remove('urgent');
     if (secondsLeft <= 5 && secondsLeft > 0 && secondsLeft !== lastTickSecond && !state.paused) {
       lastTickSecond = secondsLeft;
       window.sfx?.countdown();
