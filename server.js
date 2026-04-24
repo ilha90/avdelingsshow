@@ -676,10 +676,15 @@ function snakeSnapshot() {
 function endSnake() {
   snakeCleanTimers();
   if (!game.snake) return;
-  // Award main-game points
+  // Award main-game points (både individ og lag)
   for (const [sid, s] of game.snake.snakes) {
     const p = game.players.get(sid);
-    if (p) p.score += s.score;
+    if (!p) continue;
+    p.score += s.score;
+    if (game.teamMode && p.teamId != null) {
+      const team = game.teams.find(t => t.id === p.teamId);
+      if (team) team.score += s.score;
+    }
   }
   game.phase = 'snake-end';
   broadcast();
@@ -981,7 +986,12 @@ function endBomberman() {
       p.score += 200;
     }
     const mp = game.players.get(p.id);
-    if (mp) mp.score += p.score;
+    if (!mp) continue;
+    mp.score += p.score;
+    if (game.teamMode && mp.teamId != null) {
+      const team = game.teams.find(t => t.id === mp.teamId);
+      if (team) team.score += p.score;
+    }
   }
   game.phase = 'bomb-end';
   broadcast();
