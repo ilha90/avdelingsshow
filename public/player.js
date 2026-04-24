@@ -443,7 +443,7 @@ function renderBombPlayer() {
       <div class="snake-player-top">
         <div class="snake-player-info" style="color:${color}">
           ${my?.emoji || '💣'} <b>${my ? my.score + ' p' : '0 p'}</b>
-          ${my ? `<span class="bomb-stats"> · 💣×${my.bombsMax} · ▶${my.range}${my.kills ? ' · ☠️' + my.kills : ''}</span>` : ''}
+          ${my ? `<span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>` : ''}
           ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
         </div>
         ${bombSnap && !bombSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
@@ -527,7 +527,7 @@ function updateBombPlayer() {
   if (info && my) {
     info.innerHTML = `
       ${my.emoji || '💣'} <b>${my.score} p</b>
-      <span class="bomb-stats"> · 💣×${my.bombsMax} · ▶${my.range}${my.kills ? ' · ☠️' + my.kills : ''}</span>
+      <span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>
       ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 💀 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}`;
     info.style.color = my.color;
   }
@@ -553,9 +553,10 @@ function drawBombMini() {
       else if (v === 2) { ctx.fillStyle = '#8a5f35'; ctx.fillRect(offX + x*cell+1, offY + y*cell+1, cell-2, cell-2); }
     }
   }
-  // Powerups
+  // Powerups (fargekodet)
+  const PU_COLOR = { bomb: '#e54b4b', range: '#ffbe0b', shield: '#3a86ff', gold: '#d4af37' };
   for (const u of bombSnap.powerups) {
-    ctx.fillStyle = u.type === 'bomb' ? '#e54b4b' : '#ffbe0b';
+    ctx.fillStyle = PU_COLOR[u.type] || '#fff';
     ctx.beginPath(); ctx.arc(offX + u.x*cell + cell/2, offY + u.y*cell + cell/2, cell * 0.35, 0, Math.PI * 2); ctx.fill();
   }
   // Bomber

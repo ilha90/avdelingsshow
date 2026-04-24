@@ -948,6 +948,7 @@ function bombRespawnPlayer(sid, player) {
     player.x = pos.x; player.y = pos.y;
     player.nextDir = null;
     player.alive = true; player.deadAt = 0;
+    player.shield = 1; // respawn-beskyttelse (1 treff)
     // Clear cells around spawn of soft walls
     for (const [dx, dy] of [[0,0],[0,1],[1,0],[0,-1],[-1,0]]) {
       const nx = pos.x + dx, ny = pos.y + dy;
@@ -992,6 +993,7 @@ function startBomberman() {
       x: pos.x, y: pos.y,
       nextDir: null, alive: true, deadAt: 0,
       bombsMax: 1, bombsPlaced: 0, range: 2,
+      shield: 0,
       score: 0, kills: 0,
     });
   }
@@ -1053,8 +1055,10 @@ function bombermanTickInner() {
           const puIdx = b.powerups.findIndex(u => u.x === nx && u.y === ny);
           if (puIdx >= 0) {
             const pu = b.powerups[puIdx];
-            if (pu.type === 'bomb') p.bombsMax += 1;
-            else if (pu.type === 'range') p.range += 1;
+            if (pu.type === 'bomb') p.bombsMax = Math.min(8, p.bombsMax + 1);
+            else if (pu.type === 'range') p.range = Math.min(10, p.range + 1);
+            else if (pu.type === 'shield') p.shield = (p.shield || 0) + 1;
+            else if (pu.type === 'gold') p.score += 50;
             b.powerups.splice(puIdx, 1);
           }
         }
@@ -1097,9 +1101,14 @@ function detonateBomb(bomb) {
       if (cell === 2) {
         grid[idx(nx, ny)] = 0;
         b.wallsVersion = (b.wallsVersion || 0) + 1;
-        // 40% sjanse for powerup
-        if (Math.random() < 0.4) {
-          const type = Math.random() < 0.5 ? 'bomb' : 'range';
+        // 45% sjanse for powerup, vektet fordeling
+        if (Math.random() < 0.45) {
+          const r = Math.random();
+          let type;
+          if (r < 0.35) type = 'bomb';        // 35%
+          else if (r < 0.70) type = 'range';  // 35%
+          else if (r < 0.88) type = 'shield'; // 18%
+          else type = 'gold';                  // 12%
           b.powerups.push({ x: nx, y: ny, type });
         }
         break; // soft wall stopper
@@ -1127,6 +1136,11 @@ function addExplosion(x, y, ownerId) {
 
 function killPlayer(p, byOwnerId) {
   if (!p.alive) return;
+  // Shield absorberer én eksplosjon
+  if ((p.shield || 0) > 0) {
+    p.shield -= 1;
+    return;
+  }
   p.alive = false;
   p.deadAt = Date.now();
   if (byOwnerId && byOwnerId !== p.id) {
@@ -1151,7 +1165,7 @@ function bombSnapshot(includeWalls = false) {
     players: [...b.players.values()].map(p => ({
       id: p.id, name: p.name, emoji: p.emoji, color: p.color,
       x: p.x, y: p.y, alive: p.alive, score: p.score, kills: p.kills,
-      bombsMax: p.bombsMax, range: p.range,
+      bombsMax: p.bombsMax, range: p.range, shield: p.shield || 0,
       respawnIn: !p.alive && p.deadAt ? Math.max(0, BOMB_RESPAWN_MS - (now - p.deadAt)) : 0,
     })),
     bombs: b.bombs.map(bb => ({ x: bb.x, y: bb.y, ownerId: bb.ownerId, tLeft: Math.max(0, bb.explodesAt - now) })),

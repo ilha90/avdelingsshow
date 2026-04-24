@@ -1079,91 +1079,46 @@ function drawBomb() {
   const totalW = cell * bombSnap.grid.w;
   const totalH = cell * bombSnap.grid.h;
   canvas.height = totalH;
-
-  // Bakgrunn (gress)
-  ctx.fillStyle = '#1a2e1f';
-  ctx.fillRect(0, 0, totalW, totalH);
-  // Subtile grass-prikker
-  ctx.fillStyle = 'rgba(255,255,255,0.025)';
-  for (let i = 0; i < 200; i++) {
-    ctx.fillRect(Math.random() * totalW, Math.random() * totalH, 2, 2);
-  }
-
-  // Vegger
   const W = bombSnap.grid.w;
-  for (let y = 0; y < bombSnap.grid.h; y++) {
+  const H = bombSnap.grid.h;
+  const now = Date.now();
+
+  // === Bakgrunn: sjakkrutet gulv ===
+  for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      const v = bombSnap.walls[y * W + x];
-      if (v === 1) {
-        // Hard mur (mørk stein)
-        const grad = ctx.createLinearGradient(x*cell, y*cell, x*cell, (y+1)*cell);
-        grad.addColorStop(0, '#4a4a55');
-        grad.addColorStop(1, '#2a2a35');
-        ctx.fillStyle = grad;
-        ctx.fillRect(x*cell, y*cell, cell, cell);
-        ctx.strokeStyle = 'rgba(0,0,0,.3)';
-        ctx.strokeRect(x*cell+0.5, y*cell+0.5, cell-1, cell-1);
-      } else if (v === 2) {
-        // Myk mur (tre)
-        const grad = ctx.createLinearGradient(x*cell, y*cell, x*cell, (y+1)*cell);
-        grad.addColorStop(0, '#a06a3f');
-        grad.addColorStop(1, '#6f4721');
-        ctx.fillStyle = grad;
-        ctx.fillRect(x*cell+2, y*cell+2, cell-4, cell-4);
-        ctx.strokeStyle = 'rgba(0,0,0,.4)';
-        ctx.beginPath();
-        ctx.moveTo(x*cell + cell/2, y*cell + 2);
-        ctx.lineTo(x*cell + cell/2, y*cell + cell - 2);
-        ctx.stroke();
-      }
+      const even = (x + y) % 2 === 0;
+      ctx.fillStyle = even ? '#1e3325' : '#18281c';
+      ctx.fillRect(x*cell, y*cell, cell, cell);
     }
   }
 
-  // Powerups
+  // === Vegger ===
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const v = bombSnap.walls[y * W + x];
+      if (v === 1) drawBrickWall(ctx, x*cell, y*cell, cell);
+      else if (v === 2) drawCrate(ctx, x*cell, y*cell, cell);
+    }
+  }
+
+  // === Powerups ===
   for (const u of bombSnap.powerups) {
-    const cx = u.x * cell + cell/2, cy = u.y * cell + cell/2;
-    const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
-    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.5);
-    if (u.type === 'bomb') { grad.addColorStop(0, '#fff'); grad.addColorStop(1, 'rgba(255,80,80,0)'); }
-    else { grad.addColorStop(0, '#fff'); grad.addColorStop(1, 'rgba(255,190,11,0)'); }
-    ctx.fillStyle = grad;
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.5 * pulse, 0, Math.PI * 2); ctx.fill();
-    // Icon
-    ctx.fillStyle = u.type === 'bomb' ? '#e54b4b' : '#ffbe0b';
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.25, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = `bold ${cell * 0.3}px system-ui`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(u.type === 'bomb' ? '+' : '▶', cx, cy + 1);
+    drawPowerup(ctx, u.x*cell + cell/2, u.y*cell + cell/2, cell, u.type, now);
   }
 
-  // Bomber
+  // === Bomber ===
   for (const b of bombSnap.bombs) {
-    const cx = b.x * cell + cell/2, cy = b.y * cell + cell/2;
-    const f = Math.max(0, b.tLeft / 2500);
-    const pulse = 1 + 0.2 * Math.sin(Date.now() / (100 + f * 300));
-    // Glow
-    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell);
-    glow.addColorStop(0, 'rgba(229,75,75,.4)');
-    glow.addColorStop(1, 'rgba(229,75,75,0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(cx, cy, cell, 0, Math.PI * 2); ctx.fill();
-    // Body
-    ctx.fillStyle = '#1a1a1a';
-    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.38 * pulse, 0, Math.PI * 2); ctx.fill();
-    // Fuse
-    ctx.fillStyle = f > 0.5 ? '#ffbe0b' : '#e54b4b';
-    ctx.fillRect(cx - 2, cy - cell * 0.5, 4, cell * 0.15);
+    drawBombShape(ctx, b.x*cell + cell/2, b.y*cell + cell/2, cell, b.tLeft, now);
   }
 
-  // Eksplosjoner
+  // === Eksplosjoner ===
   for (const e of bombSnap.explosions) {
     const cx = e.x * cell + cell/2, cy = e.y * cell + cell/2;
     const f = e.tLeft / 700;
     const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 0.7);
     grad.addColorStop(0, `rgba(255,255,220,${f})`);
     grad.addColorStop(0.4, `rgba(255,180,0,${f * .8})`);
-    grad.addColorStop(1, `rgba(255,60,0,0)`);
+    grad.addColorStop(1, 'rgba(255,60,0,0)');
     ctx.fillStyle = grad;
     ctx.fillRect(e.x * cell, e.y * cell, cell, cell);
     // Sparks
@@ -1174,13 +1129,28 @@ function drawBomb() {
     }
   }
 
-  // Spillere
+  // === Spillere ===
   for (const p of bombSnap.players) {
     if (!p.alive && !p.deadAt) continue;
     const cx = p.x * cell + cell/2, cy = p.y * cell + cell/2;
     ctx.globalAlpha = p.alive ? 1 : 0.3;
-    // Glow
-    ctx.shadowColor = p.color; ctx.shadowBlur = p.alive ? 16 : 0;
+    // Skygge under
+    ctx.fillStyle = 'rgba(0,0,0,.4)';
+    ctx.beginPath(); ctx.ellipse(cx, cy + cell*0.3, cell*0.32, cell*0.1, 0, 0, Math.PI*2); ctx.fill();
+    // Skjold-aura (pulserende ring)
+    if (p.alive && p.shield > 0) {
+      const sp = 1 + 0.1 * Math.sin(now / 150);
+      const shieldGrad = ctx.createRadialGradient(cx, cy, cell*0.3, cx, cy, cell*0.65*sp);
+      shieldGrad.addColorStop(0, 'rgba(93,224,255,0)');
+      shieldGrad.addColorStop(0.7, 'rgba(93,224,255,.4)');
+      shieldGrad.addColorStop(1, 'rgba(93,224,255,0)');
+      ctx.fillStyle = shieldGrad;
+      ctx.beginPath(); ctx.arc(cx, cy, cell*0.65*sp, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(180,240,255,.8)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(cx, cy, cell*0.55*sp, 0, Math.PI*2); ctx.stroke();
+    }
+    // Farge-glow
+    ctx.shadowColor = p.color; ctx.shadowBlur = p.alive ? 14 : 0;
     ctx.fillStyle = p.color;
     ctx.beginPath(); ctx.arc(cx, cy, cell * 0.4, 0, Math.PI * 2); ctx.fill();
     ctx.shadowBlur = 0;
@@ -1201,6 +1171,155 @@ function drawBomb() {
   updateBombScores();
 }
 
+// ---- Tegnehjelpere ----
+function drawBrickWall(ctx, x, y, cell) {
+  // Base-gradient
+  const grad = ctx.createLinearGradient(x, y, x, y + cell);
+  grad.addColorStop(0, '#5c5c68');
+  grad.addColorStop(0.5, '#444450');
+  grad.addColorStop(1, '#2c2c38');
+  ctx.fillStyle = grad;
+  ctx.fillRect(x, y, cell, cell);
+  // Brick-mønster (2 rader)
+  ctx.strokeStyle = 'rgba(0,0,0,.45)';
+  ctx.lineWidth = 1;
+  const h = cell / 2;
+  ctx.beginPath();
+  // Horisontale fuger
+  ctx.moveTo(x, y + h); ctx.lineTo(x + cell, y + h);
+  // Vertikal fuge i midten av rad 1 (full cell bredde)
+  ctx.moveTo(x + cell/2, y); ctx.lineTo(x + cell/2, y + h);
+  // Vertikal fuge i rad 2 (forskjøvet — en kvart inn fra hver side)
+  ctx.moveTo(x + cell*0.25, y + h); ctx.lineTo(x + cell*0.25, y + cell);
+  ctx.moveTo(x + cell*0.75, y + h); ctx.lineTo(x + cell*0.75, y + cell);
+  ctx.stroke();
+  // Topp-highlight
+  ctx.strokeStyle = 'rgba(255,255,255,.12)';
+  ctx.beginPath(); ctx.moveTo(x+1, y+1); ctx.lineTo(x + cell - 1, y + 1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x+1, y+1); ctx.lineTo(x + 1, y + cell - 1); ctx.stroke();
+  // Bunn-shadow
+  ctx.strokeStyle = 'rgba(0,0,0,.35)';
+  ctx.beginPath(); ctx.moveTo(x+1, y + cell - 0.5); ctx.lineTo(x + cell - 1, y + cell - 0.5); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + cell - 0.5, y+1); ctx.lineTo(x + cell - 0.5, y + cell - 1); ctx.stroke();
+}
+
+function drawCrate(ctx, x, y, cell) {
+  const pad = 2;
+  const w = cell - pad*2;
+  // Base-tregradient
+  const grad = ctx.createLinearGradient(x, y, x, y + cell);
+  grad.addColorStop(0, '#c48555');
+  grad.addColorStop(0.5, '#9a6233');
+  grad.addColorStop(1, '#6a3f1d');
+  ctx.fillStyle = grad;
+  ctx.fillRect(x + pad, y + pad, w, w);
+  // Kryss-diagonaler (tregrain)
+  ctx.strokeStyle = 'rgba(0,0,0,.35)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x + pad, y + pad); ctx.lineTo(x + cell - pad, y + cell - pad);
+  ctx.moveTo(x + cell - pad, y + pad); ctx.lineTo(x + pad, y + cell - pad);
+  ctx.stroke();
+  // Metallbeslag-ramme
+  ctx.strokeStyle = '#3a2612';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + pad + 1, y + pad + 1, w - 2, w - 2);
+  // Spiker i hjørnene
+  ctx.fillStyle = '#e3c477';
+  const nails = [[pad+3, pad+3], [cell-pad-3, pad+3], [pad+3, cell-pad-3], [cell-pad-3, cell-pad-3]];
+  for (const [nx, ny] of nails) {
+    ctx.beginPath(); ctx.arc(x + nx, y + ny, 1.2, 0, Math.PI*2); ctx.fill();
+  }
+  // Topp-highlight
+  ctx.strokeStyle = 'rgba(255,220,180,.35)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x + pad + 1, y + pad + 1); ctx.lineTo(x + cell - pad - 1, y + pad + 1); ctx.stroke();
+}
+
+const POWERUP_STYLES = {
+  bomb:   { bg: '#e54b4b', glow: 'rgba(229,75,75,.6)', emoji: '💣', label: '+1' },
+  range:  { bg: '#ffbe0b', glow: 'rgba(255,190,11,.6)', emoji: '🔥', label: '+1' },
+  shield: { bg: '#3a86ff', glow: 'rgba(93,224,255,.6)', emoji: '🛡️', label: '' },
+  gold:   { bg: '#d4af37', glow: 'rgba(212,175,55,.7)', emoji: '⭐', label: '+50' },
+};
+
+function drawPowerup(ctx, cx, cy, cell, type, now) {
+  const style = POWERUP_STYLES[type] || POWERUP_STYLES.bomb;
+  const pulse = 0.88 + 0.12 * Math.sin(now / 180);
+  const bounce = Math.sin(now / 220) * cell * 0.05;
+  // Ytre glow
+  const glow = ctx.createRadialGradient(cx, cy + bounce, 0, cx, cy + bounce, cell * 0.62);
+  glow.addColorStop(0, style.glow);
+  glow.addColorStop(1, 'transparent');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(cx, cy + bounce, cell * 0.62 * pulse, 0, Math.PI * 2); ctx.fill();
+  // Skygge under
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
+  ctx.beginPath(); ctx.ellipse(cx, cy + cell*0.32, cell*0.25, cell*0.08, 0, 0, Math.PI*2); ctx.fill();
+  // Hoved-kapsel (farget bakgrunn)
+  ctx.fillStyle = style.bg;
+  ctx.beginPath(); ctx.arc(cx, cy + bounce, cell * 0.32 * pulse, 0, Math.PI * 2); ctx.fill();
+  // Hvit ring rundt
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy + bounce, cell * 0.32 * pulse, 0, Math.PI * 2); ctx.stroke();
+  // Emoji i midten
+  ctx.font = `${cell * 0.40}px system-ui`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(style.emoji, cx, cy + bounce + 1);
+  // Liten "+1" / "+50" badge
+  if (style.label) {
+    ctx.fillStyle = '#fff';
+    ctx.font = `bold ${cell * 0.22}px system-ui`;
+    ctx.fillText(style.label, cx, cy + bounce + cell * 0.38);
+  }
+}
+
+function drawBombShape(ctx, cx, cy, cell, tLeft, now) {
+  const f = Math.max(0, tLeft / 2500);
+  const panicRate = 100 + f * 300;
+  const pulse = 1 + 0.18 * Math.sin(now / panicRate);
+  const r = cell * 0.36 * pulse;
+  // Skygge
+  ctx.fillStyle = 'rgba(0,0,0,.5)';
+  ctx.beginPath(); ctx.ellipse(cx, cy + cell*0.32, cell*0.28, cell*0.08, 0, 0, Math.PI*2); ctx.fill();
+  // Glow rundt (rødere jo nærmere detonasjon)
+  const glowAlpha = 0.35 + (1 - f) * 0.45;
+  const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell);
+  glow.addColorStop(0, `rgba(229,75,75,${glowAlpha})`);
+  glow.addColorStop(1, 'rgba(229,75,75,0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(cx, cy, cell, 0, Math.PI * 2); ctx.fill();
+  // Bombe-kropp (svart kule med highlight)
+  ctx.fillStyle = '#0f0f0f';
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  // Highlight (øvre venstre refleks)
+  ctx.fillStyle = 'rgba(255,255,255,.25)';
+  ctx.beginPath();
+  ctx.ellipse(cx - r*0.35, cy - r*0.4, r*0.25, r*0.15, -0.5, 0, Math.PI*2);
+  ctx.fill();
+  // Fuse-stang (lite metall-topp)
+  ctx.fillStyle = '#555';
+  ctx.fillRect(cx - cell*0.05, cy - r - cell*0.12, cell*0.1, cell*0.08);
+  // Fuse-snor
+  ctx.strokeStyle = '#c08040';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const fuseLen = cell * 0.22;
+  const wiggle = Math.sin(now / 80) * cell * 0.04;
+  ctx.moveTo(cx, cy - r - cell*0.12);
+  ctx.quadraticCurveTo(cx + wiggle, cy - r - cell*0.12 - fuseLen*0.6, cx + cell*0.08, cy - r - cell*0.12 - fuseLen);
+  ctx.stroke();
+  // Gnist på tuppen
+  const sparkSize = (1 - f) * cell * 0.16 + cell * 0.04;
+  const sparkAlpha = 0.7 + 0.3 * Math.sin(now / 50);
+  const sparkGrad = ctx.createRadialGradient(cx + cell*0.08, cy - r - cell*0.12 - fuseLen, 0, cx + cell*0.08, cy - r - cell*0.12 - fuseLen, sparkSize);
+  sparkGrad.addColorStop(0, `rgba(255,255,180,${sparkAlpha})`);
+  sparkGrad.addColorStop(0.5, `rgba(255,180,40,${sparkAlpha*0.7})`);
+  sparkGrad.addColorStop(1, 'rgba(255,60,0,0)');
+  ctx.fillStyle = sparkGrad;
+  ctx.beginPath(); ctx.arc(cx + cell*0.08, cy - r - cell*0.12 - fuseLen, sparkSize, 0, Math.PI*2); ctx.fill();
+}
+
 function updateBombScores() {
   const el = document.getElementById('bombScores');
   if (!el || !bombSnap) return;
@@ -1211,7 +1330,7 @@ function updateBombScores() {
       <div class="snake-score-name">${s.emoji || '💣'} ${esc(s.name)}</div>
       <div class="snake-score-val" style="color:${s.color}">${s.score}</div>
       ${!s.alive && s.respawnIn > 0 ? `<div class="snake-score-resp">↺ ${Math.ceil(s.respawnIn/1000)}s</div>` : ''}
-      ${s.alive ? `<div class="snake-score-resp">💣×${s.bombsMax} · ▶${s.range}</div>` : ''}
+      ${s.alive ? `<div class="snake-score-resp">💣×${s.bombsMax} · 🔥${s.range}${s.shield > 0 ? ' · 🛡️' : ''}</div>` : ''}
     </div>`).join('');
 }
 
