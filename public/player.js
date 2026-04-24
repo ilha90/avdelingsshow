@@ -337,32 +337,57 @@ function drawSnakeMini() {
   // Bakgrunn
   ctx.fillStyle = '#0b0d1a';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = 'rgba(212,175,55,0.25)';
+  ctx.strokeStyle = 'rgba(93,224,174,0.2)';
   ctx.lineWidth = 1;
   ctx.strokeRect(offX, offY, cell * snakeSnap.grid.w, cell * snakeSnap.grid.h);
   // Mat
   for (const f of snakeSnap.food) {
-    ctx.fillStyle = '#d4af37';
+    ctx.fillStyle = '#5de0ae';
     ctx.beginPath();
     ctx.arc(offX + f.x * cell + cell/2, offY + f.y * cell + cell/2, cell * 0.4, 0, Math.PI * 2);
     ctx.fill();
   }
-  // Slanger
+  // Tegn andre slanger FØRST (så dempet)
   for (const s of snakeSnap.snakes) {
     if (!s.body.length) continue;
     const isMe = s.name === me;
-    ctx.globalAlpha = s.alive ? (isMe ? 1 : 0.6) : 0.2;
+    if (isMe) continue;
+    ctx.globalAlpha = s.alive ? 0.35 : 0.15;
     ctx.fillStyle = s.color;
-    for (let i = 1; i < s.body.length; i++) {
-      const seg = s.body[i];
+    for (const seg of s.body) {
       ctx.fillRect(offX + seg.x * cell + 0.5, offY + seg.y * cell + 0.5, cell - 1, cell - 1);
     }
-    const head = s.body[0];
-    if (isMe && s.alive) {
-      ctx.shadowColor = s.color; ctx.shadowBlur = 10;
+  }
+  ctx.globalAlpha = 1;
+  // Tegn MIN slange med full kraft + glow + puls
+  const my = snakeSnap.snakes.find(s => s.name === me);
+  if (my && my.body.length) {
+    const pulse = 1 + 0.15 * Math.sin(Date.now() / 200);
+    ctx.fillStyle = my.color;
+    ctx.globalAlpha = my.alive ? 1 : 0.4;
+    for (let i = 1; i < my.body.length; i++) {
+      const seg = my.body[i];
+      ctx.fillRect(offX + seg.x * cell, offY + seg.y * cell, cell, cell);
     }
-    ctx.fillRect(offX + head.x * cell, offY + head.y * cell, cell, cell);
+    const head = my.body[0];
+    if (my.alive) { ctx.shadowColor = my.color; ctx.shadowBlur = 18; }
+    ctx.fillRect(offX + head.x * cell - 0.5, offY + head.y * cell - 0.5, cell + 1, cell + 1);
     ctx.shadowBlur = 0;
+    // Hvit omriss rundt hode
+    if (my.alive) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.strokeRect(offX + head.x * cell + 0.5, offY + head.y * cell + 0.5, cell - 1, cell - 1);
+      // DU-pil over hodet
+      const px = offX + head.x * cell + cell/2;
+      const py = offY + head.y * cell - 6 * pulse;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px - 5, py - 6);
+      ctx.lineTo(px + 5, py - 6);
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.globalAlpha = 1;
   }
 }
@@ -521,21 +546,43 @@ function drawBombMini() {
     ctx.fillStyle = `rgba(255,180,60,${e.tLeft / 700})`;
     ctx.fillRect(offX + e.x*cell, offY + e.y*cell, cell, cell);
   }
-  // Spillere
+  // ANDRE spillere (dempet)
   for (const p of bombSnap.players) {
-    if (!p.alive) continue;
-    const isMe = p.name === me;
-    ctx.globalAlpha = isMe ? 1 : 0.8;
-    if (isMe) { ctx.shadowColor = p.color; ctx.shadowBlur = 8; }
+    if (!p.alive || p.name === me) continue;
+    ctx.globalAlpha = 0.45;
     ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(offX + p.x*cell + cell/2, offY + p.y*cell + cell/2, cell * 0.45, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
-    if (isMe) {
-      // Ekstra marker rund deg
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(offX + p.x*cell + cell/2, offY + p.y*cell + cell/2, cell * 0.5, 0, Math.PI * 2); ctx.stroke();
-    }
+    ctx.beginPath(); ctx.arc(offX + p.x*cell + cell/2, offY + p.y*cell + cell/2, cell * 0.4, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  // MIN spiller — hvit ring + pulserende glow + "DU"-pil
+  const my = bombSnap.players.find(p => p.name === me);
+  if (my && my.alive) {
+    const cx = offX + my.x*cell + cell/2, cy = offY + my.y*cell + cell/2;
+    const pulse = 1 + 0.18 * Math.sin(Date.now() / 200);
+    // Glow
+    const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, cell * 1.2);
+    glow.addColorStop(0, my.color);
+    glow.addColorStop(1, 'transparent');
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 1.1 * pulse, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
+    // Hoved-sirkel
+    ctx.shadowColor = my.color; ctx.shadowBlur = 20;
+    ctx.fillStyle = my.color;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.5, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    // Hvit ring + DU-pil
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, cell * 0.58 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = '#fff';
+    const py = cy - cell * 0.95 - 4 * pulse;
+    ctx.beginPath();
+    ctx.moveTo(cx, py);
+    ctx.lineTo(cx - 6, py - 8);
+    ctx.lineTo(cx + 6, py - 8);
+    ctx.closePath();
+    ctx.fill();
   }
 }
 
