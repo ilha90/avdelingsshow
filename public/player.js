@@ -613,20 +613,27 @@ function renderBombPlayer() {
     playerBombNeedsInit = false;
   }
   // Hent lagret zoom og sett på bomb3d
-  const savedZoom = parseFloat(localStorage.getItem('bomb-zoom') || '1.0');
+  const savedZoom = parseFloat(localStorage.getItem('bomb-zoom') || '1.6');
   bomb3d.setZoom(savedZoom);
-  // Zoom-knapper
+  const myIdForZoom = bombSnap.players.find(p => p.name === me)?.id || null;
+  // Zoom-modus: <1.5 = følge spilleren, ellers oversikt
+  function applyZoomMode(z) {
+    if (z <= 1.4) bomb3d.setCameraMode('follow', myIdForZoom);
+    else bomb3d.setCameraMode('overview');
+  }
+  applyZoomMode(savedZoom);
   const zIn = document.getElementById('zoomIn');
   const zOut = document.getElementById('zoomOut');
   function bumpZoom(delta) {
     const cur = bomb3d.getZoom();
-    const next = Math.max(0.5, Math.min(2.5, cur + delta));
+    const next = Math.max(0.6, Math.min(2.2, cur + delta));
     bomb3d.setZoom(next);
+    applyZoomMode(next);
     localStorage.setItem('bomb-zoom', String(next));
     buzz(10);
   }
-  zIn?.addEventListener('click', () => bumpZoom(-0.25));
-  zOut?.addEventListener('click', () => bumpZoom(+0.25));
+  zIn?.addEventListener('click', () => bumpZoom(-0.3));
+  zOut?.addEventListener('click', () => bumpZoom(+0.3));
   startPlayerBombRAF();
 }
 

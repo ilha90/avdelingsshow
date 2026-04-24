@@ -1,10 +1,9 @@
-// tts.js — Text-to-speech robust variant
-// Default: PÅ — brukeren kan skru av via menyen.
+// tts.js — Text-to-speech, robust
+// Default: PÅ. Kan skrus av via menyen.
 let enabled = JSON.parse(localStorage.getItem('tts-on') ?? 'true');
 let presetKey = localStorage.getItem('tts-preset') || 'normal';
 let voiceURI = localStorage.getItem('tts-voice') || '';
 let cachedVoice = null;
-let voicesReady = null;
 let voicesList = [];
 let primed = false;
 let lastSpeakState = 'idle'; // idle | speaking | error
@@ -19,8 +18,10 @@ export const PRESETS = {
   robot:       { rate: 0.85, pitch: 0.50, label: '🤖 Robot',        desc: 'Monoton og dyp' },
 };
 
+const hasSpeech = 'speechSynthesis' in window;
+
 function refreshVoices() {
-  if (!('speechSynthesis' in window)) return [];
+  if (!hasSpeech) return [];
   voicesList = speechSynthesis.getVoices() || [];
   return voicesList;
 }
@@ -39,40 +40,47 @@ function pickVoice() {
       || voices[0];
 }
 
-function ensureVoices() {
-  if (voicesReady) return voicesReady;
-  voicesReady = new Promise(resolve => {
-    if (!('speechSynthesis' in window)) { resolve(); return; }
-    const v = speechSynthesis.getVoices();
-    if (v.length) { voicesList = v; cachedVoice = pickVoice(); resolve(); return; }
-    const onChange = () => { voicesList = speechSynthesis.getVoices() || []; cachedVoice = pickVoice(); speechSynthesis.removeEventListener('voiceschanged', onChange); resolve(); };
-    speechSynthesis.addEventListener('voiceschanged', onChange);
-    setTimeout(() => { voicesList = speechSynthesis.getVoices() || []; if (!cachedVoice) cachedVoice = pickVoice(); resolve(); }, 2000);
-  });
-  return voicesReady;
+// Last inn stemmer — noen browsere laster dem async
+if (hasSpeech) {
+  refreshVoices();
+  cachedVoice = pickVoice();
+  if (speechSynthesis.onvoiceschanged !== undefined) {
+    speechSynthesis.onvoiceschanged = () => {
+      refreshVoices();
+      if (!cachedVoice) cachedVoice = pickVoice();
+      console.log('[TTS] voices loaded:', voicesList.length, 'picked:', cachedVoice?.name);
+    };
+  }
+  // Poll fallback (noen Safari-versjoner fyrer aldri voiceschanged)
+  setTimeout(() => {
+    if (voicesList.length === 0) { refreshVoices(); cachedVoice = pickVoice(); }
+    console.log('[TTS] init. voices:', voicesList.length, 'primed:', primed, 'enabled:', enabled);
+  }, 1000);
 }
 
-// Prime audio ved første user gesture — fikser Chrome autoplay policy
+// Prime synthesis-engine ved første user gesture (kreves av Chrome/Safari autoplay-policy)
+// Bruker en virkelig (men stille) utterance — tom streng teller ikke hos alle browsere.
 function primeAudio() {
-  if (primed || !('speechSynthesis' in window)) return;
+  if (primed || !hasSpeech) return;
   try {
-    const u = new SpeechSynthesisUtterance('');
+    speechSynthesis.cancel(); // rens køen
+    const u = new SpeechSynthesisUtterance('.');
     u.volume = 0;
+    u.rate = 10;
     speechSynthesis.speak(u);
-    setTimeout(() => speechSynthesis.cancel(), 50);
     primed = true;
     console.log('[TTS] primed via user gesture');
   } catch (e) { console.warn('[TTS] prime failed:', e); }
 }
 
-if ('speechSynthesis' in window) {
-  ensureVoices();
-  // Prime ved enhver user-interaksjon
-  ['click', 'keydown', 'touchstart'].forEach(ev => {
-    document.addEventListener(ev, () => {
-      if (!cachedVoice) cachedVoice = pickVoice();
-      primeAudio();
-    }, { once: false, capture: true });
+if (hasSpeech) {
+  const primeOnce = () => {
+    if (primed) return;
+    if (!cachedVoice) cachedVoice = pickVoice();
+    primeAudio();
+  };
+  ['click', 'pointerdown', 'keydown', 'touchstart'].forEach(ev => {
+    document.addEventListener(ev, primeOnce, { capture: true });
   });
 }
 
@@ -83,52 +91,94 @@ function notify(state) {
 export function onState(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 export function getState() { return lastSpeakState; }
 
-export async function speak(text) {
-  console.log('[TTS] speak() called. enabled=', enabled, 'primed=', primed, 'text=', (text || '').slice(0, 40));
-  if (!enabled || !text) return;
-  if (!('speechSynthesis' in window)) { console.warn('[TTS] speechSynthesis ikke støttet'); notify('error'); return; }
-  try {
-    await ensureVoices();
-    if (speechSynthesis.speaking || speechSynthesis.pending) {
-      speechSynthesis.cancel();
-      await new Promise(r => setTimeout(r, 100));
+// Chrome-bug workaround: speechSynthesis pauser seg selv etter ~15s.
+// Resume-ping hvert 10. sekund holder den i gang.
+if (hasSpeech) {
+  setInterval(() => {
+    if (speechSynthesis.speaking && speechSynthesis.paused) {
+      speechSynthesis.resume();
     }
-    const u = new SpeechSynthesisUtterance(String(text));
+  }, 10000);
+}
+
+export function speak(text) {
+  if (!enabled || !text) return;
+  if (!hasSpeech) { console.warn('[TTS] not supported'); notify('error'); return; }
+
+  // Sikre at stemmer er lastet
+  if (voicesList.length === 0) {
+    refreshVoices();
     if (!cachedVoice) cachedVoice = pickVoice();
-    if (cachedVoice) u.voice = cachedVoice;
-    u.lang = cachedVoice?.lang || 'nb-NO';
+  }
+
+  try {
+    // Rens køen først — kansellerer eventuelt pågående tale
+    speechSynthesis.cancel();
+
+    const u = new SpeechSynthesisUtterance(String(text).slice(0, 500));
+    if (cachedVoice) {
+      u.voice = cachedVoice;
+      u.lang = cachedVoice.lang || 'nb-NO';
+    } else {
+      u.lang = 'nb-NO';
+    }
     const p = PRESETS[presetKey] || PRESETS.normal;
     u.rate = p.rate;
     u.pitch = p.pitch;
     u.volume = 1;
-    u.onstart = () => { console.log('[TTS] onstart'); notify('speaking'); };
-    u.onend = () => { console.log('[TTS] onend'); notify('idle'); };
-    u.onerror = (e) => { console.warn('[TTS] onerror:', e?.error || e); notify('error'); };
-    speechSynthesis.speak(u);
+    u.onstart = () => { console.log('[TTS] start:', String(text).slice(0, 40)); notify('speaking'); };
+    u.onend = () => notify('idle');
+    u.onerror = (e) => { console.warn('[TTS] error:', e?.error || e); notify('error'); };
+
+    // Krav fra Chrome: speak må følge kort etter cancel for å fungere
+    // Vi kjører det i neste microtask så cancel rekker å fullføre
+    Promise.resolve().then(() => {
+      try {
+        speechSynthesis.speak(u);
+        // Safety-check: hvis engine er pauset, gjenoppta
+        if (speechSynthesis.paused) speechSynthesis.resume();
+      } catch (e) {
+        console.warn('[TTS] speak failed:', e);
+        notify('error');
+      }
+    });
   } catch (e) {
-    console.warn('[TTS] speak() failed:', e);
+    console.warn('[TTS] speak outer failed:', e);
     notify('error');
   }
 }
 
-export function stopSpeaking() { if ('speechSynthesis' in window) speechSynthesis.cancel(); notify('idle'); }
+export function stopSpeaking() {
+  if (hasSpeech) speechSynthesis.cancel();
+  notify('idle');
+}
 export function isOn() { return enabled; }
 export function setOn(v) {
   enabled = !!v;
   localStorage.setItem('tts-on', JSON.stringify(enabled));
   if (enabled) primeAudio();
+  else stopSpeaking();
 }
 export function toggle() { setOn(!enabled); return enabled; }
 export function getPreset() { return presetKey; }
 export function setPreset(key) { if (!PRESETS[key]) return; presetKey = key; localStorage.setItem('tts-preset', key); }
 export function listVoices() { refreshVoices(); return voicesList.map(v => ({ uri: v.voiceURI, name: v.name, lang: v.lang, local: v.localService })); }
 export function getVoiceURI() { return voiceURI; }
-export function setVoice(uri) { voiceURI = uri || ''; localStorage.setItem('tts-voice', voiceURI); cachedVoice = pickVoice(); }
-export function getCurrentVoice() { if (!cachedVoice) cachedVoice = pickVoice(); return cachedVoice ? { name: cachedVoice.name, lang: cachedVoice.lang } : null; }
+export function setVoice(uri) {
+  voiceURI = uri || '';
+  localStorage.setItem('tts-voice', voiceURI);
+  cachedVoice = pickVoice();
+}
+export function getCurrentVoice() {
+  if (!cachedVoice) cachedVoice = pickVoice();
+  return cachedVoice ? { name: cachedVoice.name, lang: cachedVoice.lang } : null;
+}
 export function testVoice() {
-  const prev = enabled; enabled = true; primeAudio();
+  const prev = enabled;
+  enabled = true;
+  primeAudio();
   const v = getCurrentVoice();
   speak(v ? `Hei, det er ${v.name} som leser for deg.` : 'Klar for en runde?');
   enabled = prev;
 }
-export function hasSupport() { return 'speechSynthesis' in window; }
+export function hasSupport() { return hasSpeech; }

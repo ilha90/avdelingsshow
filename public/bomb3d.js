@@ -272,15 +272,14 @@ function updatePlayer(p) {
     obj.shield = null;
     scene.add(obj.group);
     playerMeshes.set(p.id, obj);
+    // Sett initial posisjon
+    obj.group.position.set(p.x + 0.5, 0, p.y + 0.5);
+    obj._targetX = p.x + 0.5;
+    obj._targetZ = p.y + 0.5;
   }
-  // Posisjon
-  const tx = p.x + 0.5, tz = p.y + 0.5;
-  // Smooth interpolasjon
-  obj.group.position.x += (tx - obj.group.position.x) * 0.35;
-  obj.group.position.z += (tz - obj.group.position.z) * 0.35;
-  // Snap ved initiell posisjon
-  if (Math.abs(tx - obj.group.position.x) > 2) obj.group.position.x = tx;
-  if (Math.abs(tz - obj.group.position.z) > 2) obj.group.position.z = tz;
+  // Sett target — faktisk interpolasjon skjer i render() hver frame
+  obj._targetX = p.x + 0.5;
+  obj._targetZ = p.y + 0.5;
 
   obj.group.visible = p.alive || p.respawnIn > 0;
   const alpha = p.alive ? 1 : 0.35;
@@ -288,23 +287,6 @@ function updatePlayer(p) {
   obj.bodyMat.transparent = !p.alive;
   obj.helmetMat.opacity = alpha;
   obj.helmetMat.transparent = !p.alive;
-
-  // Rotasjon basert på bevegelse (enkelt: faktisk posisjon vs forrige frame)
-  if (!obj._lastX) obj._lastX = obj.group.position.x;
-  if (!obj._lastZ) obj._lastZ = obj.group.position.z;
-  const dx = obj.group.position.x - obj._lastX;
-  const dz = obj.group.position.z - obj._lastZ;
-  if (Math.hypot(dx, dz) > 0.01) {
-    const targetAngle = Math.atan2(dx, dz);
-    // Smooth rotasjon
-    let cur = obj.group.rotation.y;
-    let diff = targetAngle - cur;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    obj.group.rotation.y = cur + diff * 0.25;
-  }
-  obj._lastX = obj.group.position.x;
-  obj._lastZ = obj.group.position.z;
 
   // Skjold-ring
   if (p.shield > 0 && !obj.shield) {
@@ -434,6 +416,33 @@ export function update(bombSnap) {
 
 export function render() {
   if (!renderer || !scene || !camera) return;
+  // Smooth per-frame animasjon for spillerposisjoner + rotasjon
+  for (const obj of playerMeshes.values()) {
+    if (obj._targetX == null) continue;
+    const tx = obj._targetX, tz = obj._targetZ;
+    const dx = tx - obj.group.position.x;
+    const dz = tz - obj.group.position.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist > 0.001) {
+      // Lerp-faktor 0.2 gir glatt interpolasjon over en server-tick (~180ms @ 60fps)
+      const step = 0.22;
+      obj.group.position.x += dx * step;
+      obj.group.position.z += dz * step;
+      // Snap ved stor avstand (respawn/initial)
+      if (dist > 3) {
+        obj.group.position.x = tx;
+        obj.group.position.z = tz;
+      }
+      // Roter mot bevegelsesretning
+      if (dist > 0.02) {
+        const targetAngle = Math.atan2(dx, dz);
+        let diff = targetAngle - obj.group.rotation.y;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        obj.group.rotation.y += diff * 0.25;
+      }
+    }
+  }
   // Oppdater kamera (glatt følge / killcam / overview)
   computeCameraTarget();
   camera.position.lerp(cameraTarget, 0.15);
