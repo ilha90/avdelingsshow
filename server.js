@@ -116,6 +116,11 @@ const game = {
   // Config
   questionCount: 10,
   leaderboardEvery: 3,
+  snakeDuration: 60000,
+  bombDuration: 90000,
+  scatterDuration: 60000,
+  lieVoteDuration: 30000,
+  lightningDuration: 5000,
 };
 
 function publicState() {
@@ -132,6 +137,11 @@ function publicState() {
     paused: game.paused,
     questionCount: game.questionCount,
     leaderboardEvery: game.leaderboardEvery,
+    snakeDuration: game.snakeDuration,
+    bombDuration: game.bombDuration,
+    scatterDuration: game.scatterDuration,
+    lieVoteDuration: game.lieVoteDuration,
+    lightningDuration: game.lightningDuration,
     timeLimit: game.timeLimit,
     configTimeLimit: game.configTimeLimit,
     lightning: game.lightning,
@@ -157,7 +167,7 @@ function publicState() {
     scatterLetter: game.scatterLetter,
     scatterCategories: game.scatterCategories,
     scatterStartedAt: game.phase === 'scatter-play' ? game.questionStartedAt : 0,
-    scatterTimeLimit: game.phase === 'scatter-play' ? SCATTER_TIME : 0,
+    scatterTimeLimit: game.phase === 'scatter-play' ? (game.scatterTimeLimit || game.scatterDuration || SCATTER_TIME_DEFAULT) : 0,
     scatterReview: game.phase === 'scatter-review' ? buildScatterReview() : null,
     icebreakerPrompt: game.icebreakerPrompt,
     icebreakerTarget: game.icebreakerTarget,
@@ -190,7 +200,7 @@ function publicState() {
         voteBreakdown,
         voterNames: game.phase === 'lie-reveal' ? voterNames : null,
         lieDisplayIdx: game.phase === 'lie-reveal' ? lieDisplayIdx : -1,
-        roundTimeMs: LIE_VOTE_TIME,
+        roundTimeMs: game.lieVoteDuration || LIE_VOTE_TIME_DEFAULT,
       };
     })() : null,
   };
@@ -341,7 +351,7 @@ function startQuizGame(categoryKey, lightning = false) {
   const selected = shuffle([...available]).slice(0, countWant);
   selected.forEach(q => used.add(q.q));
   if (lightning) {
-    game.timeLimit = 5000;
+    game.timeLimit = Math.max(2000, Math.min(30000, game.lightningDuration || 5000));
   } else {
     game.timeLimit = game.configTimeLimit;
   }
@@ -458,9 +468,10 @@ function endVoting() {
 }
 
 // ---- Scattergories ----
-const SCATTER_TIME = 60000;
+const SCATTER_TIME_DEFAULT = 60000;
 function startScatter() {
   if (game.scatterEndTimer) { clearTimeout(game.scatterEndTimer); game.scatterEndTimer = null; }
+  const duration = Math.max(15000, Math.min(300000, game.scatterDuration || SCATTER_TIME_DEFAULT));
   game.phase = 'scatter-play';
   game.mode = 'scatter';
   game.scatterLetter = SCATTERGORIES.letters[Math.floor(Math.random() * SCATTERGORIES.letters.length)];
@@ -468,11 +479,12 @@ function startScatter() {
   game.scatterSubmissions.clear();
   for (const p of game.players.values()) { p.scatterAnswers = null; p.answered = false; p.lastDelta = 0; }
   game.questionStartedAt = Date.now();
+  game.scatterTimeLimit = duration;
   broadcast();
   const started = game.questionStartedAt;
   game.scatterEndTimer = setTimeout(() => {
     if (game.phase === 'scatter-play' && game.questionStartedAt === started) endScatter();
-  }, SCATTER_TIME + 500);
+  }, duration + 500);
 }
 
 function endScatter() {
@@ -536,7 +548,7 @@ function drawIcebreaker() {
 }
 
 // ---- 2 sannheter og 1 løgn ----
-const LIE_VOTE_TIME = 30000;
+const LIE_VOTE_TIME_DEFAULT = 30000;
 const LIE_REVEAL_TIME = 7000;
 
 function startLieGame() {
@@ -593,9 +605,10 @@ function nextLieTurn() {
   game.phase = 'lie-play';
   broadcast();
   const startedIdx = game.lieRound.idx;
+  const voteTime = Math.max(10000, Math.min(120000, game.lieVoteDuration || LIE_VOTE_TIME_DEFAULT));
   game.lieTimer = setTimeout(() => {
     if (game.phase === 'lie-play' && game.lieRound && game.lieRound.idx === startedIdx) endLieTurn();
-  }, LIE_VOTE_TIME + 500);
+  }, voteTime + 500);
 }
 
 function endLieTurn() {
@@ -652,7 +665,7 @@ function endLieTurn() {
 
 // ---- Snake game ----
 const SNAKE_GRID = { w: 40, h: 25 };
-const SNAKE_DURATION = 60000;
+const SNAKE_DURATION_DEFAULT = 60000;
 const SNAKE_TICK = 140;
 const SNAKE_COLORS = ['#e54b4b','#3a86ff','#ffbe0b','#29c46a','#a855f7','#ff7b00','#14b8a6','#ec4899','#f59e0b','#06b6d4'];
 
@@ -699,13 +712,14 @@ function snakeRespawn(sid, snake) {
 function startSnake() {
   if (!game.players.size) return;
   snakeCleanTimers();
+  const duration = Math.max(15000, Math.min(300000, game.snakeDuration || SNAKE_DURATION_DEFAULT));
   game.phase = 'snake';
   game.mode = 'snake';
   game.snake = {
     snakes: new Map(),
     food: [],
     startedAt: Date.now() + 3000, // 3s countdown
-    endAt: Date.now() + 3000 + SNAKE_DURATION,
+    endAt: Date.now() + 3000 + duration,
     started: false,
   };
   let colorIdx = 0;
@@ -728,7 +742,7 @@ function startSnake() {
     game.snake.started = true;
     game.snakeTickInterval = setInterval(snakeTick, SNAKE_TICK);
   }, 3000);
-  game.snakeEndTimer = setTimeout(() => endSnake(), 3000 + SNAKE_DURATION);
+  game.snakeEndTimer = setTimeout(() => endSnake(), 3000 + duration);
 }
 
 const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
@@ -860,7 +874,7 @@ function endSnake() {
 
 // ---- Bomberman ----
 const BOMB_GRID = { w: 25, h: 15 };
-const BOMB_DURATION = 90000;
+const BOMB_DURATION_DEFAULT = 90000;
 const BOMB_TICK = 180;
 const BOMB_FUSE = 2500;
 const BOMB_EXPLOSION_TTL = 700;
@@ -949,6 +963,7 @@ function bombRespawnPlayer(sid, player) {
 function startBomberman() {
   if (!game.players.size) return;
   bombCleanTimers();
+  const duration = Math.max(15000, Math.min(300000, game.bombDuration || BOMB_DURATION_DEFAULT));
   game.phase = 'bomb';
   game.mode = 'bomb';
   const map = bombGenerateMap();
@@ -961,7 +976,7 @@ function startBomberman() {
     explosions: [],
     powerups: [],
     startedAt: Date.now() + 3000,
-    endAt: Date.now() + 3000 + BOMB_DURATION,
+    endAt: Date.now() + 3000 + duration,
     started: false,
     bombCounter: 0,
     wallsVersion: 1,
@@ -986,7 +1001,7 @@ function startBomberman() {
     game.bomb.started = true;
     game.bombTickInterval = setInterval(bombermanTick, BOMB_TICK);
   }, 3000);
-  game.bombEndTimer = setTimeout(() => endBomberman(), 3000 + BOMB_DURATION);
+  game.bombEndTimer = setTimeout(() => endBomberman(), 3000 + duration);
 }
 
 function bombermanTick() {
@@ -1314,6 +1329,11 @@ io.on('connection', (socket) => {
     if (typeof cfg.timeLimit === 'number') { game.timeLimit = Math.max(5000, Math.min(60000, cfg.timeLimit)); game.configTimeLimit = game.timeLimit; }
     if (typeof cfg.questionCount === 'number') game.questionCount = Math.max(3, Math.min(25, cfg.questionCount));
     if (typeof cfg.leaderboardEvery === 'number') game.leaderboardEvery = Math.max(0, Math.min(20, cfg.leaderboardEvery));
+    if (typeof cfg.snakeDuration === 'number') game.snakeDuration = Math.max(15000, Math.min(300000, cfg.snakeDuration));
+    if (typeof cfg.bombDuration === 'number') game.bombDuration = Math.max(15000, Math.min(300000, cfg.bombDuration));
+    if (typeof cfg.scatterDuration === 'number') game.scatterDuration = Math.max(15000, Math.min(300000, cfg.scatterDuration));
+    if (typeof cfg.lieVoteDuration === 'number') game.lieVoteDuration = Math.max(10000, Math.min(120000, cfg.lieVoteDuration));
+    if (typeof cfg.lightningDuration === 'number') game.lightningDuration = Math.max(2000, Math.min(30000, cfg.lightningDuration));
     broadcast();
   });
 

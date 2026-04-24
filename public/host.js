@@ -404,6 +404,25 @@ function renderLobby() {
               <option value="10" ${state.leaderboardEvery === 10 ? 'selected' : ''}>Hver 10.</option>
             </select></label>
           </div>
+          <div class="cfg-row">
+            <label>🐍 Slange: <select id="cfgSnakeDur">
+              ${[30000,45000,60000,90000,120000,180000,240000].map(n => `<option value="${n}" ${n === state.snakeDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
+            </select></label>
+            <label>💣 Bomberman: <select id="cfgBombDur">
+              ${[30000,60000,90000,120000,180000,240000,300000].map(n => `<option value="${n}" ${n === state.bombDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
+            </select></label>
+            <label>📝 Kategori: <select id="cfgScatterDur">
+              ${[30000,45000,60000,90000,120000,180000].map(n => `<option value="${n}" ${n === state.scatterDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
+            </select></label>
+          </div>
+          <div class="cfg-row">
+            <label>🤥 Løgn-stemming: <select id="cfgLieDur">
+              ${[15000,20000,30000,45000,60000,90000].map(n => `<option value="${n}" ${n === state.lieVoteDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
+            </select></label>
+            <label>⚡ Lyn-runde: <select id="cfgLightDur">
+              ${[3000,5000,7000,10000,15000].map(n => `<option value="${n}" ${n === state.lightningDuration ? 'selected' : ''}>${n/1000}s</option>`).join('')}
+            </select></label>
+          </div>
         </div>
         ${renderAiBox()}
       </div>
@@ -436,6 +455,16 @@ function renderLobby() {
   tm?.addEventListener('change', () => socket.emit('host:config', { timeLimit: +tm.value }));
   const lb = document.getElementById('cfgLBEvery');
   lb?.addEventListener('change', () => socket.emit('host:config', { leaderboardEvery: +lb.value }));
+  const snd = document.getElementById('cfgSnakeDur');
+  snd?.addEventListener('change', () => socket.emit('host:config', { snakeDuration: +snd.value }));
+  const bmd = document.getElementById('cfgBombDur');
+  bmd?.addEventListener('change', () => socket.emit('host:config', { bombDuration: +bmd.value }));
+  const scd = document.getElementById('cfgScatterDur');
+  scd?.addEventListener('change', () => socket.emit('host:config', { scatterDuration: +scd.value }));
+  const lid = document.getElementById('cfgLieDur');
+  lid?.addEventListener('change', () => socket.emit('host:config', { lieVoteDuration: +lid.value }));
+  const lgd = document.getElementById('cfgLightDur');
+  lgd?.addEventListener('change', () => socket.emit('host:config', { lightningDuration: +lgd.value }));
 
   // Kick-spiller: klikk på player-chip
   document.querySelectorAll('.player-chip[data-pid], .team-chip[data-pid]').forEach(el => {
@@ -1389,7 +1418,7 @@ window.openGameMenu = () => {
       </div>
 
       <div class="menu-section">
-        <div class="menu-section-title">⚡ Lyn-runde <span style="color:var(--ink-2); font-weight:400">— 5 sek, dobbel poeng</span></div>
+        <div class="menu-section-title">⚡ Lyn-runde <span style="color:var(--ink-2); font-weight:400">— ${(state.lightningDuration || 5000) / 1000} sek, dobbel poeng</span></div>
         <div class="menu-grid">
           <button class="menu-card lightning" onclick="pickGame('host:start-lightning','generelt')"><div class="emoji">🌍⚡</div><b>Generelt</b><span>Rask & farlig</span></button>
           <button class="menu-card lightning" onclick="pickGame('host:start-lightning','norge')"><div class="emoji">🇳🇴⚡</div><b>Norge</b><span>Ingen tid å tenke</span></button>
@@ -1402,12 +1431,12 @@ window.openGameMenu = () => {
         <div class="menu-section-title">🎉 Sosiale spill</div>
         <div class="menu-grid">
           <button class="menu-card social" onclick="pickGame('host:start-voting')"><div class="emoji">🗳️</div><b>Hvem er mest sannsynlig</b><span>Anonyme avstemninger</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-lie')"><div class="emoji">🤥</div><b>2 sannheter, 1 løgn</b><span>Hvem er flinkest til å lyve?</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, fem kategorier</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-lie')"><div class="emoji">🤥</div><b>2 sannheter, 1 løgn</b><span>${(state.lieVoteDuration || 30000) / 1000}s stemming</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, ${(state.scatterDuration || 60000) / 1000}s</span></button>
           <button class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></button>
           <button class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle, 60 sek</span></button>
-          <button class="menu-card social" onclick="pickGame('host:start-bomb')"><div class="emoji">💣</div><b>Bomberman</b><span>Spreng motstanderen, 90 sek</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle, ${(state.snakeDuration || 60000) / 1000}s</span></button>
+          <button class="menu-card social" onclick="pickGame('host:start-bomb')"><div class="emoji">💣</div><b>Bomberman</b><span>Spreng motstanderen, ${(state.bombDuration || 90000) / 1000}s</span></button>
         </div>
       </div>
     </div>`;
