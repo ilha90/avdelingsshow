@@ -910,3 +910,278 @@ body.self-panel-open .host-controls { padding-right: 440px; transition: padding-
   opacity: 0; transition: transform 2.5s cubic-bezier(.3,1.6,.5,1), opacity 2.5s ease-out;
   filter: drop-shadow(0 4px 16px rgba(212,175,55,.6)); }
 .trophy-emoji-float.fly { transform: translate(-50%, -180px) scale(1.4) rotate(15deg); opacity: 1; }
+
+/* ============ GLOBAL WOW-POLERING ============ */
+
+/* Animert gradient-bakgrunn med subtil bevegelse */
+body {
+  background: linear-gradient(135deg, #0a1a15 0%, #0d2620 25%, #0a1f1a 50%, #0f2e25 75%, #0a1a15 100%);
+  background-size: 400% 400%;
+  animation: bgShift 24s ease-in-out infinite;
+  position: relative;
+}
+@keyframes bgShift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Flytende partikler — subtil parallax-feel */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(circle at 15% 25%, rgba(93,224,174,0.08) 0, transparent 2px),
+    radial-gradient(circle at 85% 40%, rgba(93,224,174,0.06) 0, transparent 2px),
+    radial-gradient(circle at 45% 75%, rgba(212,175,55,0.05) 0, transparent 2px),
+    radial-gradient(circle at 75% 85%, rgba(93,224,174,0.07) 0, transparent 2px),
+    radial-gradient(circle at 25% 65%, rgba(212,175,55,0.04) 0, transparent 2px),
+    radial-gradient(circle at 65% 15%, rgba(93,224,174,0.06) 0, transparent 2px);
+  background-size: 600px 600px, 500px 500px, 700px 700px, 450px 450px, 550px 550px, 480px 480px;
+  animation: particleDrift 60s linear infinite;
+  opacity: 0.7;
+}
+@keyframes particleDrift {
+  0% { background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0; }
+  100% { background-position: 600px 400px, -500px 300px, 700px -500px, -450px 450px, 550px -300px, -480px 600px; }
+}
+
+/* Subtile stjerner (enda et lag) */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.5), transparent),
+    radial-gradient(1px 1px at 60% 70%, rgba(255,255,255,0.3), transparent),
+    radial-gradient(2px 2px at 40% 80%, rgba(255,255,255,0.4), transparent),
+    radial-gradient(1px 1px at 80% 20%, rgba(255,255,255,0.25), transparent),
+    radial-gradient(1px 1px at 30% 50%, rgba(255,255,255,0.35), transparent),
+    radial-gradient(1px 1px at 90% 90%, rgba(255,255,255,0.3), transparent);
+  background-size: 100% 100%;
+  animation: starTwinkle 8s ease-in-out infinite;
+  opacity: 0.4;
+}
+@keyframes starTwinkle {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.2; }
+}
+
+/* Sørg for at innholdet er over bakgrunns-lagene */
+#app { position: relative; z-index: 1; }
+.mascot { z-index: 1500; }
+
+/* ===== Brand — glødende pulserende dot + shine på logo ===== */
+.brand .dot {
+  position: relative;
+  animation: liveDot 1.8s ease-in-out infinite;
+}
+.brand .dot::after {
+  content: ''; position: absolute; inset: -8px;
+  border-radius: 50%; background: var(--gold);
+  opacity: 0.3; animation: liveRing 1.8s ease-out infinite;
+}
+@keyframes liveDot {
+  0%, 100% { box-shadow: 0 0 14px var(--gold), 0 0 30px rgba(0,168,119,.5); }
+  50% { box-shadow: 0 0 18px var(--gold), 0 0 40px rgba(0,168,119,.8); }
+}
+@keyframes liveRing {
+  0% { transform: scale(0.6); opacity: 0.6; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+.brand h1 {
+  background: linear-gradient(90deg, #fff 0%, var(--gold-2) 50%, #fff 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  animation: brandShine 6s linear infinite;
+}
+@keyframes brandShine {
+  0% { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+/* ===== Knapp-shimmer på hover ===== */
+.btn, .menu-card, .icon-btn {
+  position: relative;
+  overflow: hidden;
+}
+.btn::before, .menu-card::before {
+  content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+  transition: left 0.6s ease;
+  pointer-events: none;
+  z-index: 1;
+}
+.btn:hover::before, .menu-card:hover::before { left: 100%; }
+.btn > *, .menu-card > * { position: relative; z-index: 2; }
+
+/* ===== Phase-change: mjuk overgang ===== */
+.host-main { transition: opacity .25s ease; }
+.host-main.phase-changing { opacity: 0; }
+
+/* ===== Countdown — dramatisk entrance ===== */
+.countdown-num { animation: cdEnter .35s cubic-bezier(.2, 1.8, .3, 1) both; }
+.countdown-num.pulse { animation: cdPulse .45s ease; }
+@keyframes cdEnter {
+  0% { transform: scale(0.2) rotate(-15deg); opacity: 0; }
+  60% { transform: scale(1.3) rotate(5deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+
+/* ===== Spiller-chip entrance ved join ===== */
+.player-chip, .team-chip {
+  animation: chipIn .4s cubic-bezier(.2, 1.5, .3, 1) both;
+}
+@keyframes chipIn {
+  0% { transform: translateY(-10px) scale(0.6); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* ===== Menu-kort stagger-entrance ===== */
+.game-menu-overlay.open .menu-card {
+  animation: menuCardIn .45s cubic-bezier(.2, 1.4, .3, 1) both;
+}
+.game-menu-overlay.open .menu-card:nth-child(1) { animation-delay: 0.02s; }
+.game-menu-overlay.open .menu-card:nth-child(2) { animation-delay: 0.06s; }
+.game-menu-overlay.open .menu-card:nth-child(3) { animation-delay: 0.10s; }
+.game-menu-overlay.open .menu-card:nth-child(4) { animation-delay: 0.14s; }
+.game-menu-overlay.open .menu-card:nth-child(5) { animation-delay: 0.18s; }
+.game-menu-overlay.open .menu-card:nth-child(6) { animation-delay: 0.22s; }
+.game-menu-overlay.open .menu-card:nth-child(7) { animation-delay: 0.26s; }
+@keyframes menuCardIn {
+  0% { transform: translateY(20px) scale(0.85); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* ===== Leaderboard-rad stagger-entrance ===== */
+.snake-score-row, .lb-row {
+  animation: rowSlideIn .45s cubic-bezier(.2, 1.2, .3, 1) both;
+}
+.lb-row:nth-child(1) { animation-delay: 0.04s; }
+.lb-row:nth-child(2) { animation-delay: 0.08s; }
+.lb-row:nth-child(3) { animation-delay: 0.12s; }
+.lb-row:nth-child(4) { animation-delay: 0.16s; }
+.lb-row:nth-child(n+5) { animation-delay: 0.2s; }
+@keyframes rowSlideIn {
+  0% { transform: translateX(-20px); opacity: 0; }
+  100% { transform: translateX(0); opacity: 1; }
+}
+
+/* ===== Mascot-feiring ===== */
+.mascot.celebrating .mascot-body {
+  animation: mascotCelebrate 0.5s cubic-bezier(.2, 1.6, .3, 1) infinite;
+}
+@keyframes mascotCelebrate {
+  0%, 100% { transform: translateY(0) rotate(-8deg) scale(1); }
+  25% { transform: translateY(-15px) rotate(8deg) scale(1.1); }
+  50% { transform: translateY(-8px) rotate(-5deg) scale(1.05); }
+  75% { transform: translateY(-12px) rotate(5deg) scale(1.08); }
+}
+.mascot.celebrating::after {
+  content: '🎉'; position: absolute; top: -20px; left: 50%;
+  transform: translateX(-50%); font-size: 32px;
+  animation: celebrateEmoji 0.6s ease-out;
+}
+@keyframes celebrateEmoji {
+  0% { transform: translate(-50%, 0) scale(0); opacity: 0; }
+  50% { transform: translate(-50%, -30px) scale(1.3) rotate(20deg); opacity: 1; }
+  100% { transform: translate(-50%, -60px) scale(1) rotate(-20deg); opacity: 0; }
+}
+
+/* ===== Lobby-tittel gradient animasjon ===== */
+.lobby-left h2 {
+  background: linear-gradient(90deg, #fff 0%, var(--gold-2) 50%, #fff 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text; background-clip: text;
+  color: transparent;
+  animation: brandShine 8s linear infinite;
+}
+
+/* ===== QR-box med glød ===== */
+.join-box {
+  position: relative;
+}
+.join-box::before {
+  content: ''; position: absolute; inset: -2px;
+  background: linear-gradient(45deg, var(--gold-2), var(--gold), var(--gold-2));
+  border-radius: inherit;
+  z-index: -1;
+  opacity: 0.3;
+  filter: blur(8px);
+  animation: qrGlow 4s ease-in-out infinite;
+}
+@keyframes qrGlow {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 0.5; }
+}
+
+/* ===== Phase-tag pulse når fasen endres ===== */
+.phase-tag {
+  transition: all .3s cubic-bezier(.2, 1.4, .3, 1);
+}
+.phase-tag.changed {
+  background: rgba(0, 168, 119, .4);
+  transform: scale(1.1);
+  box-shadow: 0 0 20px rgba(0, 168, 119, .5);
+}
+
+/* ===== Svar-knapp shimmer ved hover + click feedback ===== */
+.pq-opt, .vote-btn {
+  position: relative; overflow: hidden;
+  transition: all .2s cubic-bezier(.2, 1.4, .3, 1);
+}
+.pq-opt:hover, .vote-btn:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 20px rgba(0, 168, 119, .25);
+}
+.pq-opt:active, .vote-btn:active {
+  transform: translateY(0) scale(.98);
+}
+
+/* ===== Better focus states ===== */
+*:focus-visible {
+  outline: 2px solid var(--gold-2);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* ===== Podium entrance (endscreen) ===== */
+.podium-col {
+  animation: podiumRise .8s cubic-bezier(.2, 1.6, .3, 1) both;
+}
+.podium-col.p2 { animation-delay: 0.2s; }
+.podium-col.p1 { animation-delay: 0.1s; }
+.podium-col.p3 { animation-delay: 0.3s; }
+@keyframes podiumRise {
+  0% { transform: translateY(80px) scale(0.6); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+/* ===== Reveal-skjerm drama ===== */
+.pq-opt.correct-reveal {
+  animation: correctFlash .6s ease;
+}
+@keyframes correctFlash {
+  0% { background: rgba(41, 196, 106, .2); transform: scale(1); }
+  30% { background: rgba(41, 196, 106, .6); transform: scale(1.05); box-shadow: 0 0 40px rgba(41, 196, 106, .8); }
+  100% { background: rgba(41, 196, 106, .3); transform: scale(1); }
+}
+
+/* ===== Score-delta +N floater (quiz reveal) ===== */
+.score-delta-float {
+  position: absolute; color: var(--gold-2); font-weight: 800; font-size: 22px;
+  animation: scoreDeltaFloat 1.5s ease-out forwards;
+  pointer-events: none;
+  text-shadow: 0 2px 8px rgba(0,0,0,.6);
+}
+@keyframes scoreDeltaFloat {
+  0% { transform: translateY(0) scale(0.6); opacity: 0; }
+  30% { transform: translateY(-20px) scale(1.2); opacity: 1; }
+  100% { transform: translateY(-80px) scale(1); opacity: 0; }
+}

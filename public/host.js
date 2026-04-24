@@ -195,7 +195,11 @@ function spawnFloater(emoji, from) {
 
 // ===== Trofé-annonseringer (via mascoten) =====
 socket.on('trophies', (list) => {
-  // Annonser gjennom mascoten + fly emoji fra hans posisjon
+  // Mascoten feirer en kort stund når trofeer dukker opp
+  if (mascotEl && list.length > 0) {
+    mascotEl.classList.add('celebrating');
+    setTimeout(() => mascotEl.classList.remove('celebrating'), 2000);
+  }
   list.forEach((t, i) => setTimeout(() => {
     let msg = '';
     if (t.type === 'first' && t.name) msg = `${t.name} var først ute! ⚡`;
@@ -308,7 +312,12 @@ function triggerPhaseEffects(prev, s) {
 function render() {
   try {
   if (!state) return;
-  phaseTag.textContent = PHASE_LABELS[state.phase] || state.phase;
+  const newPhaseLabel = PHASE_LABELS[state.phase] || state.phase;
+  if (phaseTag.textContent !== newPhaseLabel) {
+    phaseTag.textContent = newPhaseLabel;
+    phaseTag.classList.add('changed');
+    setTimeout(() => phaseTag.classList.remove('changed'), 400);
+  }
   if (timerRAF) { cancelAnimationFrame(timerRAF); timerRAF = null; }
   if (wheelRevealTimeout) { clearTimeout(wheelRevealTimeout); wheelRevealTimeout = null; }
 
