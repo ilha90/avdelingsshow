@@ -1173,48 +1173,53 @@ function drawBomb() {
 
 // ---- Tegnehjelpere ----
 function drawBrickWall(ctx, x, y, cell) {
+  // Skygge-fot (suggests høyde fra gulv)
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.fillRect(x + 2, y + cell - 2, cell - 2, 4);
   // Base-gradient
   const grad = ctx.createLinearGradient(x, y, x, y + cell);
-  grad.addColorStop(0, '#5c5c68');
-  grad.addColorStop(0.5, '#444450');
+  grad.addColorStop(0, '#6e6e7a');
+  grad.addColorStop(0.5, '#4a4a56');
   grad.addColorStop(1, '#2c2c38');
   ctx.fillStyle = grad;
   ctx.fillRect(x, y, cell, cell);
   // Brick-mønster (2 rader)
-  ctx.strokeStyle = 'rgba(0,0,0,.45)';
+  ctx.strokeStyle = 'rgba(0,0,0,.55)';
   ctx.lineWidth = 1;
   const h = cell / 2;
   ctx.beginPath();
-  // Horisontale fuger
   ctx.moveTo(x, y + h); ctx.lineTo(x + cell, y + h);
-  // Vertikal fuge i midten av rad 1 (full cell bredde)
   ctx.moveTo(x + cell/2, y); ctx.lineTo(x + cell/2, y + h);
-  // Vertikal fuge i rad 2 (forskjøvet — en kvart inn fra hver side)
   ctx.moveTo(x + cell*0.25, y + h); ctx.lineTo(x + cell*0.25, y + cell);
   ctx.moveTo(x + cell*0.75, y + h); ctx.lineTo(x + cell*0.75, y + cell);
   ctx.stroke();
-  // Topp-highlight
-  ctx.strokeStyle = 'rgba(255,255,255,.12)';
-  ctx.beginPath(); ctx.moveTo(x+1, y+1); ctx.lineTo(x + cell - 1, y + 1); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x+1, y+1); ctx.lineTo(x + 1, y + cell - 1); ctx.stroke();
-  // Bunn-shadow
-  ctx.strokeStyle = 'rgba(0,0,0,.35)';
-  ctx.beginPath(); ctx.moveTo(x+1, y + cell - 0.5); ctx.lineTo(x + cell - 1, y + cell - 0.5); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x + cell - 0.5, y+1); ctx.lineTo(x + cell - 0.5, y + cell - 1); ctx.stroke();
+  // Kraftig topp-highlight (lys fra oppe-venstre)
+  ctx.strokeStyle = 'rgba(255,255,255,.25)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x + 1, y + 1); ctx.lineTo(x + cell - 1, y + 1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 1, y + 1); ctx.lineTo(x + 1, y + cell - 1); ctx.stroke();
+  // Mørk høyre/bunn-kant
+  ctx.strokeStyle = 'rgba(0,0,0,.5)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x + 1, y + cell - 1); ctx.lineTo(x + cell - 1, y + cell - 1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + cell - 1, y + 1); ctx.lineTo(x + cell - 1, y + cell - 1); ctx.stroke();
 }
 
 function drawCrate(ctx, x, y, cell) {
   const pad = 2;
   const w = cell - pad*2;
+  // Skygge-fot (suggests høyde)
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.fillRect(x + pad + 2, y + cell - pad - 1, w - 2, 3);
   // Base-tregradient
   const grad = ctx.createLinearGradient(x, y, x, y + cell);
-  grad.addColorStop(0, '#c48555');
+  grad.addColorStop(0, '#d89e70');
   grad.addColorStop(0.5, '#9a6233');
-  grad.addColorStop(1, '#6a3f1d');
+  grad.addColorStop(1, '#5c371a');
   ctx.fillStyle = grad;
   ctx.fillRect(x + pad, y + pad, w, w);
   // Kryss-diagonaler (tregrain)
-  ctx.strokeStyle = 'rgba(0,0,0,.35)';
+  ctx.strokeStyle = 'rgba(0,0,0,.4)';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(x + pad, y + pad); ctx.lineTo(x + cell - pad, y + cell - pad);
@@ -1228,12 +1233,13 @@ function drawCrate(ctx, x, y, cell) {
   ctx.fillStyle = '#e3c477';
   const nails = [[pad+3, pad+3], [cell-pad-3, pad+3], [pad+3, cell-pad-3], [cell-pad-3, cell-pad-3]];
   for (const [nx, ny] of nails) {
-    ctx.beginPath(); ctx.arc(x + nx, y + ny, 1.2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x + nx, y + ny, 1.4, 0, Math.PI*2); ctx.fill();
   }
   // Topp-highlight
-  ctx.strokeStyle = 'rgba(255,220,180,.35)';
+  ctx.strokeStyle = 'rgba(255,220,180,.45)';
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(x + pad + 1, y + pad + 1); ctx.lineTo(x + cell - pad - 1, y + pad + 1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + pad + 1, y + pad + 1); ctx.lineTo(x + pad + 1, y + cell - pad - 1); ctx.stroke();
 }
 
 const POWERUP_STYLES = {
