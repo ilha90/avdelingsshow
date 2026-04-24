@@ -918,7 +918,7 @@ function renderSnake() {
       <div class="snake-arena">
         <div class="snake-canvas-wrap">
           <canvas id="snakeCanvas" width="1200" height="750"></canvas>
-          ${showCountdown ? `<div class="snake-overlay"><div id="snakeCd" class="snake-countdown">${Math.ceil((snakeSnap.countdownLeft || 3000) / 1000)}</div></div>` : ''}
+          ${showCountdown ? `<div class="snake-overlay"><div id="snakeCd" class="snake-countdown">${Math.min(3, Math.max(1, Math.ceil((snakeSnap.countdownLeft || 3000) / 1000)))}</div></div>` : ''}
         </div>
         <div class="snake-scores" id="snakeScores"></div>
       </div>
@@ -1015,7 +1015,7 @@ function snakeAnimateTimer() {
   function tick() {
     if (!snakeSnap || state?.phase !== 'snake') return;
     if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(snakeSnap.timeLeft / 1000))}s`;
-    if (cdEl && !snakeSnap.started) cdEl.textContent = Math.max(1, Math.ceil(snakeSnap.countdownLeft / 1000));
+    if (cdEl && !snakeSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(snakeSnap.countdownLeft / 1000)));
     snakeTimerRAF = requestAnimationFrame(tick);
   }
   tick();
@@ -1062,7 +1062,7 @@ function renderBomb() {
       <div class="snake-arena">
         <div class="snake-canvas-wrap">
           <canvas id="bombCanvas" width="1250" height="750"></canvas>
-          ${showCountdown ? `<div class="snake-overlay"><div id="bombCd" class="snake-countdown">${Math.ceil((bombSnap.countdownLeft || 3000) / 1000)}</div></div>` : ''}
+          ${showCountdown ? `<div class="snake-overlay"><div id="bombCd" class="snake-countdown">${Math.min(3, Math.max(1, Math.ceil((bombSnap.countdownLeft || 3000) / 1000)))}</div></div>` : ''}
         </div>
         <div class="snake-scores" id="bombScores"></div>
       </div>
@@ -1222,7 +1222,7 @@ function bombAnimateTimer() {
     const el = document.getElementById('bombTime');
     const cdEl = document.getElementById('bombCd');
     if (el) el.textContent = `⏱ ${Math.max(0, Math.ceil(bombSnap.timeLeft / 1000))}s`;
-    if (cdEl && !bombSnap.started) cdEl.textContent = Math.max(1, Math.ceil(bombSnap.countdownLeft / 1000));
+    if (cdEl && !bombSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(bombSnap.countdownLeft / 1000)));
     // Re-draw for smooth animation av eksplosjoner/pulser
     drawBomb();
     bombTimerRAF = requestAnimationFrame(tick);
