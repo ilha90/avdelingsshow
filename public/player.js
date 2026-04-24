@@ -468,7 +468,13 @@ function renderBombPlayer() {
         </div>
         ${bombSnap && !bombSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
       </div>
-      <canvas id="playerBombCanvas" class="player-mini-canvas" width="400" height="240"></canvas>
+      <div class="canvas-wrap">
+        <canvas id="playerBombCanvas" class="player-mini-canvas" width="400" height="240"></canvas>
+        <div class="zoom-ctrls">
+          <button id="zoomIn" class="zoom-btn" aria-label="Zoom inn">＋</button>
+          <button id="zoomOut" class="zoom-btn" aria-label="Zoom ut">−</button>
+        </div>
+      </div>
       <div class="bomb-controls">
         <button id="bombDrop" class="bomb-btn-big">💣</button>
         <div id="bombJoystick" class="bomb-joystick" aria-label="Styrepinne">
@@ -606,6 +612,21 @@ function renderBombPlayer() {
     bomb3d.update(bombSnap);
     playerBombNeedsInit = false;
   }
+  // Hent lagret zoom og sett på bomb3d
+  const savedZoom = parseFloat(localStorage.getItem('bomb-zoom') || '1.0');
+  bomb3d.setZoom(savedZoom);
+  // Zoom-knapper
+  const zIn = document.getElementById('zoomIn');
+  const zOut = document.getElementById('zoomOut');
+  function bumpZoom(delta) {
+    const cur = bomb3d.getZoom();
+    const next = Math.max(0.5, Math.min(2.5, cur + delta));
+    bomb3d.setZoom(next);
+    localStorage.setItem('bomb-zoom', String(next));
+    buzz(10);
+  }
+  zIn?.addEventListener('click', () => bumpZoom(-0.25));
+  zOut?.addEventListener('click', () => bumpZoom(+0.25));
   startPlayerBombRAF();
 }
 

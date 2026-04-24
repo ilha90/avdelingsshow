@@ -13,6 +13,7 @@ let lastWallsVersion = -1;
 // Kamera-modi
 let cameraMode = 'overview'; // 'overview' | 'follow'
 let followPlayerId = null;
+let followZoom = 1.0; // 0.5 = mer zoom inn, 2.0 = mer zoom ut
 // Kill-cam state
 let killCamUntil = 0;
 let killCamTarget = null;
@@ -92,6 +93,11 @@ export function setCameraMode(mode, followId = null) {
   followPlayerId = followId;
 }
 
+export function setZoom(z) {
+  followZoom = Math.max(0.4, Math.min(3.0, z));
+}
+export function getZoom() { return followZoom; }
+
 export function triggerKillCam(x, y, durationMs = 2500) {
   killCamTarget = { x, y };
   killCamUntil = Date.now() + durationMs;
@@ -116,7 +122,8 @@ function computeCameraTarget() {
     if (obj) {
       const p = obj.group.position;
       // Lengre unna — viser større oversikt rundt spilleren
-      cameraTarget.set(p.x, 11, p.z + 9);
+      const baseY = 11, baseZ = 9;
+      cameraTarget.set(p.x, baseY * followZoom, p.z + baseZ * followZoom);
       cameraLookAt.set(p.x, 0, p.z - 0.5);
       return;
     }
