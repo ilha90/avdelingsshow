@@ -954,6 +954,7 @@ function bombRespawnPlayer(sid, player) {
     player.dirs = { up: false, down: false, left: false, right: false };
     player.alive = true; player.deadAt = 0;
     player.shield = 1; // respawn-beskyttelse (1 treff)
+    player.invulnerableUntil = Date.now() + 1500; // 1.5s grace
     // Clear cells around spawn of soft walls
     for (const [dx, dy] of [[0,0],[0,1],[1,0],[0,-1],[-1,0]]) {
       const nx = pos.x + dx, ny = pos.y + dy;
@@ -1060,14 +1061,13 @@ function bombermanTickInner() {
       else if (p.nextDir === 'right') dx = 1;
     }
     if (dx === 0 && dy === 0) continue;
-    // Prøv diagonal først, så fallback til enkelt-akser
-    const tryMove = (tx, ty) => {
+    const canPass = (tx, ty) => {
       if (tx < 0 || tx >= W || ty < 0 || ty >= BOMB_GRID.h) return false;
-      const cell = grid[idx(tx, ty)];
-      if (cell !== 0) return false;
+      if (grid[idx(tx, ty)] !== 0) return false;
       if (b.bombs.some(bb => bb.x === tx && bb.y === ty)) return false;
-      p.x = tx; p.y = ty;
-      // Pick up powerup
+      return true;
+    };
+    const pickupIfAny = (tx, ty) => {
       const puIdx = b.powerups.findIndex(u => u.x === tx && u.y === ty);
       if (puIdx >= 0) {
         const pu = b.powerups[puIdx];
@@ -1077,12 +1077,22 @@ function bombermanTickInner() {
         else if (pu.type === 'gold') p.score += 50;
         b.powerups.splice(puIdx, 1);
       }
+    };
+    const tryMoveTo = (tx, ty) => {
+      if (!canPass(tx, ty)) return false;
+      p.x = tx; p.y = ty;
+      pickupIfAny(tx, ty);
       return true;
     };
     let moved = false;
-    if (dx !== 0 && dy !== 0) moved = tryMove(p.x + dx, p.y + dy);
-    if (!moved && dx !== 0) moved = tryMove(p.x + dx, p.y);
-    if (!moved && dy !== 0) moved = tryMove(p.x, p.y + dy);
+    if (dx !== 0 && dy !== 0) {
+      // Diagonal tillatt KUN hvis begge sidesteg er frie (ingen corner-cut)
+      if (canPass(p.x + dx, p.y) && canPass(p.x, p.y + dy)) {
+        moved = tryMoveTo(p.x + dx, p.y + dy);
+      }
+    }
+    if (!moved && dx !== 0) moved = tryMoveTo(p.x + dx, p.y);
+    if (!moved && dy !== 0) moved = tryMoveTo(p.x, p.y + dy);
     // Sjekk eksplosjon under spiller
     if (explCells.has(p.x + ',' + p.y)) killPlayer(p, null);
   }
@@ -1155,9 +1165,12 @@ function addExplosion(x, y, ownerId) {
 
 function killPlayer(p, byOwnerId) {
   if (!p.alive) return;
-  // Shield absorberer én eksplosjon
+  // Allerede usårbar (grace etter shield-absorb) — ignorer
+  if (p.invulnerableUntil && Date.now() < p.invulnerableUntil) return;
+  // Shield absorberer én eksplosjon + gir 1s usårbarhet
   if ((p.shield || 0) > 0) {
     p.shield -= 1;
+    p.invulnerableUntil = Date.now() + 1000;
     return;
   }
   p.alive = false;

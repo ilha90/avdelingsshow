@@ -453,22 +453,16 @@ function renderBombPlayer() {
         ${bombSnap && !bombSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
       </div>
       <canvas id="playerBombCanvas" class="player-mini-canvas" width="400" height="240"></canvas>
-      <div class="bomb-pad" id="bombPad">
-        <div class="bomb-pad-grid">
-          <div></div>
-          <button class="pad-btn pad-up" data-dir="up">▲</button>
-          <div></div>
-          <button class="pad-btn pad-left" data-dir="left">◀</button>
-          <button class="pad-btn pad-bomb" id="bombDrop">💣</button>
-          <button class="pad-btn pad-right" data-dir="right">▶</button>
-          <div></div>
-          <button class="pad-btn pad-down" data-dir="down">▼</button>
-          <div></div>
+      <div class="bomb-controls">
+        <button id="bombDrop" class="bomb-btn-big">💣</button>
+        <div id="bombJoystick" class="bomb-joystick" aria-label="Styrepinne">
+          <div class="joystick-ring"></div>
+          <div id="bombJoystickThumb" class="joystick-thumb"></div>
         </div>
       </div>
-      <p class="snake-hint">Piltaster/WASD på laptop, swipe eller knapper på mobil. Mellomrom/knapp = bombe.</p>
+      <p class="snake-hint">Venstre tommel = bombe, høyre tommel = styrepinne. Piltaster/WASD på laptop, mellomrom = bombe.</p>
     </div>`;
-  const pad = document.getElementById('bombPad');
+
   const bombActiveDirs = new Set();
   function emitBombDirs() {
     socket.emit('player:bomb-dirs', {
@@ -477,63 +471,89 @@ function renderBombPlayer() {
       left: bombActiveDirs.has('left'),
       right: bombActiveDirs.has('right'),
     });
-    // Oppdater aktiv-status på knapper
-    pad.querySelectorAll('.pad-btn[data-dir]').forEach(el => {
-      el.classList.toggle('active-dir', bombActiveDirs.has(el.dataset.dir));
-    });
   }
-  pad.querySelectorAll('.pad-btn[data-dir]').forEach(b => {
-    // pointerdown: legg til dir, behold capture slik at vi får up selv om fingeren glir utenfor knappen
-    b.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      try { b.setPointerCapture(e.pointerId); } catch {}
-      bombActiveDirs.add(b.dataset.dir);
-      emitBombDirs();
-      buzz(12);
-    });
-    const release = (e) => {
-      bombActiveDirs.delete(b.dataset.dir);
-      emitBombDirs();
-    };
-    b.addEventListener('pointerup', release);
-    b.addEventListener('pointercancel', release);
-    // Blokker context-menu ved lang press
-    b.addEventListener('contextmenu', (e) => e.preventDefault());
-  });
-  document.getElementById('bombDrop').addEventListener('click', () => { socket.emit('player:bomb-drop'); buzz(40); });
 
-  // Swipe på screen (ikke pad — så multitouch-pad ikke forstyrres)
-  let touchStart = null;
-  const canvas = document.getElementById('playerBombCanvas');
-  const onStart = e => {
-    if (e.target.closest('.bomb-pad')) return; // ignorer swipe fra pad-området
-    const t = e.touches ? e.touches[0] : e;
-    touchStart = { x: t.clientX, y: t.clientY, dir: null };
-  };
-  const onMove = e => {
-    if (e.cancelable) e.preventDefault(); // blokker scroll/zoom
-    if (!touchStart) return;
-    const t = e.touches ? e.touches[0] : e;
-    const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
-    const absX = Math.abs(dx), absY = Math.abs(dy);
-    if (Math.max(absX, absY) < 25) return;
-    const dir = absX > absY ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
-    if (dir !== touchStart.dir) {
-      touchStart.dir = dir;
+  // Bombe-knapp
+  const bombBtn = document.getElementById('bombDrop');
+  bombBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    socket.emit('player:bomb-drop');
+    buzz(40);
+    bombBtn.classList.add('pressed');
+    setTimeout(() => bombBtn.classList.remove('pressed'), 120);
+  });
+  bombBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Joystick
+  const joystick = document.getElementById('bombJoystick');
+  const thumb = document.getElementById('bombJoystickThumb');
+  const JOY_RADIUS = 52;   // maks draavstand i px
+  const JOY_DEADZONE = 0.28; // fraksjon av radius før en retning aktiveres
+  let joyPointerId = null;
+  let joyCenter = { x: 0, y: 0 };
+
+  function updateDirsFrom(dx, dy) {
+    const nx = Math.max(-1, Math.min(1, dx / JOY_RADIUS));
+    const ny = Math.max(-1, Math.min(1, dy / JOY_RADIUS));
+    const newSet = new Set();
+    if (nx > JOY_DEADZONE) newSet.add('right');
+    else if (nx < -JOY_DEADZONE) newSet.add('left');
+    if (ny > JOY_DEADZONE) newSet.add('down');
+    else if (ny < -JOY_DEADZONE) newSet.add('up');
+    // Bare emit hvis noe endret seg
+    let changed = newSet.size !== bombActiveDirs.size;
+    if (!changed) for (const d of newSet) if (!bombActiveDirs.has(d)) { changed = true; break; }
+    if (changed) {
       bombActiveDirs.clear();
-      bombActiveDirs.add(dir);
+      for (const d of newSet) bombActiveDirs.add(d);
+      emitBombDirs();
+      if (newSet.size > 0) buzz(8);
+    }
+  }
+
+  function handleJoyMove(e) {
+    let dx = e.clientX - joyCenter.x;
+    let dy = e.clientY - joyCenter.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > JOY_RADIUS) {
+      dx = (dx / dist) * JOY_RADIUS;
+      dy = (dy / dist) * JOY_RADIUS;
+    }
+    thumb.style.transform = `translate(${dx}px, ${dy}px)`;
+    updateDirsFrom(dx, dy);
+  }
+
+  function resetJoystick() {
+    joyPointerId = null;
+    thumb.style.transform = 'translate(0, 0)';
+    if (bombActiveDirs.size > 0) {
+      bombActiveDirs.clear();
       emitBombDirs();
     }
+  }
+
+  joystick.addEventListener('pointerdown', (e) => {
+    if (joyPointerId !== null) return;
+    e.preventDefault();
+    joyPointerId = e.pointerId;
+    try { joystick.setPointerCapture(e.pointerId); } catch {}
+    const rect = joystick.getBoundingClientRect();
+    joyCenter.x = rect.left + rect.width / 2;
+    joyCenter.y = rect.top + rect.height / 2;
+    handleJoyMove(e);
+  });
+  joystick.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== joyPointerId) return;
+    e.preventDefault();
+    handleJoyMove(e);
+  });
+  const joyEnd = (e) => {
+    if (e.pointerId !== joyPointerId) return;
+    resetJoystick();
   };
-  const onEnd = (e) => {
-    if (e.target?.closest('.bomb-pad')) return;
-    touchStart = null;
-    bombActiveDirs.clear();
-    emitBombDirs();
-  };
-  screen.addEventListener('touchstart', onStart, { passive: true });
-  screen.addEventListener('touchmove', onMove, { passive: false });
-  screen.addEventListener('touchend', onEnd, { passive: true });
+  joystick.addEventListener('pointerup', joyEnd);
+  joystick.addEventListener('pointercancel', joyEnd);
+  joystick.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Keyboard — tracker også pressed keys for diagonal
   const KEY_DIR = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',

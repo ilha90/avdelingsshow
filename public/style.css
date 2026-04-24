@@ -647,6 +647,33 @@ body::before {
 @keyframes bombBtnPulse { 0%,100% { box-shadow: 0 0 20px rgba(229,75,75,.4); } 50% { box-shadow: 0 0 32px rgba(229,75,75,.7); } }
 .bomb-stats { color: var(--ink-2); font-size: 14px; font-weight: 500; }
 
+/* Joystick + big bomb button — mobile bomberman */
+.bomb-controls { display: flex; justify-content: space-between; align-items: center;
+  width: 100%; max-width: 420px; margin-top: 24px; gap: 30px;
+  padding: 0 10px; box-sizing: border-box; }
+.bomb-btn-big { width: 110px; height: 110px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #ff8a5b, #d6372b 70%, #a12020 100%);
+  color: #fff; font-size: 56px; border: 3px solid #ff6b4a;
+  box-shadow: 0 0 24px rgba(229,75,75,.5), inset 0 -8px 18px rgba(0,0,0,.35);
+  cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none;
+  animation: bombBtnPulse 2s ease-in-out infinite;
+  display: flex; align-items: center; justify-content: center;
+  font-family: inherit; transition: transform .08s; }
+.bomb-btn-big.pressed, .bomb-btn-big:active { transform: scale(.92); box-shadow: 0 0 36px rgba(229,75,75,.8), inset 0 -4px 14px rgba(0,0,0,.4); }
+.bomb-joystick { position: relative; width: 150px; height: 150px;
+  border-radius: 50%; background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.09), rgba(255,255,255,.03));
+  border: 2px solid rgba(93,224,174,.25);
+  box-shadow: inset 0 4px 12px rgba(0,0,0,.35);
+  touch-action: none; -webkit-user-select: none; user-select: none; }
+.joystick-ring { position: absolute; inset: 14px; border-radius: 50%;
+  border: 2px dashed rgba(93,224,174,.18); pointer-events: none; }
+.joystick-thumb { position: absolute; top: 50%; left: 50%;
+  width: 62px; height: 62px; margin: -31px 0 0 -31px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--gold-2), var(--gold) 70%, #006e51 100%);
+  box-shadow: 0 6px 14px rgba(0,0,0,.45), inset 0 -3px 8px rgba(0,0,0,.3);
+  pointer-events: none; transition: transform .05s linear; }
+
 /* Mini-arena på spillerens skjerm */
 .player-mini-canvas { display: block; width: 100%; max-width: 420px; height: auto;
   aspect-ratio: 40 / 25; margin: 14px auto; border-radius: 12px;
