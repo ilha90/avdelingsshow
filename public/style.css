@@ -596,15 +596,8 @@ body::before {
 .snake-top .snake-title { font-size: 22px; font-weight: 700; }
 .snake-top .snake-info { color: var(--ink-2); font-size: 14px; }
 .snake-arena { display: grid; grid-template-columns: 1fr 320px; gap: 20px; flex: 1; min-height: 0; }
-.snake-canvas-wrap { position: relative; background: #0b0d1a; border: 2px solid var(--card-b); border-radius: 14px; overflow: hidden;
-  perspective: 1600px; perspective-origin: 50% 40%; }
-.snake-canvas-wrap canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 240px); image-rendering: crisp-edges;
-  transform: rotateX(28deg); transform-origin: center 58%; transform-style: preserve-3d;
-  box-shadow: 0 40px 60px -20px rgba(0,0,0,.6); }
-/* Gulv-refleks + vignette for å grunne 3D-scenen */
-.snake-canvas-wrap::after { content: ''; position: absolute; inset: 0;
-  background: radial-gradient(ellipse at center 55%, transparent 50%, rgba(0,0,0,.45) 100%);
-  pointer-events: none; }
+.snake-canvas-wrap { position: relative; background: #0b0d1a; border: 2px solid var(--card-b); border-radius: 14px; overflow: hidden; }
+.snake-canvas-wrap canvas { display: block; width: 100%; height: auto; max-height: calc(100vh - 240px); image-rendering: crisp-edges; }
 .snake-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(11,13,26,0.7); backdrop-filter: blur(4px); }
 .snake-countdown { font-size: 240px; font-weight: 900; line-height: 1;
   background: linear-gradient(135deg, var(--gold), var(--gold-2), #fff);
