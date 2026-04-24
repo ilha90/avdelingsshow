@@ -482,8 +482,8 @@ function renderBombPlayer() {
   // Joystick
   const joystick = document.getElementById('bombJoystick');
   const thumb = document.getElementById('bombJoystickThumb');
-  const JOY_RADIUS = 52;   // maks draavstand i px
-  const JOY_DEADZONE = 0.28; // fraksjon av radius før en retning aktiveres
+  const JOY_RADIUS = 60;   // maks draavstand i px (passer 170px joystick)
+  const JOY_DEADZONE = 0.22; // fraksjon av radius før en retning aktiveres
   let joyPointerId = null;
   let joyCenter = { x: 0, y: 0 };
 
