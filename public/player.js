@@ -168,6 +168,9 @@ function render(s){
   if (s.phase !== 'bomb' && s.phase !== 'countdown' && bombRenderer){
     bombRenderer.dispose(); bombRenderer = null;
   }
+  // Reset quiz-rebuild-key når vi forlater quiz-faser
+  if (s.phase !== 'question' && s.phase !== 'reveal') resetQuizKey();
+  if (s.phase !== 'lie-play') lastLiePid = null;
 
   switch(s.phase){
     case 'lobby': showLobby(s); break;
@@ -227,10 +230,33 @@ function showCountdown(s){
   `;
 }
 
+// Track forrige quiz-question-index så vi ikke rebuilder DOM mens spilleren tar på svar
+let lastQuizKey = null;
+
 function showQuestion(s){
   if (!s.quiz || !s.quiz.question) return;
   const answered = s.players.find(p => p.id === me.id)?.hasAnswered;
   const q = s.quiz.question;
+  const qKey = s.quiz.index + ':' + (q.q || '');
+
+  // Ny question → full rebuild. Samme question → kun oppdater disabled + "sendt"-indikator
+  if (lastQuizKey === qKey){
+    const buttons = app.querySelectorAll('.player-answer');
+    if (buttons.length){
+      buttons.forEach(b => { if (answered) b.disabled = true; });
+      const sentMarker = app.querySelector('.sent-marker');
+      if (answered && !sentMarker){
+        const m = document.createElement('div');
+        m.className = 'sent-marker';
+        m.style.cssText = 'text-align:center; color:var(--accent); font-weight:700;';
+        m.textContent = 'Svar sendt ✓';
+        app.querySelector('.player-q-wrap').appendChild(m);
+      }
+      return;
+    }
+  }
+  lastQuizKey = qKey;
+
   app.innerHTML = `
     <div class="player-q-wrap">
       <div style="color: var(--muted);">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning?'⚡':''}</div>
@@ -243,22 +269,35 @@ function showQuestion(s){
           </button>
         `).join('')}
       </div>
-      ${answered ? '<div style="text-align:center; color:var(--mint); font-weight:700;">Svar sendt ✓</div>' : ''}
+      ${answered ? '<div class="sent-marker" style="text-align:center; color:var(--accent); font-weight:700;">Svar sendt ✓</div>' : ''}
     </div>
   `;
+
   app.querySelectorAll('.player-answer').forEach(btn => {
-    btn.addEventListener('click', () => {
+    const fire = (e) => {
+      if (btn.disabled) return;
       if (!cooldown('answer', 800)) return;
       const idx = parseInt(btn.dataset.idx, 10);
       socket.emit('player:answer', { idx });
       sfx.pop();
       haptic.tap();
+      // Disable alle umiddelbart (før server-state kommer)
       app.querySelectorAll('.player-answer').forEach(b => b.disabled = true);
       btn.style.outline = '4px solid var(--accent)';
       btn.style.outlineOffset = '4px';
-    });
+    };
+    // Bruk touchstart for rask respons på mobil (unngå click-delay + pointer-event-hikke)
+    // + preventDefault for å forhindre dobbel-fire via click
+    btn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      fire(e);
+    }, { passive: false });
+    btn.addEventListener('click', fire);
   });
 }
+
+// Reset key når vi forlater quiz
+function resetQuizKey(){ lastQuizKey = null; }
 
 function showReveal(s){
   const correct = s.quiz?.correctIdx;
@@ -295,6 +334,8 @@ function showLeaderboard(s){
 }
 
 function showVoting(s){
+  // Idempotent — bevar vote-buttons mellom state-broadcasts så de ikke mistes ved tap
+  if (app.querySelector('button[data-id]')) return;
   app.innerHTML = `
     <div class="player-q-wrap">
       <div style="font-size: 14px; color:var(--muted)">Hvem er mest sannsynlig</div>
@@ -310,14 +351,17 @@ function showVoting(s){
     </div>
   `;
   app.querySelectorAll('button[data-id]').forEach(b => {
-    b.addEventListener('click', () => {
+    const fire = (e) => {
+      if (b.disabled) return;
       if (!cooldown('vote', 500)) return;
       socket.emit('player:vote', { targetId: b.dataset.id });
       sfx.pop();
       haptic.tap();
       app.querySelectorAll('button[data-id]').forEach(x => { x.disabled = true; x.style.opacity = '0.4'; });
       b.style.opacity = '1'; b.style.outline = '3px solid var(--accent)';
-    });
+    };
+    b.addEventListener('touchstart', (e) => { e.preventDefault(); fire(e); }, { passive: false });
+    b.addEventListener('click', fire);
   });
 }
 
@@ -418,9 +462,13 @@ function showLieCollect(s){
   });
 }
 
+let lastLiePid = null;
 function showLiePlay(s){
   const c = s.lie.current; if (!c) return;
   const isMine = c.pid === me.id;
+  // Ny spiller under avhør → rebuild. Samme → la stå slik at taps ikke mistes
+  if (lastLiePid === c.pid && app.querySelector('.lie-claim')) return;
+  lastLiePid = c.pid;
   app.innerHTML = `
     <div class="player-q-wrap">
       <div style="font-size: 14px; color: var(--muted);">Hvem lyver?</div>
@@ -432,7 +480,7 @@ function showLiePlay(s){
     </div>
   `;
   app.querySelectorAll('.lie-claim').forEach(el => {
-    el.addEventListener('click', () => {
+    const fire = (e) => {
       if (!cooldown('lie-vote', 400)) return;
       const idx = parseInt(el.dataset.i, 10);
       socket.emit('player:lie-vote', { idx });
@@ -440,7 +488,9 @@ function showLiePlay(s){
       el.classList.add('selected');
       sfx.pop();
       haptic.tap();
-    });
+    };
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); fire(e); }, { passive: false });
+    el.addEventListener('click', fire);
   });
 }
 
