@@ -793,6 +793,7 @@ function snakeRespawn(sid, snake) {
     snake.body = [{x, y}, {x: x-1, y}, {x: x-2, y}];
     snake.dir = 'right'; snake.nextDir = 'right';
     snake.alive = true; snake.deadAt = 0;
+    snake.pendingGrow = 0;
     return;
   }
 }
@@ -874,52 +875,102 @@ function snakeTickInner() {
     else if (s.dir === 'right') next.x++;
     newHeads.set(sid, next);
   }
-  // Check collisions & move
-  const dyingNow = new Set();
+  // Check collisions & determine winners/losers (bigger snake spiser mindre)
+  // deaths: sid → {eater: sid|null, reason: 'wall'|'head'|'body'|'self'}
+  const deaths = new Map();
+
+  // 1) Vegger
   for (const [sid, next] of newHeads) {
-    const s = sd.snakes.get(sid);
     if (next.x < 0 || next.x >= SNAKE_GRID.w || next.y < 0 || next.y >= SNAKE_GRID.h) {
-      dyingNow.add(sid); continue;
+      deaths.set(sid, { eater: null, reason: 'wall' });
     }
-    // Check if someone elses head targets same cell (head-to-head collision: both die)
-    for (const [osid, onext] of newHeads) {
-      if (osid !== sid && onext.x === next.x && onext.y === next.y) {
-        dyingNow.add(sid); dyingNow.add(osid);
-      }
+  }
+
+  // 2) Head-to-head: to eller flere hoder peker på samme celle
+  const headCells = new Map();
+  for (const [sid, next] of newHeads) {
+    if (deaths.has(sid)) continue;
+    const key = next.x + ',' + next.y;
+    if (!headCells.has(key)) headCells.set(key, []);
+    headCells.get(key).push(sid);
+  }
+  for (const [key, sids] of headCells) {
+    if (sids.length < 2) continue;
+    // Sorter etter lengde, lengst først
+    const sorted = [...sids].sort((a, b) => sd.snakes.get(b).body.length - sd.snakes.get(a).body.length);
+    const topLen = sd.snakes.get(sorted[0]).body.length;
+    const winners = sorted.filter(s => sd.snakes.get(s).body.length === topLen);
+    if (winners.length === 1) {
+      // Unik vinner spiser alle andre
+      for (const s of sorted.slice(1)) deaths.set(s, { eater: winners[0], reason: 'head' });
+    } else {
+      // Uavgjort — alle dør
+      for (const s of sids) deaths.set(s, { eater: null, reason: 'head' });
     }
-    if (dyingNow.has(sid)) continue;
-    // Check bodies
-    if (cells.has(next.x + ',' + next.y)) {
-      const ownerSid = cells.get(next.x + ',' + next.y);
-      if (ownerSid === sid) {
-        // Check if it's own tail (tail will move unless eating)
-        const owner = sd.snakes.get(sid);
-        const tail = owner.body[owner.body.length - 1];
-        const tailIsMoving = !sd.food.some(f => f.x === next.x && f.y === next.y);
-        if (!(next.x === tail.x && next.y === tail.y && tailIsMoving)) {
-          dyingNow.add(sid);
-        }
+  }
+
+  // 3) Head-into-body: spiller går inn i noens kropp
+  for (const [sid, next] of newHeads) {
+    if (deaths.has(sid)) continue;
+    const bodyOwner = cells.get(next.x + ',' + next.y);
+    if (!bodyOwner) continue;
+    if (bodyOwner === sid) {
+      // Inn i egen kropp — med unntak for haleplass som tømmes
+      const owner = sd.snakes.get(sid);
+      const tail = owner.body[owner.body.length - 1];
+      const willEat = sd.food.some(f => f.x === next.x && f.y === next.y);
+      if (next.x === tail.x && next.y === tail.y && !willEat) continue;
+      deaths.set(sid, { eater: null, reason: 'self' });
+    } else {
+      const attacker = sd.snakes.get(sid);
+      const defender = sd.snakes.get(bodyOwner);
+      if (!attacker || !defender || !defender.alive) continue;
+      const aLen = attacker.body.length;
+      const dLen = defender.body.length;
+      if (aLen > dLen) {
+        // Angriper er større → spiser forsvareren
+        deaths.set(bodyOwner, { eater: sid, reason: 'body' });
+      } else if (aLen < dLen) {
+        // Forsvareren er større → angriper dør
+        deaths.set(sid, { eater: bodyOwner, reason: 'body' });
       } else {
-        dyingNow.add(sid);
+        // Samme størrelse → begge dør
+        deaths.set(sid, { eater: null, reason: 'body' });
+        if (!deaths.has(bodyOwner)) deaths.set(bodyOwner, { eater: null, reason: 'body' });
       }
     }
   }
-  for (const sid of dyingNow) {
+
+  // Påfør dødsfall og gi lengde til spiseren
+  for (const [sid, info] of deaths) {
     const s = sd.snakes.get(sid);
-    s.alive = false; s.deadAt = now;
+    if (!s || !s.alive) continue;
+    s.alive = false;
+    s.deadAt = now;
+    if (info.eater) {
+      const eater = sd.snakes.get(info.eater);
+      if (eater && eater.alive) {
+        const growBy = Math.min(50, s.body.length); // cap 50 så de ikke blir absurde
+        eater.pendingGrow = (eater.pendingGrow || 0) + growBy;
+        eater.score += 20 + growBy * 3; // 20 for drap + 3 per body segment
+      }
+    }
   }
+
   // Move surviving snakes
   for (const [sid, next] of newHeads) {
     const s = sd.snakes.get(sid);
-    if (!s.alive || dyingNow.has(sid)) continue;
+    if (!s.alive || deaths.has(sid)) continue;
     s.body.unshift(next);
     const foodIdx = sd.food.findIndex(f => f.x === next.x && f.y === next.y);
     if (foodIdx >= 0) {
       sd.food.splice(foodIdx, 1);
       s.score += 10;
       snakeSpawnFood();
-      // Randomly spawn extra food for more fun with many players
       if (sd.food.length < Math.max(5, sd.snakes.size * 2) && Math.random() < 0.3) snakeSpawnFood();
+    } else if (s.pendingGrow > 0) {
+      // Voks istedenfor å miste halesegment
+      s.pendingGrow -= 1;
     } else {
       s.body.pop();
     }
