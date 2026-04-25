@@ -1,8 +1,11 @@
 // bomb3d.js — Three.js renderer for Bomberman
 // Støtter både host (overview) og spiller (follow-camera) perspektiv
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
-let renderer = null, scene = null, camera = null;
+let renderer = null, scene = null, camera = null, composer = null;
 let wallMeshes = [], crateMeshes = new Map();
 let bombMeshes = new Map(), playerMeshes = new Map(), powerupMeshes = new Map();
 let explosionObjects = [];
@@ -89,6 +92,45 @@ export function init(canvas, gW, gH, options = {}) {
     }
   }
   scene.add(floorGroup);
+
+  // === Post-processing: bloom for glødende ting (explosions, powerups, LED) ===
+  composer = new EffectComposer(renderer);
+  composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(canvas.clientWidth, canvas.clientHeight),
+    0.7,   // strength
+    0.55,  // radius
+    0.4    // threshold
+  );
+  composer.addPass(bloom);
+  // Initialiser shake og shockwave-states
+  shakeUntil = 0; shakeIntensity = 0;
+  shockwaves = [];
+  lastExplosionCount = 0;
+}
+
+// Screen shake state
+let shakeUntil = 0;
+let shakeIntensity = 0;
+const shakeOffset = new THREE.Vector3();
+function triggerShake(intensity = 0.5, durationMs = 300) {
+  shakeUntil = Math.max(shakeUntil, Date.now() + durationMs);
+  shakeIntensity = Math.max(shakeIntensity, intensity);
+}
+
+// Shockwave-ringer (ekspanderende)
+let shockwaves = [];
+let lastExplosionCount = 0;
+function spawnShockwave(x, y) {
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.2, 0.4, 32),
+    new THREE.MeshBasicMaterial({ color: 0xffcc44, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x + 0.5, 0.12, y + 0.5);
+  scene.add(ring);
+  shockwaves.push({ mesh: ring, bornAt: Date.now(), duration: 550 });
 }
 
 export function setCameraMode(mode, followId = null) {
@@ -144,6 +186,7 @@ function resize() {
   const w = parent.clientWidth, h = parent.clientHeight;
   if (w === 0 || h === 0) return;
   renderer.setSize(w, h, false);
+  if (composer) composer.setSize(w, h);
   if (camera) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
@@ -397,7 +440,14 @@ export function update(bombSnap) {
   }
   for (const [key, o] of powerupMeshes) if (!seenPu.has(key)) { scene.remove(o.group); powerupMeshes.delete(key); }
 
-  // Eksplosjoner
+  // Eksplosjoner + detekter nye for shockwave/shake
+  if (bombSnap.explosions.length > lastExplosionCount) {
+    triggerShake(0.45, 320);
+    // Spawn shockwave på alle nye eksplosjoner (nyeste er de som har høyest tLeft)
+    const newExplosions = bombSnap.explosions.slice(lastExplosionCount);
+    for (const e of newExplosions) spawnShockwave(e.x, e.y);
+  }
+  lastExplosionCount = bombSnap.explosions.length;
   for (const o of explosionObjects) scene.remove(o);
   explosionObjects = [];
   for (const e of bombSnap.explosions) {
@@ -451,12 +501,43 @@ export function render() {
   camera.position.lerp(cameraTarget, 0.15);
   tmpLookAt.lerp(cameraLookAt, 0.2);
   camera.lookAt(tmpLookAt);
-  renderer.render(scene, camera);
+  // Screen shake (additiv offset over kamera-lerp)
+  const now = Date.now();
+  if (now < shakeUntil) {
+    const remaining = (shakeUntil - now) / 300;
+    const amp = shakeIntensity * Math.max(0, Math.min(1, remaining));
+    shakeOffset.set(
+      (Math.random() - 0.5) * amp,
+      (Math.random() - 0.5) * amp,
+      (Math.random() - 0.5) * amp
+    );
+    camera.position.add(shakeOffset);
+  } else {
+    shakeIntensity = 0;
+  }
+  // Shockwave-ringer ekspanderer og fader
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const sw = shockwaves[i];
+    const t = (now - sw.bornAt) / sw.duration;
+    if (t >= 1) {
+      scene.remove(sw.mesh);
+      sw.mesh.geometry.dispose();
+      sw.mesh.material.dispose();
+      shockwaves.splice(i, 1);
+      continue;
+    }
+    const scale = 1 + t * 6;
+    sw.mesh.scale.set(scale, scale, scale);
+    sw.mesh.material.opacity = 0.9 * (1 - t);
+  }
+  if (composer) composer.render();
+  else renderer.render(scene, camera);
 }
 
 export function dispose() {
   if (!renderer) return;
   renderer.dispose();
+  if (composer) { composer.dispose?.(); composer = null; }
   renderer = null;
   scene = null;
   camera = null;
@@ -466,6 +547,9 @@ export function dispose() {
   playerMeshes.clear();
   powerupMeshes.clear();
   explosionObjects = [];
+  shockwaves = [];
+  lastExplosionCount = 0;
+  shakeUntil = 0; shakeIntensity = 0;
   lastWallsVersion = -1;
   killCamUntil = 0;
   killCamTarget = null;
