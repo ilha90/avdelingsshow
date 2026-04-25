@@ -115,9 +115,59 @@ socket.on('state', s => {
     showLogin();
     return;
   }
+  // Detekt min rank-endring
+  detectMyRankChange(s);
+  // Detekt score-økning → pulse min visning
+  detectMyScoreChange(pself);
   me.name = pself.name; me.emoji = pself.emoji; me.team = pself.team; me.color = pself.color;
   render(s);
 });
+
+// ===== Player-side moment detection =====
+let _myPrevRank = null;
+let _myPrevScore = 0;
+
+function detectMyRankChange(s){
+  const sorted = s.players.slice().sort((a,b) => b.score - a.score);
+  const myRank = sorted.findIndex(p => p.id === me.id) + 1;
+  if (_myPrevRank != null && myRank < _myPrevRank && myRank <= 3){
+    // Klatret til topp 3
+    const rankLabels = ['🥇 1. plass!', '🥈 2. plass!', '🥉 3. plass!'];
+    showRankToast(rankLabels[myRank - 1]);
+    haptic.success();
+    sfx.streak(myRank === 1 ? 5 : 3);
+  }
+  _myPrevRank = myRank;
+}
+
+function detectMyScoreChange(pself){
+  if (pself.score > _myPrevScore){
+    const delta = pself.score - _myPrevScore;
+    // Pulse min score-visning hvis aktiv UI
+    pulseOwnScore(delta);
+    if (delta >= 500){ haptic.success(); sfx.correct(); }
+  }
+  _myPrevScore = pself.score;
+}
+
+function showRankToast(text){
+  const el = document.createElement('div');
+  el.className = 'rank-toast';
+  el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('in'), 20);
+  setTimeout(() => el.classList.add('out'), 2200);
+  setTimeout(() => el.remove(), 2700);
+}
+
+function pulseOwnScore(delta){
+  // Float-up toast med +N
+  const el = document.createElement('div');
+  el.className = 'my-delta';
+  el.textContent = '+' + delta;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 1600);
+}
 
 socket.on('error:msg', msg => { alert(msg); });
 
@@ -285,19 +335,44 @@ function showQuestion(s){
       app.querySelectorAll('.player-answer').forEach(b => b.disabled = true);
       btn.style.outline = '4px solid var(--accent)';
       btn.style.outlineOffset = '4px';
+      stopQuizHaptic();
     };
-    // Bruk touchstart for rask respons på mobil (unngå click-delay + pointer-event-hikke)
-    // + preventDefault for å forhindre dobbel-fire via click
     btn.addEventListener('touchstart', (e) => {
       e.preventDefault();
       fire(e);
     }, { passive: false });
     btn.addEventListener('click', fire);
   });
+
+  // Haptic-hjerteslag siste 5s (kun hvis ikke svart)
+  startQuizHaptic(s.quiz.deadline);
+}
+
+let _quizHapticTimer = null;
+function startQuizHaptic(deadlineMs){
+  stopQuizHaptic();
+  let interval = 900;
+  const beat = () => {
+    const remaining = (deadlineMs - Date.now()) / 1000;
+    if (remaining > 5 || remaining <= 0){
+      // Venter til under 5s
+      if (remaining > 5){
+        _quizHapticTimer = setTimeout(beat, (remaining - 5) * 1000 + 50);
+      }
+      return;
+    }
+    haptic.tap();
+    _quizHapticTimer = setTimeout(beat, interval);
+    interval = Math.max(320, interval - 90);
+  };
+  _quizHapticTimer = setTimeout(beat, 50);
+}
+function stopQuizHaptic(){
+  if (_quizHapticTimer){ clearTimeout(_quizHapticTimer); _quizHapticTimer = null; }
 }
 
 // Reset key når vi forlater quiz
-function resetQuizKey(){ lastQuizKey = null; }
+function resetQuizKey(){ lastQuizKey = null; stopQuizHaptic(); }
 
 function showReveal(s){
   const correct = s.quiz?.correctIdx;

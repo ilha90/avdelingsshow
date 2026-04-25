@@ -98,7 +98,99 @@ export const sfx = {
   shield(){ chord([NOTES.A4, NOTES.C5, NOTES.E5], 0.25, 'sine', 0.15); },
   pickup(){ tone(NOTES.C5, 0.06, 'sine', 0.12); setTimeout(() => tone(NOTES.E5, 0.06, 'sine', 0.12), 40); setTimeout(() => tone(NOTES.G5, 0.1, 'triangle', 0.14), 80); },
   // STREAK — økende intensitet
-  streak(n){ const base = NOTES.C5; const steps = Math.min(n, 5); const notes = [base]; for (let i = 1; i < steps; i++) notes.push(base * (1 + i * 0.25)); arpeggio(notes, 50, 0.16, 'square', 0.16); }
+  streak(n){ const base = NOTES.C5; const steps = Math.min(n, 5); const notes = [base]; for (let i = 1; i < steps; i++) notes.push(base * (1 + i * 0.25)); arpeggio(notes, 50, 0.16, 'square', 0.16); },
+
+  // ===== NYE WOW-LYDER =====
+  // Trommevirvel — rask noise med pitch-modulation
+  drumroll(ms = 900){
+    const c = ensure(); if (!c) return;
+    const buf = c.createBuffer(1, Math.floor(c.sampleRate * ms/1000), c.sampleRate);
+    const arr = buf.getChannelData(0);
+    for (let i = 0; i < arr.length; i++){
+      const t = i / c.sampleRate;
+      // Tempo akselererer mot slutt
+      const tempo = 8 + t * 22;
+      const env = 0.4 + 0.4 * Math.abs(Math.sin(t * tempo * Math.PI));
+      arr[i] = (Math.random() * 2 - 1) * env * 0.55;
+    }
+    const src = c.createBufferSource(); src.buffer = buf;
+    const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 420;
+    const g = c.createGain(); g.gain.value = 0.28;
+    g.gain.setValueAtTime(0.28, c.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.9, c.currentTime + ms/1000);
+    src.connect(f); f.connect(g); g.connect(sfxBus);
+    src.start();
+  },
+  // Hjerteslag — lubb-dubb
+  heartbeat(){
+    tone(55, 0.07, 'sine', 0.25);
+    setTimeout(() => tone(48, 0.12, 'sine', 0.22), 130);
+  },
+  // Siren — opp-ned-sveip
+  siren(){
+    const c = ensure(); if (!c) return;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = 'square'; o.frequency.value = 600;
+    o.frequency.linearRampToValueAtTime(420, c.currentTime + 0.3);
+    o.frequency.linearRampToValueAtTime(600, c.currentTime + 0.6);
+    g.gain.value = 0;
+    g.gain.linearRampToValueAtTime(0.12, c.currentTime + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.6);
+    o.connect(g); g.connect(sfxBus);
+    o.start(); o.stop(c.currentTime + 0.62);
+  },
+  // Wheel-tick (klang med pitch)
+  wheelTick(pitch = 1){
+    tone(800 * pitch, 0.04, 'square', 0.09);
+    tone(1600 * pitch, 0.03, 'sine', 0.04);
+  },
+  // Fanfare — end-screen-horn
+  fanfare(){
+    const seq = [[NOTES.C5, 0.15], [NOTES.C5, 0.12], [NOTES.C5, 0.12], [NOTES.E5, 0.4]];
+    let t = 0;
+    for (const [f, dur] of seq){
+      setTimeout(() => chord([f, f*1.26, f*1.5], dur, 'sawtooth', 0.18), t * 1000);
+      t += dur + 0.04;
+    }
+    setTimeout(() => chord([NOTES.C5, NOTES.E5, NOTES.G5, NOTES.C6, NOTES.E6], 1.6, 'triangle', 0.14), (t + 0.08) * 1000);
+  },
+  // Zoom-whoosh — for intro-kort
+  zoom(){
+    const c = ensure(); if (!c) return;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = 'sine'; o.frequency.value = 180;
+    o.frequency.exponentialRampToValueAtTime(2400, c.currentTime + 0.25);
+    g.gain.value = 0;
+    g.gain.linearRampToValueAtTime(0.18, c.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.28);
+    o.connect(g); g.connect(sfxBus);
+    o.start(); o.stop(c.currentTime + 0.3);
+  },
+  // Lightning — elektrisk knitring
+  lightning(){
+    noise(0.25, 0.4, 3000);
+    tone(120, 0.18, 'sawtooth', 0.22);
+    setTimeout(() => noise(0.15, 0.32, 4200), 60);
+  },
+  // Spotlight — mykt glissando
+  spotlight(){
+    const c = ensure(); if (!c) return;
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = 'triangle'; o.frequency.value = NOTES.C5;
+    o.frequency.linearRampToValueAtTime(NOTES.G5, c.currentTime + 0.4);
+    g.gain.value = 0;
+    g.gain.linearRampToValueAtTime(0.12, c.currentTime + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + 0.5);
+    o.connect(g); g.connect(sfxBus);
+    o.start(); o.stop(c.currentTime + 0.52);
+  },
+  // Tick-up (score-roll)
+  tickUp(i){
+    tone(900 + i * 40, 0.03, 'square', 0.05);
+  }
 };
 
 // ===== Ambient bed =====

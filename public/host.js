@@ -7,6 +7,9 @@ import * as ai from './ai.js';
 import * as stageBg from './stage-bg.js';
 import * as fx from './effects.js';
 
+// ====== Score-tracking for animasjoner ======
+const lastScores = new Map(); // pid -> score ved forrige render (for tickUpScore)
+
 // Start stage-bakgrunn så snart vi er lastet
 stageBg.start();
 
@@ -158,43 +161,60 @@ socket.on('state', s => {
   render(s, prevPhase);
 });
 socket.on('quiz:reveal', ({ correctIdx, results, allCorrect }) => {
-  // 💯 Alle riktig — kraftig feiring
-  if (allCorrect){
-    fx.phaseBanner('💯 ALLE RIKTIG!', 'Hele gjengen traff!');
-    fx.toast('Alle svarte riktig — +50 til alle', { icon: '💯', kind: 'first' });
-    stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.5);
-    setTimeout(() => stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 1.0), 300);
-    confetti.burst({ count: 160 });
-    mascotCelebrate(5000);
-    sfx.bigWin();
-  }
-  // Score-deltas på hver spiller + halo + toasts
-  for (const r of results){
-    if (r.delta > 0){
-      fx.scoreDeltaOnPlayer(r.pid, r.delta, { gold: r.trophies && r.trophies.some(t => t.kind === 'first' || t.kind === 'all-correct') });
+  // --- Reveal-koreografi ---
+  // 1) trommevirvel 0.7s
+  // 2) feil svar blekner, riktig svar får spotlight-zoom
+  // 3) score-deltas flyter opp fra midten til hver spillers kort + score-tick
+
+  sfx.drumroll(650);
+  fx.brandPulse('mint');
+
+  setTimeout(() => {
+    // 💯 Alle riktig — kraftig feiring
+    if (allCorrect){
+      fx.phaseBanner('💯 ALLE RIKTIG!', 'Hele gjengen traff!');
+      fx.toast('Alle svarte riktig — +50 til alle', { icon: '💯', kind: 'first' });
+      stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.5);
+      setTimeout(() => stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 1.0), 300);
+      confetti.burst({ count: 160 });
+      mascotCelebrate(5000);
+      sfx.bigWin();
+      fx.brandPulse('gold');
     }
-    if (r.trophies && r.trophies.length){
-      for (const t of r.trophies){
-        if (t.kind === 'first'){
-          fx.firstAnswerToast(r.name);
-          fx.halo(r.pid, 'gold');
-          stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 0.7);
-          mascotSpeak('⚡ ' + r.name + ' først ute!');
-        } else if (t.kind === 'streak'){
-          fx.streakToast(r.name, t.n);
-          fx.halo(r.pid, 'mint');
-          if (t.n >= 5){
-            mascotCelebrate();
-            mascotSpeak('🔥 ' + r.name + ' ' + t.n + ' på rad!');
+    // Score-deltas + halo + toasts
+    for (const r of results){
+      if (r.delta > 0){
+        fx.scoreDeltaOnPlayer(r.pid, r.delta, { gold: r.trophies && r.trophies.some(t => t.kind === 'first' || t.kind === 'all-correct') });
+        // Anime score-tick fra (nåværende - delta) opp til nåværende
+        const curScore = (state.players.find(p => p.id === r.pid) || {}).score || 0;
+        fx.tickUpScore(r.pid, curScore - r.delta, curScore, 900);
+      }
+      if (r.trophies && r.trophies.length){
+        for (const t of r.trophies){
+          if (t.kind === 'first'){
+            fx.firstAnswerToast(r.name);
+            fx.halo(r.pid, 'gold');
+            stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 0.7);
+            mascotSpeak('⚡ ' + r.name + ' først ute!');
+            setTimeout(() => sfx.zoom(), 0);
+          } else if (t.kind === 'streak'){
+            fx.streakToast(r.name, t.n);
+            fx.halo(r.pid, 'mint');
+            sfx.streak(t.n);
+            if (t.n >= 5){
+              mascotCelebrate();
+              mascotSpeak('🔥 ' + r.name + ' ' + t.n + ' på rad!');
+              fx.brandPulse('gold');
+            }
+          } else if (t.kind === 'all-correct'){
+            fx.halo(r.pid, 'gold');
           }
-        } else if (t.kind === 'all-correct'){
-          fx.halo(r.pid, 'gold');
         }
       }
     }
-  }
-  // Clear answered flags
-  setTimeout(() => fx.clearAnswered(), 3500);
+    // Clear answered flags
+    setTimeout(() => fx.clearAnswered(), 3500);
+  }, 700);
 });
 socket.on('reaction', ({ emoji }) => {
   floatReaction(emoji);
@@ -217,6 +237,7 @@ socket.on('bomb:kill', ({ victim, x, y, name }) => {
   // Puls på stage-bg
   stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 0.8);
 });
+let _bombChampionShown = false;
 socket.on('bomb:tick', data => {
   if (bombRenderer){
     bombRenderer.setPlayers(data.players);
@@ -225,6 +246,19 @@ socket.on('bomb:tick', data => {
     bombRenderer.updateSoft(data.soft);
   }
   renderGameHud(data, 'bomb');
+  // Champion-cinematic: akkurat én overlevende + flere hadde startet (>=2)
+  const alive = data.players.filter(p => p.alive);
+  if (!_bombChampionShown && data.players.length >= 2 && alive.length === 1){
+    _bombChampionShown = true;
+    const winner = alive[0];
+    const playerInfo = state?.players.find(p => p.id === winner.id);
+    fx.championBanner(winner.name, playerInfo?.emoji);
+    sfx.fanfare();
+    stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 2);
+    setTimeout(() => confetti.shower(200), 400);
+    fx.brandPulse('gold');
+    mascotCelebrate(6000);
+  }
 });
 socket.on('snake:tick', data => {
   if (snakeRenderer){
@@ -238,6 +272,15 @@ function render(s, prevPhase){
   updatePhaseTag(s.phase);
   if (prevPhase !== s.phase){
     mascotForPhase(s.phase);
+    if (s.phase !== 'question') stopTimePressureWatcher();
+    // Ticker: synlig under snake/bomb
+    if (s.phase === 'snake' || s.phase === 'bomb'){
+      const ticker = s.players.slice().sort((a,b) => b.score - a.score).slice(0, 10)
+        .map(p => ({ emoji: p.emoji, name: p.name, score: p.score }));
+      fx.tickerShow(ticker);
+    } else {
+      fx.tickerHide();
+    }
     // Ambient bed under ro-faser (quiz, voting, icebreaker), av ellers
     const ambientPhases = new Set(['question', 'reveal', 'voting', 'vote-result', 'icebreaker', 'scatter-play', 'lie-play', 'leaderboard']);
     if (ambientPhases.has(s.phase)) startAmbient();
@@ -281,7 +324,7 @@ function render(s, prevPhase){
   if (prevPhase !== s.phase){
     // Specific cleanup
     if (s.phase !== 'snake' && snakeRenderer){ snakeRenderer.dispose(); snakeRenderer = null; overlays.innerHTML=''; }
-    if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; }
+    if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; _bombChampionShown = false; }
     overlays.innerHTML = '';
   }
 
@@ -319,15 +362,14 @@ function updatePhaseTag(phase){
 function renderPlayers(s){
   document.getElementById('p-count').textContent = s.players.length;
   const list = document.getElementById('players');
-  const existingIds = new Set([...list.children].map(el => el.dataset.pid));
   const sorted = s.players.slice().sort((a,b) => b.score - a.score);
   const leaderId = sorted[0]?.id || null;
   const wantIds = new Set(sorted.map(p => p.id));
 
-  // Remove gone players
+  // Fjern gamle kort
   [...list.children].forEach(el => { if (!wantIds.has(el.dataset.pid)) el.remove(); });
 
-  // Ensure/update cards
+  // Oppdater eller lag nye — oppdater IN-PLACE for å ikke ødelegge animasjoner
   sorted.forEach((p, i) => {
     let el = list.querySelector(`[data-pid="${p.id}"]`);
     const isNew = !el;
@@ -336,49 +378,101 @@ function renderPlayers(s){
       el.className = 'player-card';
       el.dataset.pid = p.id;
       el.style.animationDelay = (i * 35) + 'ms';
+      el.innerHTML = `
+        <button class="kick-btn" title="Kick" data-kick-btn>×</button>
+        <span class="status-dot"></span>
+        <span class="crown">👑</span>
+        <span class="emoji"></span>
+        <span class="name"></span>
+        <span class="score"></span>
+        <span class="team-badge" hidden></span>
+        <span class="streak">🔥 0</span>
+      `;
       list.appendChild(el);
       fx.joinToast(p.name, p.emoji);
       sfx.join();
-    }
-    const streak = (p.streak || 0);
-    el.dataset.streak = String(streak);
-    const teamBadge = p.team
-      ? `<span class="team-badge" style="color:${p.team.color}; background: ${p.team.color}22;">${p.team.emoji} ${escapeHtml(p.team.name)}</span>`
-      : '';
-    el.classList.toggle('is-leader', p.id === leaderId && p.score > 0);
-    const wasAnswered = el.classList.contains('answered');
-    el.innerHTML = `
-      <button class="kick-btn" title="Kick ${escapeHtml(p.name)}" data-kick="${p.id}">×</button>
-      <span class="status-dot"></span>
-      <span class="crown">👑</span>
-      <span class="emoji">${p.emoji}</span>
-      <span class="name" style="color:${p.color}">${escapeHtml(p.name)}</span>
-      <span class="score">${p.score}</span>
-      ${teamBadge}
-      <span class="streak">🔥 ${streak}</span>
-    `;
-    if (wasAnswered) el.classList.add('answered');
-    if (p.hasAnswered) el.classList.add('answered');
-    // Kick-knapp handler (re-bindet hver render siden innerHTML er byttet)
-    const kbtn = el.querySelector('.kick-btn');
-    if (kbtn){
-      kbtn.addEventListener('click', (ev) => {
+      fx.emojiBurst(p.emoji, list.getBoundingClientRect().right - 80, list.getBoundingClientRect().top + 40, 4);
+      // Hook kick-btn
+      el.querySelector('[data-kick-btn]').addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (confirm('Kick ' + p.name + '?')){
           socket.emit('host:kick', { pid: p.id });
         }
       });
     }
+
+    // Oppdater kun endrede felter (ikke rebuild innerHTML)
+    const emojiEl = el.querySelector('.emoji');
+    if (emojiEl && emojiEl.textContent !== p.emoji) emojiEl.textContent = p.emoji;
+
+    const nameEl = el.querySelector('.name');
+    if (nameEl && nameEl.textContent !== p.name) nameEl.textContent = p.name;
+    if (nameEl && p.color) nameEl.style.color = p.color;
+
+    // Score — skip hvis animasjon pågår (data-animating)
+    const scoreEl = el.querySelector('.score');
+    if (scoreEl && !el.dataset.animating){
+      if (scoreEl.textContent !== String(p.score)) scoreEl.textContent = p.score;
+    }
+
+    // Streak
+    const streak = (p.streak || 0);
+    const prevStreak = parseInt(el.dataset.streak || '0', 10);
+    el.dataset.streak = String(streak);
+    const streakEl = el.querySelector('.streak');
+    if (streakEl) streakEl.textContent = '🔥 ' + streak;
+
+    // Team badge
+    const teamEl = el.querySelector('.team-badge');
+    if (teamEl){
+      if (p.team){
+        teamEl.hidden = false;
+        teamEl.style.color = p.team.color;
+        teamEl.style.background = p.team.color + '22';
+        teamEl.textContent = p.team.emoji + ' ' + p.team.name;
+      } else {
+        teamEl.hidden = true;
+      }
+    }
+
+    // Crown / leader
+    el.classList.toggle('is-leader', p.id === leaderId && p.score > 0);
+
+    // Answered state
+    if (p.hasAnswered) el.classList.add('answered');
+    else el.classList.remove('answered');
+
+    // Kick-btn title
+    const kb = el.querySelector('[data-kick-btn]');
+    if (kb) kb.title = 'Kick ' + p.name;
   });
 
-  // Bytte av leder?
+  // Oppdater leder-tracker
   fx.updateLeader(leaderId);
 
-  // Plasseringsorden (flyt-reorder uten animasjon; cards er self-contained)
+  // Detekter rank-change → spotlight
+  const rankChanges = fx.detectRankChanges(s.players);
+  for (const c of rankChanges){
+    if (c.to === 1){
+      // Ble leder!
+      fx.spotlightPlayer(c.pid);
+      sfx.spotlight();
+      fx.toast(`${c.name} tar ledelsen!`, { icon: '👑', kind: 'first' });
+      mascotCelebrate(2500);
+      fx.brandPulse('gold');
+    }
+  }
+
+  // Re-sortér DOM-rekkefølge så ledere er først
   sorted.forEach((p, i) => {
     const el = list.querySelector(`[data-pid="${p.id}"]`);
     if (el && list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
   });
+
+  // Oppdater last-scores snapshot (brukes for animasjoner)
+  for (const p of s.players){
+    lastScores.set(p.id, p.score);
+  }
 }
 
 function updateLobbyConfig(s){
@@ -664,29 +758,51 @@ function renderQuestion(s){
   const progressLeft = Math.max(0, (s.quiz.deadline - Date.now())/1000);
   const total = s.quiz.isLightning ? s.config.lighttime : s.config.qtime;
   const catKey = (q.category || '').toLowerCase();
+
+  // Første gang dette spørsmålet vises: intro-card først
   if (!o.querySelector('.quiz-wrap')){
-    o.innerHTML = `
-      <div class="quiz-wrap" data-category="${catKey}">
-        <div class="quiz-progress">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning ? '⚡' : ''}</div>
-        ${q.isEmoji ? `<div class="quiz-emoji">${escapeHtml(q.q)}</div>` : `<div class="quiz-question">${escapeHtml(q.q)}</div>`}
-        <div class="quiz-answers">
-          ${q.a.map((ans, i) => `
-            <div class="quiz-answer ${['a','b','c','d'][i]}" data-idx="${i}" style="animation-delay: ${i*70}ms">
-              <span class="letter">${['A','B','C','D'][i]}</span>
-              <span>${escapeHtml(ans)}</span>
-            </div>
-          `).join('')}
+    // Lightning round? Spesial-flash ved aller første spørsmål
+    const isFirstQ = (s.quiz.index === 0);
+    if (s.quiz.isLightning && isFirstQ){
+      fx.lightningFlash();
+      sfx.lightning();
+      fx.brandPulse('danger');
+    }
+
+    // Intro-card fade-in, DELTE utbygging av DOM til etter intro
+    const catEmoji = (QUIZ_CATEGORIES[catKey] && QUIZ_CATEGORIES[catKey].emoji) || '🧠';
+    const catLabel = (QUIZ_CATEGORIES[catKey] && QUIZ_CATEGORIES[catKey].label) || (q.category || 'Quiz');
+    sfx.zoom();
+    fx.questionIntro({ index: s.quiz.index + 1, total: s.quiz.total, categoryLabel: catLabel, categoryEmoji: catEmoji, durationMs: 1300 });
+
+    setTimeout(() => {
+      // Build quiz wrap
+      o.innerHTML = `
+        <div class="quiz-wrap" data-category="${catKey}">
+          <div class="quiz-progress">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning ? '⚡' : ''}</div>
+          ${q.isEmoji ? `<div class="quiz-emoji">${escapeHtml(q.q)}</div>` : `<div class="quiz-question">${escapeHtml(q.q)}</div>`}
+          <div class="quiz-answers">
+            ${q.a.map((ans, i) => `
+              <div class="quiz-answer ${['a','b','c','d'][i]}" data-idx="${i}" style="animation-delay: ${i*70}ms">
+                <span class="letter">${['A','B','C','D'][i]}</span>
+                <span>${escapeHtml(ans)}</span>
+              </div>
+            `).join('')}
+          </div>
+          <div class="timer-bar"><div style="width: 100%"></div></div>
+          <div class="answer-count"><b id="aq-count">0</b> / ${s.players.length} har svart</div>
         </div>
-        <div class="timer-bar"><div style="width: 100%"></div></div>
-        <div class="answer-count"><b id="aq-count">0</b> / ${s.players.length} har svart</div>
-      </div>
-    `;
-    const bar = o.querySelector('.timer-bar > div');
-    const startLeft = progressLeft;
-    bar.style.transition = `width ${startLeft}s linear`;
-    setTimeout(() => { bar.style.width = '0%'; }, 50);
-    sfx.tick();
-    fx.phaseBanner('SPØRSMÅL ' + (s.quiz.index+1), q.category || '');
+      `;
+      const bar = o.querySelector('.timer-bar > div');
+      // Beregn gjenværende tid på nytt (intro tok ~1.3s)
+      const leftAfterIntro = Math.max(0, (s.quiz.deadline - Date.now())/1000);
+      bar.style.transition = `width ${leftAfterIntro}s linear`;
+      setTimeout(() => { bar.style.width = '0%'; }, 50);
+      sfx.tick();
+
+      // Sett opp time-pressure-watcher: aktiver siste 5 sek
+      startTimePressureWatcher(s.quiz.deadline);
+    }, 1350);
   }
   const c = o.querySelector('#aq-count');
   if (c) c.textContent = s.quiz.answersCount;
@@ -694,6 +810,31 @@ function renderQuestion(s){
   for (const p of s.players){
     if (p.hasAnswered){ fx.flashAnswered(p.id); }
   }
+}
+
+// Time-pressure-watcher — aktiveres siste 5 sek før deadline
+let _tpWatcher = null;
+function startTimePressureWatcher(deadlineMs){
+  if (_tpWatcher) clearInterval(_tpWatcher);
+  let pressureActive = false;
+  _tpWatcher = setInterval(() => {
+    const remaining = (deadlineMs - Date.now()) / 1000;
+    if (remaining <= 5 && remaining > 0 && !pressureActive){
+      pressureActive = true;
+      fx.timePressureStart(() => {
+        sfx.heartbeat();
+        stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 0.3);
+      });
+    }
+    if (remaining <= 0){
+      clearInterval(_tpWatcher); _tpWatcher = null;
+      if (pressureActive){ fx.timePressureStop(); }
+    }
+  }, 200);
+}
+function stopTimePressureWatcher(){
+  if (_tpWatcher){ clearInterval(_tpWatcher); _tpWatcher = null; }
+  fx.timePressureStop();
 }
 
 function renderReveal(s){
@@ -842,19 +983,39 @@ function renderWheel(s){
   }
   if (chosen){
     const el = o.querySelector('.wheel');
-    if (el){
-      el.style.transform = `rotate(${720 + Math.random()*360}deg)`;
+    if (el && !el.dataset.spinning){
+      el.dataset.spinning = '1';
+      // Realistisk fysikk: økt tempo, naturlig deceleration via cubic-bezier
+      const spins = 6 + Math.random() * 3;
+      const finalAngle = spins * 360 + Math.random() * 360;
+      el.style.transition = 'transform 4.2s cubic-bezier(.15, .95, .28, 1)';
+      el.style.transform = `rotate(${finalAngle}deg)`;
       sfx.whoosh();
+
+      // Tick-lyd — akselererer og decelererer med hjulfarten
+      const startTime = performance.now();
+      const tickLoop = () => {
+        const t = (performance.now() - startTime) / 4200; // 0-1
+        if (t >= 1) return;
+        // Fart: raskt i starten, sakte mot slutten (kvadratisk)
+        const speed = Math.max(0.04, 1 - t * t);
+        sfx.wheelTick(0.7 + (1 - t) * 0.6);
+        setTimeout(tickLoop, 60 + (1 - speed) * 220);
+      };
+      tickLoop();
+
       setTimeout(() => {
-        sfx.bigWin();
-        confetti.burst({ count: 120 });
-        stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.4);
-        fx.emojiBurst('✨', window.innerWidth/2, window.innerHeight/2, 12);
+        sfx.fanfare();
+        confetti.burst({ count: 140 });
+        stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.5);
+        fx.emojiBurst('✨', window.innerWidth/2, window.innerHeight/2, 14);
         fx.phaseBanner(chosen.emoji, chosen.name);
-        mascotCelebrate(4000);
+        mascotCelebrate(4500);
+        fx.brandPulse('gold');
+        fx.spotlightPlayer(chosen.id);
         const nm = o.querySelector('#wh-name');
         if (nm) nm.textContent = chosen.emoji + ' ' + chosen.name;
-      }, 3000);
+      }, 4300);
     }
   }
 }
@@ -956,7 +1117,6 @@ function renderEnd(s){
   const podium = s.players.slice().sort((a,b) => b.score - a.score).slice(0, 3);
   const awards = s.awards || [];
   const total = s.players.reduce((n,p) => n + p.score, 0);
-  // Fun facts — enkle observasjoner basert på awards og scores
   const facts = [];
   if (podium[0]) facts.push(`<b>${escapeHtml(podium[0].name)}</b> tok ${podium[0].score} poeng — topp av ${s.players.length} spillere`);
   if (podium[0] && podium[1] && podium[0].score - podium[1].score > 0){
@@ -968,14 +1128,14 @@ function renderEnd(s){
     <div class="end-screen">
       <h1>🎉 ${gameLabel ? escapeHtml(gameLabel) + ' — over' : 'Runde over'} 🎉</h1>
       <div class="podium">
-        ${podium[1] ? `<div class="podium-spot" style="animation-delay: 200ms"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
+        ${podium[1] ? `<div class="podium-spot"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
         ${podium[0] ? `<div class="podium-spot"><div class="avatar">${podium[0].emoji}</div><div class="name">${escapeHtml(podium[0].name)}</div><div class="score">${podium[0].score}</div><div class="podium-bar gold">🥇</div></div>` : ''}
-        ${podium[2] ? `<div class="podium-spot" style="animation-delay: 400ms"><div class="avatar">${podium[2].emoji}</div><div class="name">${escapeHtml(podium[2].name)}</div><div class="score">${podium[2].score}</div><div class="podium-bar bronze">🥉</div></div>` : ''}
+        ${podium[2] ? `<div class="podium-spot"><div class="avatar">${podium[2].emoji}</div><div class="name">${escapeHtml(podium[2].name)}</div><div class="score">${podium[2].score}</div><div class="podium-bar bronze">🥉</div></div>` : ''}
       </div>
       ${awards.length ? `
         <div class="awards-strip">
-          ${awards.map((a, i) => `
-            <div class="award-card" style="animation-delay: ${600 + i*100}ms">
+          ${awards.map(a => `
+            <div class="award-card">
               <div class="aw-ic">${a.icon}</div>
               <div>
                 <div class="aw-label">${escapeHtml(a.label)}</div>
@@ -991,15 +1151,41 @@ function renderEnd(s){
         <div>Total poeng: <b>${total}</b></div>
       </div>
       ${facts.length ? `<div class="fun-facts">${facts.map(f => `<div class="fun-fact">${f}</div>`).join('')}</div>` : ''}
-      <button class="btn-primary" id="end-btn" style="margin-top: 24px">Tilbake til lobby</button>
+      <button class="btn-primary" id="end-btn" style="margin-top: 24px; opacity:0; transition: opacity .5s;">Tilbake til lobby</button>
     </div>
   `;
-  confetti.shower(240);
-  sfx.bigWin();
-  stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.4);
-  setTimeout(() => stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 1.0), 400);
-  mascotCelebrate(6000);
   document.getElementById('end-btn').addEventListener('click', () => socket.emit('host:reset'));
+
+  // Cinematic orchestration
+  fx.cinematicEnd({
+    podium, awards,
+    onDrumroll: () => sfx.drumroll(1100),
+    onSpotlight: (i) => {
+      sfx.zoom();
+      const positions = ['silver', 'gold', 'bronze']; // rekkefølge: bronze(0), silver(1), gold(2)
+      // Mascot-cheer på hver posisjon
+      mascotCelebrate(900);
+    },
+    onAwardTick: (i) => {
+      sfx.tickUp(i);
+      stageBg.boom(window.innerWidth/2, window.innerHeight * 0.7, i%2 ? 'gold' : 'mint', 0.6);
+    },
+    onFanfare: () => {
+      sfx.fanfare();
+      fx.brandPulse('gold');
+      confetti.shower(260);
+      stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 2);
+      setTimeout(() => stageBg.boom(window.innerWidth * 0.2, window.innerHeight * 0.4, 'mint', 1.3), 200);
+      setTimeout(() => stageBg.boom(window.innerWidth * 0.8, window.innerHeight * 0.4, 'gold', 1.3), 400);
+      mascotCelebrate(8000);
+      // Fade inn "Tilbake"-knappen
+      const btn = document.getElementById('end-btn');
+      if (btn) btn.style.opacity = '1';
+    }
+  });
+
+  // Reset rank-tracking for next match
+  fx.resetRankTracking();
 }
 
 // ====== Mascot ======
