@@ -180,6 +180,7 @@ function render() {
   if (!state) return renderWaiting('Kobler til…');
   switch (state.phase) {
     case 'lobby':        return renderLobbyWait();
+    case 'tutorial':     return renderTutorialWait();
     case 'countdown':    return renderCountdown();
     case 'question':     return renderQuestion();
     case 'reveal':       return renderReveal();
@@ -696,6 +697,22 @@ function renderBombEndPlayer() {
       <p style="color:var(--ink-2); text-align:center; margin-top:14px">Poengene er lagt til hovedscoren din.</p>
     </div>
     ${reactionBar()}`;
+}
+
+// ============ TUTORIAL ============
+const TUTORIAL_ICON_P = {
+  quiz: '🧠', lightning: '⚡', bomb: '💣', snake: '🐍',
+  scatter: '📝', lie: '🤥', voting: '🗳️',
+};
+function renderTutorialWait() {
+  const icon = TUTORIAL_ICON_P[state.tutorialGame] || '🎮';
+  const text = state.tutorialText || 'Gjør deg klar…';
+  screen.innerHTML = `${headerHtml()}
+    <div class="player-state tutorial-player">
+      <div class="tutorial-icon" style="font-size:96px; text-align:center; margin:20px 0">${icon}</div>
+      <div class="tutorial-text" style="font-size:18px; text-align:center; line-height:1.5; padding:0 20px">${esc(text)}</div>
+      <div class="snake-hint" style="margin-top:28px">Starter snart…</div>
+    </div>`;
 }
 
 // ============ LOBBY ============

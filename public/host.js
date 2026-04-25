@@ -78,7 +78,7 @@ let tickAccum = 0;
 let wheelRevealTimeout = null;
 
 const PHASE_LABELS = {
-  lobby: 'Lobby', countdown: 'Klar…', question: 'Spørsmål', reveal: 'Fasit',
+  lobby: 'Lobby', tutorial: 'Forklaring', countdown: 'Klar…', question: 'Spørsmål', reveal: 'Fasit',
   leaderboard: 'Poengtavle', wheel: 'Lykkehjul',
   voting: 'Avstemning', 'vote-result': 'Avstemning – resultat',
   'scatter-play': 'Kategori-kamp', 'scatter-review': 'Gjennomgang',
@@ -305,6 +305,10 @@ function triggerPhaseEffects(prev, s) {
   if (s.phase === 'question' && prev.phase !== 'question' && s.question && s.question.text) {
     if (!s.question.isEmoji) hostSpeak(s.question.text);
   }
+  // Maskoten leser tutorial når den starter
+  if (s.phase === 'tutorial' && prev.phase !== 'tutorial' && s.tutorialText) {
+    hostSpeak(s.tutorialText);
+  }
   // Player joined sound
   if (prev.players.length < s.players.length) window.sfx?.join();
 }
@@ -323,6 +327,7 @@ function render() {
 
   switch (state.phase) {
     case 'lobby': renderLobby(); break;
+    case 'tutorial': renderTutorial(); break;
     case 'countdown': renderCountdown(); break;
     case 'question': renderQuestion(); break;
     case 'reveal': renderReveal(); break;
@@ -344,6 +349,35 @@ function render() {
   }
   renderControls();
   } catch (e) { console.error('[host render error]', e); }
+}
+
+// ============ TUTORIAL ============
+const TUTORIAL_ICON = {
+  quiz: '🧠', lightning: '⚡', bomb: '💣', snake: '🐍',
+  scatter: '📝', lie: '🤥', voting: '🗳️',
+};
+function renderTutorial() {
+  const icon = TUTORIAL_ICON[state.tutorialGame] || '🎮';
+  const text = state.tutorialText || '';
+  main.innerHTML = `
+    <div class="tutorial-screen">
+      <div class="tutorial-icon">${icon}</div>
+      <div class="tutorial-text">${esc(text)}</div>
+      <div class="tutorial-hint">Programlederen forklarer… Hopp over med Enter eller knappen under.</div>
+      <div class="tutorial-progress"><div id="tutorialBar" class="tutorial-progress-fill"></div></div>
+    </div>`;
+  // Animer progress-baren basert på tutorialEndsAt
+  const bar = document.getElementById('tutorialBar');
+  const startTime = Date.now();
+  const duration = Math.max(100, (state.tutorialEndsAt || Date.now() + 5500) - Date.now());
+  function tick() {
+    if (!bar || state?.phase !== 'tutorial') return;
+    const elapsed = Date.now() - startTime;
+    const pct = Math.min(100, (elapsed / duration) * 100);
+    bar.style.width = pct + '%';
+    if (state?.phase === 'tutorial') requestAnimationFrame(tick);
+  }
+  tick();
 }
 
 // ============ COUNTDOWN ============
@@ -1194,6 +1228,9 @@ function renderControls() {
   let html = '';
   if (state.phase === 'lobby') {
     html = `<button class="btn btn-primary btn-lg cta" onclick="openGameMenu()">🎮 Velg spill</button>`;
+  } else if (state.phase === 'tutorial') {
+    html = `<button class="btn btn-primary" onclick="act('host:skip-tutorial')">Hopp over →</button>
+            <button class="btn btn-ghost btn-sm" onclick="act('host:reset')">Avbryt</button>`;
   } else if (state.phase === 'question') {
     html = `
       ${state.paused
@@ -1436,6 +1473,9 @@ window.addEventListener('keydown', (e) => {
   }
   if (state.phase === 'wheel') {
     if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:wheel'); return; }
+  }
+  if (state.phase === 'tutorial') {
+    if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:skip-tutorial'); return; }
   }
   if (state.phase === 'lobby') {
     if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); openGameMenu(); return; }

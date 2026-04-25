@@ -214,6 +214,9 @@ function publicState() {
     teamMode: game.teamMode,
     teams: game.teams,
     qIndex: game.qIndex,
+    tutorialGame: game.phase === 'tutorial' ? game.tutorialGame : null,
+    tutorialText: game.phase === 'tutorial' ? game.tutorialText : null,
+    tutorialEndsAt: game.phase === 'tutorial' ? game.tutorialEndsAt : 0,
     total: game.questions.length,
     paused: game.paused,
     questionCount: game.questionCount,
@@ -416,6 +419,42 @@ function nextQuestion() {
   startQuestion();
 }
 
+// ============ TUTORIAL-SYSTEM ============
+// Vises før hvert spill starter — mascoten "leser opp" reglene
+const TUTORIAL_TEXT = {
+  quiz:      '🧠 Quiz — Svar raskt for flere poeng! Først ute får bonus.',
+  lightning: '⚡ Lyn-runde — Bare 5 sekunder per spørsmål og DOBBEL poeng! Ingen nøling!',
+  bomb:      '💣 Bomberman — Spreng vegger og motstandere. Plukk opp powerups. Siste overlevende vinner!',
+  snake:     '🐍 Slange-kamp — Spis mat og voks! Krasj du i en mindre slange spiser du henne. Unngå vegger og din egen kropp.',
+  scatter:   '📝 Kategori-kamp — Én bokstav, fem kategorier. Skriv unike ord som starter med bokstaven. Unike ord gir full score!',
+  lie:       '🤥 2 sannheter, 1 løgn — Skriv 3 ting om deg selv (2 sanne, 1 løgn). Gjett hvem som lyver!',
+  voting:    '🗳️ Hvem er mest sannsynlig — Stem anonymt på hvem som passer best.',
+};
+let tutorialTimer = null;
+function playTutorialThen(gameType, nextFn, durationMs = 5500) {
+  if (tutorialTimer) { clearTimeout(tutorialTimer); tutorialTimer = null; }
+  game.phase = 'tutorial';
+  game.tutorialGame = gameType;
+  game.tutorialText = TUTORIAL_TEXT[gameType] || '';
+  game.tutorialEndsAt = Date.now() + durationMs;
+  game._tutorialNextFn = nextFn;
+  broadcast();
+  tutorialTimer = setTimeout(() => {
+    tutorialTimer = null;
+    if (game.phase !== 'tutorial') return;
+    const fn = game._tutorialNextFn;
+    game._tutorialNextFn = null;
+    if (fn) fn();
+  }, durationMs);
+}
+function skipTutorial() {
+  if (game.phase !== 'tutorial') return;
+  if (tutorialTimer) { clearTimeout(tutorialTimer); tutorialTimer = null; }
+  const fn = game._tutorialNextFn;
+  game._tutorialNextFn = null;
+  if (fn) fn();
+}
+
 function startQuizGame(categoryKey, lightning = false) {
   const cat = QUIZ_CATEGORIES[categoryKey];
   if (!cat) return;
@@ -462,6 +501,10 @@ function resetToLobby() {
   bombCleanTimers();
   clearAutoAdvance();
   if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
+  if (tutorialTimer) { clearTimeout(tutorialTimer); tutorialTimer = null; }
+  game._tutorialNextFn = null;
+  game.tutorialGame = null;
+  game.tutorialText = null;
   game.snake = null;
   game.bomb = null;
   game.lieRound = null;
@@ -1604,13 +1647,18 @@ io.on('connection', (socket) => {
   socket.on('host:start-quiz', (categoryKey) => {
     if (!isHost()) return;
     if (!game.players.size) return;
-    startQuizGame(categoryKey, false);
+    playTutorialThen('quiz', () => startQuizGame(categoryKey, false));
   });
 
   socket.on('host:start-lightning', (categoryKey) => {
     if (!isHost()) return;
     if (!game.players.size) return;
-    startQuizGame(categoryKey, true);
+    playTutorialThen('lightning', () => startQuizGame(categoryKey, true));
+  });
+
+  socket.on('host:skip-tutorial', () => {
+    if (!isHost()) return;
+    skipTutorial();
   });
 
   socket.on('host:start-custom-quiz', (payload) => {
@@ -1643,7 +1691,7 @@ io.on('connection', (socket) => {
 
   socket.on('host:start-voting', () => {
     if (!isHost() || !game.players.size) return;
-    startVoting();
+    playTutorialThen('voting', () => startVoting());
   });
 
   socket.on('host:add-voting-prompts', (prompts) => {
@@ -1667,7 +1715,7 @@ io.on('connection', (socket) => {
 
   socket.on('host:start-scatter', () => {
     if (!isHost() || !game.players.size) return;
-    startScatter();
+    playTutorialThen('scatter', () => startScatter());
   });
 
   socket.on('host:end-scatter', () => {
@@ -1683,7 +1731,7 @@ io.on('connection', (socket) => {
   socket.on('host:start-lie', () => {
     if (!isHost()) return;
     if (game.players.size < 2) return;
-    startLieGame();
+    playTutorialThen('lie', () => startLieGame());
   });
 
   socket.on('host:start-lie-round', () => {
@@ -1706,7 +1754,7 @@ io.on('connection', (socket) => {
 
   socket.on('host:start-snake', () => {
     if (!isHost() || !game.players.size) return;
-    startSnake();
+    playTutorialThen('snake', () => startSnake());
   });
 
   socket.on('host:end-snake', () => {
@@ -1726,7 +1774,7 @@ io.on('connection', (socket) => {
 
   socket.on('host:start-bomb', () => {
     if (!isHost() || !game.players.size) return;
-    startBomberman();
+    playTutorialThen('bomb', () => startBomberman());
   });
 
   socket.on('host:end-bomb', () => {

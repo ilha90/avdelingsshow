@@ -1274,3 +1274,43 @@ body::after {
   }
   .snake-pad:hover { opacity: 1; }
 }
+
+/* ============ TUTORIAL-SKJERM ============ */
+.tutorial-screen {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 28px; padding: 40px; text-align: center; flex: 1; min-height: 0;
+  animation: tutFadeIn .4s ease;
+}
+@keyframes tutFadeIn {
+  0% { opacity: 0; transform: translateY(16px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.tutorial-icon {
+  font-size: 180px; line-height: 1;
+  filter: drop-shadow(0 12px 40px rgba(93,224,174,.4));
+  animation: tutIconBounce 2.4s ease-in-out infinite;
+}
+@keyframes tutIconBounce {
+  0%, 100% { transform: translateY(0) scale(1) rotate(-3deg); }
+  50% { transform: translateY(-18px) scale(1.05) rotate(3deg); }
+}
+.tutorial-text {
+  font-size: 40px; font-weight: 700; max-width: 1000px; line-height: 1.4;
+  background: linear-gradient(135deg, #fff 0%, var(--gold-2) 60%, #fff 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.tutorial-hint {
+  font-size: 16px; color: var(--ink-2);
+}
+.tutorial-progress {
+  width: 60%; max-width: 520px; height: 6px; background: rgba(255,255,255,.1);
+  border-radius: 999px; overflow: hidden;
+}
+.tutorial-progress-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--gold), var(--gold-2));
+  border-radius: 999px; transition: width .15s linear;
+}
+.player-state.tutorial-player {
+  display: flex; flex-direction: column; align-items: center;
+}
