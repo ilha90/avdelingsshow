@@ -1,9 +1,14 @@
 // public/host.js — host UI + rendering + socket handlers
 import { QUIZ_CATEGORIES } from './data.js';
 import { avatarFor, colorFor } from './avatars.js';
-import { sfx, setMuted, isMuted, unlock as unlockAudio } from './sound.js';
+import { sfx, setMuted, isMuted, unlock as unlockAudio, startAmbient, stopAmbient } from './sound.js';
 import * as confetti from './confetti.js';
 import * as ai from './ai.js';
+import * as stageBg from './stage-bg.js';
+import * as fx from './effects.js';
+
+// Start stage-bakgrunn så snart vi er lastet
+stageBg.start();
 
 // ====== State ======
 const socket = io({ transports: ['websocket', 'polling'] });
@@ -98,6 +103,9 @@ function initHostUI(){
 
   // Mascot wander
   setInterval(wanderMascot, 7000);
+
+  // Keep-alive mot /health for å hindre Render-coldstart under show
+  setInterval(() => { fetch('/health').catch(() => {}); }, 4 * 60 * 1000);
 }
 
 async function aiGenerate(){
@@ -126,11 +134,31 @@ socket.on('state', s => {
   render(s, prevPhase);
 });
 socket.on('quiz:reveal', ({ correctIdx, results }) => {
+  // Score-deltas på hver spiller + halo + toasts
   for (const r of results){
+    if (r.delta > 0){
+      fx.scoreDeltaOnPlayer(r.pid, r.delta, { gold: r.trophies && r.trophies.some(t => t.kind === 'first') });
+    }
     if (r.trophies && r.trophies.length){
-      mascotSpeak(r.trophies.map(t => t.kind==='first' ? '⚡ ' + r.name + ' først ute!' : '🔥 ' + r.name + ' ' + t.n + ' på rad!').join(' '));
+      for (const t of r.trophies){
+        if (t.kind === 'first'){
+          fx.firstAnswerToast(r.name);
+          fx.halo(r.pid, 'gold');
+          stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 0.7);
+          mascotSpeak('⚡ ' + r.name + ' først ute!');
+        } else if (t.kind === 'streak'){
+          fx.streakToast(r.name, t.n);
+          fx.halo(r.pid, 'mint');
+          if (t.n >= 5){
+            mascotCelebrate();
+            mascotSpeak('🔥 ' + r.name + ' ' + t.n + ' på rad!');
+          }
+        }
+      }
     }
   }
+  // Clear answered flags
+  setTimeout(() => fx.clearAnswered(), 3500);
 });
 socket.on('reaction', ({ emoji }) => {
   floatReaction(emoji);
@@ -143,8 +171,15 @@ socket.on('bomb:explosion', ({ cells }) => {
   sfx.boom();
 });
 socket.on('bomb:kill', ({ victim, x, y, name }) => {
-  if (bombRenderer) bombRenderer.killCamAt(x, y, 2500);
+  if (bombRenderer){
+    bombRenderer.killCamAt(x, y, 2500);
+    bombRenderer.deathAnim(victim, x, y);
+  }
   showKillBanner(name);
+  fx.ko(name);
+  fx.emojiBurst('💥', window.innerWidth/2, window.innerHeight/2 + 40, 8);
+  // Puls på stage-bg
+  stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 0.8);
 });
 socket.on('bomb:tick', data => {
   if (bombRenderer){
@@ -165,6 +200,13 @@ socket.on('snake:tick', data => {
 // ====== Phase dispatch ======
 function render(s, prevPhase){
   updatePhaseTag(s.phase);
+  if (prevPhase !== s.phase){
+    mascotForPhase(s.phase);
+    // Ambient bed under ro-faser (quiz, voting, icebreaker), av ellers
+    const ambientPhases = new Set(['question', 'reveal', 'voting', 'vote-result', 'icebreaker', 'scatter-play', 'lie-play', 'leaderboard']);
+    if (ambientPhases.has(s.phase)) startAmbient();
+    else stopAmbient();
+  }
   renderPlayers(s);
   updateLobbyConfig(s);
 
@@ -241,19 +283,55 @@ function updatePhaseTag(phase){
 function renderPlayers(s){
   document.getElementById('p-count').textContent = s.players.length;
   const list = document.getElementById('players');
-  list.innerHTML = '';
-  s.players.slice().sort((a,b) => b.score - a.score).forEach((p, i) => {
-    const el = document.createElement('div');
-    el.className = 'player-chip';
-    el.style.animationDelay = (i * 40) + 'ms';
-    const av = { emoji: p.emoji, color: p.color };
+  const existingIds = new Set([...list.children].map(el => el.dataset.pid));
+  const sorted = s.players.slice().sort((a,b) => b.score - a.score);
+  const leaderId = sorted[0]?.id || null;
+  const wantIds = new Set(sorted.map(p => p.id));
+
+  // Remove gone players
+  [...list.children].forEach(el => { if (!wantIds.has(el.dataset.pid)) el.remove(); });
+
+  // Ensure/update cards
+  sorted.forEach((p, i) => {
+    let el = list.querySelector(`[data-pid="${p.id}"]`);
+    const isNew = !el;
+    if (isNew){
+      el = document.createElement('div');
+      el.className = 'player-card';
+      el.dataset.pid = p.id;
+      el.style.animationDelay = (i * 35) + 'ms';
+      list.appendChild(el);
+      fx.joinToast(p.name, p.emoji);
+      sfx.join();
+    }
+    const streak = (p.streak || 0);
+    el.dataset.streak = String(streak);
+    const teamBadge = p.team
+      ? `<span class="team-badge" style="color:${p.team.color}; background: ${p.team.color}22;">${p.team.emoji} ${escapeHtml(p.team.name)}</span>`
+      : '';
+    el.classList.toggle('is-leader', p.id === leaderId && p.score > 0);
+    // Behold answered-tilstand om den finnes; oppdater kun innhold
+    const wasAnswered = el.classList.contains('answered');
     el.innerHTML = `
+      <span class="status-dot"></span>
+      <span class="crown">👑</span>
       <span class="emoji">${p.emoji}</span>
-      <span class="name">${escapeHtml(p.name)}${p.team ? ' <span style="color:'+p.team.color+'">•</span> <small style="color:'+p.team.color+'">'+escapeHtml(p.team.name)+'</small>' : ''}</span>
+      <span class="name" style="color:${p.color}">${escapeHtml(p.name)}</span>
       <span class="score">${p.score}</span>
+      ${teamBadge}
+      <span class="streak">🔥 ${streak}</span>
     `;
-    if (p.team){ el.style.color = p.team.color; el.classList.add('team-bg'); }
-    list.appendChild(el);
+    if (wasAnswered) el.classList.add('answered');
+    if (p.hasAnswered) el.classList.add('answered');
+  });
+
+  // Bytte av leder?
+  fx.updateLeader(leaderId);
+
+  // Plasseringsorden (flyt-reorder uten animasjon; cards er self-contained)
+  sorted.forEach((p, i) => {
+    const el = list.querySelector(`[data-pid="${p.id}"]`);
+    if (el && list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
   });
 }
 
@@ -536,21 +614,22 @@ function renderQuestion(s){
   const q = s.quiz.question;
   const progressLeft = Math.max(0, (s.quiz.deadline - Date.now())/1000);
   const total = s.quiz.isLightning ? s.config.lighttime : s.config.qtime;
+  const catKey = (q.category || '').toLowerCase();
   if (!o.querySelector('.quiz-wrap')){
     o.innerHTML = `
-      <div class="quiz-wrap">
-        <div style="color:var(--muted)">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning ? '⚡' : ''}</div>
+      <div class="quiz-wrap" data-category="${catKey}">
+        <div class="quiz-progress">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning ? '⚡' : ''}</div>
         ${q.isEmoji ? `<div class="quiz-emoji">${escapeHtml(q.q)}</div>` : `<div class="quiz-question">${escapeHtml(q.q)}</div>`}
         <div class="quiz-answers">
           ${q.a.map((ans, i) => `
-            <div class="quiz-answer ${['a','b','c','d'][i]}" data-idx="${i}" style="animation-delay: ${i*60}ms">
+            <div class="quiz-answer ${['a','b','c','d'][i]}" data-idx="${i}" style="animation-delay: ${i*70}ms">
               <span class="letter">${['A','B','C','D'][i]}</span>
               <span>${escapeHtml(ans)}</span>
             </div>
           `).join('')}
         </div>
         <div class="timer-bar"><div style="width: 100%"></div></div>
-        <div class="answer-count"><span id="aq-count">0</span> / ${s.players.length} har svart</div>
+        <div class="answer-count"><b id="aq-count">0</b> / ${s.players.length} har svart</div>
       </div>
     `;
     const bar = o.querySelector('.timer-bar > div');
@@ -558,9 +637,14 @@ function renderQuestion(s){
     bar.style.transition = `width ${startLeft}s linear`;
     setTimeout(() => { bar.style.width = '0%'; }, 50);
     sfx.tick();
+    fx.phaseBanner('SPØRSMÅL ' + (s.quiz.index+1), q.category || '');
   }
   const c = o.querySelector('#aq-count');
   if (c) c.textContent = s.quiz.answersCount;
+  // Flag has-answered players
+  for (const p of s.players){
+    if (p.hasAnswered){ fx.flashAnswered(p.id); }
+  }
 }
 
 function renderReveal(s){
@@ -714,7 +798,11 @@ function renderWheel(s){
       sfx.whoosh();
       setTimeout(() => {
         sfx.bigWin();
-        confetti.burst({ count: 80 });
+        confetti.burst({ count: 120 });
+        stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.4);
+        fx.emojiBurst('✨', window.innerWidth/2, window.innerHeight/2, 12);
+        fx.phaseBanner(chosen.emoji, chosen.name);
+        mascotCelebrate(4000);
         const nm = o.querySelector('#wh-name');
         if (nm) nm.textContent = chosen.emoji + ' ' + chosen.name;
       }, 3000);
@@ -726,7 +814,7 @@ function renderSnakeGame(s){
   const o = document.getElementById('overlays');
   if (!snakeRenderer){
     o.innerHTML = `<canvas class="fullbleed-canvas" id="snake-canvas"></canvas>
-      <div class="game-hud-top"><div>🐍 Slange-kamp</div><div id="snake-timer"></div></div>
+      <div class="game-hud-top"><div class="hud-title">🐍 Slange-kamp</div><div class="hud-timer" id="snake-timer">∞</div></div>
       <div class="game-hud-right" id="snake-score"><h4>Poeng</h4><div id="snake-score-list"></div></div>`;
     import('./snake3d.js').then(m => {
       snakeRenderer = new m.SnakeRenderer(document.getElementById('snake-canvas'));
@@ -737,7 +825,7 @@ function renderBombGame(s){
   const o = document.getElementById('overlays');
   if (!bombRenderer){
     o.innerHTML = `<canvas class="fullbleed-canvas" id="bomb-canvas"></canvas>
-      <div class="game-hud-top"><div>💣 Bomberman</div><div id="bomb-timer"></div></div>
+      <div class="game-hud-top"><div class="hud-title">💣 Bomberman</div><div class="hud-timer" id="bomb-timer">∞</div></div>
       <div class="game-hud-right" id="bomb-score"><h4>Poeng</h4><div id="bomb-score-list"></div></div>`;
     import('./bomb3d.js').then(m => {
       bombRenderer = new m.BombRenderer(document.getElementById('bomb-canvas'), { follow: false });
@@ -762,7 +850,12 @@ function renderGameHud(data, type){
   if (listEl){
     const scoreData = type === 'snake' ? (data.score || []) : data.players.map(p => ({ name: p.name, score: (state.players.find(sp => sp.id===p.id)||{}).score||0, alive: p.alive, kills: p.kills }));
     scoreData.sort((a,b) => (b.score||0) - (a.score||0));
-    listEl.innerHTML = scoreData.slice(0, 12).map(p => `<div style="display:flex; justify-content:space-between; padding: 4px 0; ${p.alive===false?'opacity:.4':''}"><span>${escapeHtml(p.name)}${p.kills?' <small>💀'+p.kills+'</small>':''}</span><span>${p.score||0}</span></div>`).join('');
+    listEl.innerHTML = scoreData.slice(0, 12).map(p => `
+      <div class="hud-row ${p.alive===false?'dead':''}">
+        <span>${escapeHtml(p.name)}${p.kills?' <small style="color:var(--danger)">💀'+p.kills+'</small>':''}</span>
+        <span class="n">${p.score||0}</span>
+      </div>
+    `).join('');
   }
 }
 
@@ -812,23 +905,51 @@ function renderLieReveal(s){
 function renderEnd(s){
   const o = document.getElementById('overlays');
   const podium = s.players.slice().sort((a,b) => b.score - a.score).slice(0, 3);
+  const awards = s.awards || [];
+  const total = s.players.reduce((n,p) => n + p.score, 0);
+  // Fun facts — enkle observasjoner basert på awards og scores
+  const facts = [];
+  if (podium[0]) facts.push(`<b>${escapeHtml(podium[0].name)}</b> tok ${podium[0].score} poeng — topp av ${s.players.length} spillere`);
+  if (podium[0] && podium[1] && podium[0].score - podium[1].score > 0){
+    const diff = podium[0].score - podium[1].score;
+    facts.push(`Vinneren hadde <b>${diff}</b> poeng forsprang til andreplassen`);
+  }
+  const gameLabel = { quiz: 'Quiz', lightning: 'Lyn-runde', snake: 'Slange-kamp', bomb: 'Bomberman', scatter: 'Kategori-kamp', lie: '2 sannheter 1 løgn' }[s.lastGame] || '';
   o.innerHTML = `
     <div class="end-screen">
-      <h1>🎉 Runde over 🎉</h1>
+      <h1>🎉 ${gameLabel ? escapeHtml(gameLabel) + ' — over' : 'Runde over'} 🎉</h1>
       <div class="podium">
-        ${podium[1] ? `<div class="podium-spot"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
+        ${podium[1] ? `<div class="podium-spot" style="animation-delay: 200ms"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
         ${podium[0] ? `<div class="podium-spot"><div class="avatar">${podium[0].emoji}</div><div class="name">${escapeHtml(podium[0].name)}</div><div class="score">${podium[0].score}</div><div class="podium-bar gold">🥇</div></div>` : ''}
-        ${podium[2] ? `<div class="podium-spot"><div class="avatar">${podium[2].emoji}</div><div class="name">${escapeHtml(podium[2].name)}</div><div class="score">${podium[2].score}</div><div class="podium-bar bronze">🥉</div></div>` : ''}
+        ${podium[2] ? `<div class="podium-spot" style="animation-delay: 400ms"><div class="avatar">${podium[2].emoji}</div><div class="name">${escapeHtml(podium[2].name)}</div><div class="score">${podium[2].score}</div><div class="podium-bar bronze">🥉</div></div>` : ''}
       </div>
+      ${awards.length ? `
+        <div class="awards-strip">
+          ${awards.map((a, i) => `
+            <div class="award-card" style="animation-delay: ${600 + i*100}ms">
+              <div class="aw-ic">${a.icon}</div>
+              <div>
+                <div class="aw-label">${escapeHtml(a.label)}</div>
+                <div class="aw-winner">${a.emoji} ${escapeHtml(a.winner)}</div>
+                <div class="aw-value">${escapeHtml(a.value)}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
       <div class="round-stats">
         <div>Spillere: <b>${s.players.length}</b></div>
-        <div>Total poeng: <b>${s.players.reduce((n,p)=>n+p.score,0)}</b></div>
+        <div>Total poeng: <b>${total}</b></div>
       </div>
-      <button class="btn-primary" id="end-btn" style="margin-top: 20px">Tilbake til lobby</button>
+      ${facts.length ? `<div class="fun-facts">${facts.map(f => `<div class="fun-fact">${f}</div>`).join('')}</div>` : ''}
+      <button class="btn-primary" id="end-btn" style="margin-top: 24px">Tilbake til lobby</button>
     </div>
   `;
-  confetti.shower(200);
+  confetti.shower(240);
   sfx.bigWin();
+  stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.4);
+  setTimeout(() => stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 1.0), 400);
+  mascotCelebrate(6000);
   document.getElementById('end-btn').addEventListener('click', () => socket.emit('host:reset'));
 }
 
@@ -853,11 +974,40 @@ function mascotSpeak(text, ms = 4000){
   clearTimeout(speakTimer);
   speakTimer = setTimeout(() => mascot.classList.remove('speaking'), ms);
 }
+let celebTimer = null;
+function mascotCelebrate(ms = 3000){
+  mascot.classList.add('celebrating', 'happy');
+  clearTimeout(celebTimer);
+  celebTimer = setTimeout(() => mascot.classList.remove('celebrating', 'happy'), ms);
+}
+function mascotEmotion(emotion){
+  mascot.classList.remove('happy', 'excited', 'dancing');
+  if (emotion) mascot.classList.add(emotion);
+}
+
+// Blink hvert 4-8 sekunder
+function scheduleBlink(){
+  const next = 4000 + Math.random() * 4000;
+  setTimeout(() => {
+    mascot.classList.add('blinking');
+    setTimeout(() => mascot.classList.remove('blinking'), 160);
+    scheduleBlink();
+  }, next);
+}
+scheduleBlink();
+
+// Phase-baserte uttrykk
+function mascotForPhase(phase){
+  if (phase === 'question' || phase === 'reveal') mascotEmotion('happy');
+  else if (phase === 'bomb') mascotEmotion('excited');
+  else if (phase === 'wheel' || phase === 'end') mascotEmotion('dancing');
+  else mascotEmotion(null);
+}
 
 function showKillBanner(name){
   const el = document.createElement('div');
   el.className = 'kill-banner';
-  el.innerHTML = `💀 ${escapeHtml(name)} ble sprengt 💣`;
+  el.innerHTML = `💥 K.O. ${escapeHtml(name)} 💣`;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 4000);
 }

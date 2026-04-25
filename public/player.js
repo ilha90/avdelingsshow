@@ -12,6 +12,37 @@ let bombZoom = 1.2;
 
 const app = document.getElementById('app');
 
+// ====== Haptic helpers ======
+const haptic = {
+  tap(){ try { navigator.vibrate && navigator.vibrate(10); } catch(e){} },
+  bump(){ try { navigator.vibrate && navigator.vibrate([15, 30, 15]); } catch(e){} },
+  buzz(){ try { navigator.vibrate && navigator.vibrate(60); } catch(e){} },
+  success(){ try { navigator.vibrate && navigator.vibrate([25, 60, 25]); } catch(e){} },
+  fail(){ try { navigator.vibrate && navigator.vibrate([80, 40, 80]); } catch(e){} },
+};
+
+// Double-tap prevention — gir en action-cooldown per spiller
+const cooldowns = new Map();
+function cooldown(key, ms){
+  const now = Date.now();
+  const last = cooldowns.get(key) || 0;
+  if (now - last < ms) return false;
+  cooldowns.set(key, now);
+  return true;
+}
+
+// Connection status UI
+let connEl = null;
+function ensureConnEl(){
+  if (!connEl){
+    connEl = document.createElement('div');
+    connEl.className = 'conn-status';
+    connEl.textContent = '⚠️ Frakoblet — kobler til...';
+    document.body.appendChild(connEl);
+  }
+  return connEl;
+}
+
 // ====== Persist name/emoji ======
 const LS = {
   name: 'avdelingsshow:name',
@@ -49,12 +80,14 @@ function showLogin(){
     });
   });
   const join = () => {
+    if (!cooldown('join', 800)) return;
     const name = app.querySelector('#name-in').value.trim().slice(0, 20);
-    if (!name){ sfx.wrong(); return; }
+    if (!name){ sfx.wrong(); haptic.fail(); return; }
     localStorage.setItem(LS.name, name);
     localStorage.setItem(LS.emoji, picked);
     socket.emit('player:hello', { name, emoji: picked, token: s.token || null });
     sfx.join();
+    haptic.success();
   };
   app.querySelector('#join-btn').addEventListener('click', join);
   app.querySelector('#name-in').addEventListener('keydown', e => { if (e.key === 'Enter') join(); });
@@ -89,11 +122,16 @@ socket.on('state', s => {
 socket.on('error:msg', msg => { alert(msg); });
 
 socket.on('disconnect', () => {
-  const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = 'Frakoblet... prøver igjen';
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  ensureConnEl().classList.add('show');
+  haptic.fail();
+});
+socket.on('connect', () => {
+  ensureConnEl().classList.remove('show');
+  // Re-emit hello med lagret token (socket.io reconnect beholder ikke state.id på server)
+  const s = getSaved();
+  if (s.token && s.name){
+    socket.emit('player:hello', { name: s.name, emoji: s.emoji, token: s.token });
+  }
 });
 
 socket.on('bomb:init', d => { bombInit = d; });
@@ -210,11 +248,14 @@ function showQuestion(s){
   `;
   app.querySelectorAll('.player-answer').forEach(btn => {
     btn.addEventListener('click', () => {
+      if (!cooldown('answer', 800)) return;
       const idx = parseInt(btn.dataset.idx, 10);
       socket.emit('player:answer', { idx });
       sfx.pop();
+      haptic.tap();
       app.querySelectorAll('.player-answer').forEach(b => b.disabled = true);
-      btn.style.outline = '4px solid var(--mint)';
+      btn.style.outline = '4px solid var(--accent)';
+      btn.style.outlineOffset = '4px';
     });
   });
 }
@@ -270,10 +311,12 @@ function showVoting(s){
   `;
   app.querySelectorAll('button[data-id]').forEach(b => {
     b.addEventListener('click', () => {
+      if (!cooldown('vote', 500)) return;
       socket.emit('player:vote', { targetId: b.dataset.id });
       sfx.pop();
+      haptic.tap();
       app.querySelectorAll('button[data-id]').forEach(x => { x.disabled = true; x.style.opacity = '0.4'; });
-      b.style.opacity = '1'; b.style.outline = '3px solid var(--mint)';
+      b.style.opacity = '1'; b.style.outline = '3px solid var(--accent)';
     });
   });
 }
@@ -301,8 +344,10 @@ function showScatterPlay(s){
     inp.addEventListener('input', e => { entries[parseInt(inp.dataset.i,10)] = e.target.value; });
   });
   app.querySelector('#submit-sc').addEventListener('click', () => {
+    if (!cooldown('submit-sc', 500)) return;
     socket.emit('player:scatter', { entries });
     sfx.correct();
+    haptic.success();
     showWaitScreen('Sendt! Venter på de andre...');
   });
 }
@@ -360,9 +405,11 @@ function showLieCollect(s){
     r.addEventListener('change', e => { if (r.checked) lieIdx = parseInt(r.dataset.li, 10); });
   });
   app.querySelector('#submit-lie').addEventListener('click', () => {
-    if (items.some(x => !x.trim())){ sfx.wrong(); alert('Fyll ut alle 3'); return; }
+    if (!cooldown('submit-lie', 500)) return;
+    if (items.some(x => !x.trim())){ sfx.wrong(); haptic.fail(); alert('Fyll ut alle 3'); return; }
     socket.emit('player:lie-submit', { items, lieIdx });
     sfx.correct();
+    haptic.success();
     showWaitScreen('Sendt!');
   });
 }
@@ -382,11 +429,13 @@ function showLiePlay(s){
   `;
   app.querySelectorAll('.lie-claim').forEach(el => {
     el.addEventListener('click', () => {
+      if (!cooldown('lie-vote', 400)) return;
       const idx = parseInt(el.dataset.i, 10);
       socket.emit('player:lie-vote', { idx });
       app.querySelectorAll('.lie-claim').forEach(x => x.classList.remove('selected'));
       el.classList.add('selected');
       sfx.pop();
+      haptic.tap();
     });
   });
 }
@@ -471,6 +520,7 @@ function bindSnakeControls(){
       e.preventDefault();
       socket.emit('player:snake-dir', { dir: b.dataset.d });
       sfx.tick();
+      haptic.tap();
     });
   });
 
@@ -572,14 +622,16 @@ function bindBombControls(){
   window.addEventListener('keydown', onDown);
   window.addEventListener('keyup', onUp);
 
-  // Joystick
+  // Joystick med glow + haptic ved retningsendring
   const joy = document.getElementById('joy');
   const thumb = document.getElementById('joy-thumb');
   let pid = null;
+  let lastDirKey = '';
   const baseRect = () => joy.getBoundingClientRect();
   joy.addEventListener('pointerdown', e => {
     pid = e.pointerId;
     joy.setPointerCapture(pid);
+    joy.classList.add('active');
     onJoy(e);
   });
   joy.addEventListener('pointermove', e => { if (e.pointerId === pid) onJoy(e); });
@@ -597,6 +649,9 @@ function bindBombControls(){
     thumb.style.left = (r.width/2 + dx) + 'px';
     thumb.style.top = (r.height/2 + dy) + 'px';
     thumb.style.transform = 'translate(-50%, -50%)';
+    // Glow på max-pull
+    const pull = Math.hypot(dx, dy) / max;
+    joy.classList.toggle('max-pull', pull > 0.85);
     // Dead zone 22%
     const dead = max * 0.22;
     dirs.clear();
@@ -604,23 +659,34 @@ function bindBombControls(){
       if (Math.abs(dx) > dead) dirs.add(dx > 0 ? 'right' : 'left');
       if (Math.abs(dy) > dead) dirs.add(dy > 0 ? 'down' : 'up');
     }
+    const dirKey = [...dirs].sort().join(',');
+    if (dirKey !== lastDirKey){
+      lastDirKey = dirKey;
+      if (dirs.size > 0) haptic.tap();
+    }
     sendDirs();
   }
   function resetJoy(){
     thumb.style.left = '50%'; thumb.style.top = '50%';
+    joy.classList.remove('active', 'max-pull');
+    lastDirKey = '';
     dirs.clear(); sendDirs();
   }
 
-  // Bomb button
+  // Bomb button med haptic
   document.getElementById('bomb-btn').addEventListener('pointerdown', e => {
     e.preventDefault();
+    if (!cooldown('bomb', 180)) return;
     socket.emit('player:bomb-action');
     sfx.buttonDown();
+    haptic.bump();
   });
   document.getElementById('remote-btn').addEventListener('pointerdown', e => {
     e.preventDefault();
+    if (!cooldown('remote', 180)) return;
     socket.emit('player:bomb-detonate');
     sfx.buttonDown();
+    haptic.buzz();
   });
 
   // Zoom
@@ -684,8 +750,10 @@ function reactionBarHTML(){
 function bindReactions(){
   app.querySelectorAll('.reaction-bar button').forEach(b => {
     b.addEventListener('click', () => {
+      if (!cooldown('reaction:' + b.dataset.emoji, 300)) return;
       socket.emit('player:reaction', b.dataset.emoji);
       sfx.pop();
+      haptic.tap();
     });
   });
 }
