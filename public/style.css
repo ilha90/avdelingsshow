@@ -1141,27 +1141,75 @@ body::after {
 .player-game-wrap {
   position: fixed; inset: 0;
   background: var(--stage-deep);
+  /* Forhindre at browser tolker touch som panning/zoom — essensielt for Snake-swipe */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: none;
 }
 .player-game-wrap canvas {
   position: absolute; inset: 0;
   width: 100%; height: 100%;
   display: block;
+  touch-action: none;
 }
+
+/* Dedikert swipe-layer for Snake — ligger mellom canvas og arrow-pad.
+   Fullt gjennomsiktig, fanger kun swipes. */
+.swipe-layer {
+  position: absolute;
+  top: 64px; left: 0; right: 0;
+  bottom: 240px;
+  z-index: 3;
+  touch-action: none;
+  background: transparent;
+  cursor: crosshair;
+}
+@media (orientation: landscape) {
+  .swipe-layer {
+    top: 56px; left: 200px; right: 16px; bottom: 16px;
+  }
+}
+
+.swipe-hint {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  color: rgba(255,255,255,.32);
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  pointer-events: none;
+  text-shadow: 0 2px 8px rgba(0,0,0,.5);
+  z-index: 2;
+  animation: hint-fade 6s ease-out forwards;
+}
+@keyframes hint-fade {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  75% { opacity: .8; }
+  100% { opacity: 0; }
+}
+
 .player-header {
   position: fixed; top: 0; left: 0; right: 0;
-  z-index: var(--z-content);
+  z-index: 5;
   padding: 12px 16px;
   display: flex; align-items: center; justify-content: space-between;
-  background: linear-gradient(180deg, rgba(0,0,0,.6) 0%, rgba(0,0,0,0) 100%);
+  background: linear-gradient(180deg, rgba(0,0,0,.7) 0%, rgba(0,0,0,0) 100%);
   color: #fff;
   font-weight: 700; font-size: 14px;
   font-family: var(--font-display);
+  pointer-events: none;
 }
+.player-header > * { pointer-events: auto; }
 .player-header .powerup-ico { margin-left: 6px; }
 .zoom-btns {
   position: fixed; top: 64px; right: 14px;
   display: flex; flex-direction: column; gap: 6px;
-  z-index: var(--z-content);
+  z-index: 6;
 }
 .zoom-btns button {
   width: 46px; height: 46px;
@@ -1230,35 +1278,64 @@ body::after {
   font-weight: 900;
 }
 
-/* Arrow pad */
+/* Arrow pad for Snake — vises på touch-enheter (coarse pointer) */
 .arrow-pad {
-  position: fixed; right: 28px; bottom: 28px;
+  position: fixed; right: 20px; bottom: calc(24px + env(safe-area-inset-bottom));
   display: grid;
-  grid-template: 'x u x' 'l x r' 'x d x' / 58px 58px 58px;
-  gap: 8px; z-index: 10;
-}
-.arrow-pad button {
-  width: 58px; height: 58px;
-  border-radius: var(--r);
-  background: rgba(71,209,151,.16);
-  border: 1px solid var(--stage-edge);
-  color: #fff; font-size: 24px;
-  box-shadow: 0 4px 14px rgba(0,0,0,.3);
+  grid-template-columns: 64px 64px 64px;
+  grid-template-rows: 64px 64px 64px;
+  grid-template-areas:
+    ".  u  ."
+    "l  .  r"
+    ".  d  .";
+  gap: 8px;
+  z-index: 10;
   touch-action: manipulation;
 }
-.arrow-pad button:active { background: rgba(71,209,151,.35); }
+.arrow-pad button {
+  width: 64px; height: 64px;
+  border-radius: var(--r);
+  background: rgba(71,209,151,.22);
+  border: 2px solid var(--stage-edge);
+  color: #fff;
+  font-size: 26px; font-weight: 800;
+  box-shadow: 0 6px 18px rgba(0,0,0,.4), inset 0 2px 4px rgba(255,255,255,.15);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform .08s, background .15s;
+}
+.arrow-pad button:active {
+  background: rgba(71,209,151,.5);
+  transform: scale(.92);
+}
 .arrow-pad .u { grid-area: u; }
 .arrow-pad .l { grid-area: l; }
 .arrow-pad .r { grid-area: r; }
 .arrow-pad .d { grid-area: d; }
-@media (pointer: fine) { .arrow-pad { display: none; } }
 
-/* Landscape orientation — reshuffle controls */
-@media (orientation: landscape) and (max-height: 520px) {
-  .joystick-wrap { bottom: 50%; transform: translateY(50%); left: 20px; }
-  .bomb-btn { bottom: 50%; transform: translateY(50%); right: 20px; }
-  .remote-btn { bottom: calc(50% + 90px); right: 38px; transform: none; }
-  .player-header { padding: 8px 12px; font-size: 13px; }
+/* Skjul arrow-pad kun når det faktisk er mus (ikke touch-skjerm) */
+@media (pointer: fine) and (hover: hover) {
+  .arrow-pad { display: none; }
+}
+
+/* Landscape — arrow-pad på venstre side */
+@media (orientation: landscape) and (max-height: 540px) {
+  .arrow-pad {
+    right: auto;
+    left: 14px;
+    bottom: 14px;
+    grid-template-columns: 52px 52px 52px;
+    grid-template-rows: 52px 52px 52px;
+    grid-template-areas:
+      ".  u  ."
+      "l  .  r"
+      ".  d  .";
+    gap: 6px;
+  }
+  .arrow-pad button {
+    width: 52px; height: 52px;
+    font-size: 22px;
+  }
 }
 
 /* ===== Reactions ===== */
@@ -1570,4 +1647,148 @@ body::after {
 /* ===== Responsive ===== */
 @media (max-width: 1100px) {
   .host-main { grid-template-columns: 1fr; }
+}
+
+/* ============================================================
+   Mobile + Landscape — generell skjermtilpasning
+   Bruker dvh (dynamic viewport height) for iOS URL-bar.
+   ============================================================ */
+
+/* Player-view: fyll viewport nøyaktig, respekter safe-area */
+.login-screen,
+.player-q-wrap,
+.player-game-wrap {
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-top: env(safe-area-inset-top);
+}
+
+.player-q-wrap {
+  inset: 0;
+  padding: 16px;
+  padding-top: max(16px, env(safe-area-inset-top));
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Quiz-svar: bli responsiv 2×2 grid på lite viewport */
+.player-answers { gap: 10px; }
+.player-answer { min-height: 64px; font-size: clamp(16px, 4.5vw, 22px); padding: 14px 16px; }
+.player-answer .letter { width: clamp(36px, 9vw, 42px); height: clamp(36px, 9vw, 42px); font-size: clamp(16px, 4.2vw, 20px); }
+
+.lobby-msg  { font-size: clamp(20px, 5vw, 26px); }
+.name-big   { font-size: clamp(24px, 6.4vw, 32px); }
+.login-title { font-size: clamp(32px, 8vw, 46px); }
+
+/* Bomb HUD — mer plass i landscape */
+@media (orientation: landscape) and (max-height: 540px) {
+  .player-header {
+    padding: 6px 12px;
+    font-size: 12px;
+    background: linear-gradient(180deg, rgba(0,0,0,.85) 0%, rgba(0,0,0,.5) 60%, rgba(0,0,0,0) 100%);
+  }
+  .zoom-btns { top: 48px; right: 8px; }
+  .zoom-btns button { width: 38px; height: 38px; font-size: 16px; }
+
+  /* Joystick midtre-venstre, bomb midtre-høyre */
+  .joystick-wrap {
+    bottom: 50%;
+    transform: translateY(50%);
+    left: 14px;
+  }
+  .joystick-base {
+    width: 144px; height: 144px;
+  }
+  .joystick-thumb { width: 54px; height: 54px; }
+
+  .bomb-btn {
+    bottom: 50%;
+    transform: translateY(50%);
+    right: 14px;
+    width: 104px; height: 104px;
+    font-size: 42px;
+  }
+  .bomb-btn:active { transform: translateY(50%) scale(.92); }
+  .remote-btn {
+    bottom: calc(50% + 76px);
+    right: 28px;
+    transform: none;
+    width: 66px; height: 66px;
+    font-size: 26px;
+  }
+
+  /* Quiz: horisontal 2-kolonne layout i landscape */
+  .player-q-wrap {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    gap: 10px;
+    padding: 10px 16px;
+  }
+  .player-q-text { font-size: clamp(14px, 3vw, 18px); line-height: 1.25; }
+  .player-answers {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 8px;
+    flex: none;
+  }
+  .player-answer {
+    min-height: 0;
+    font-size: clamp(14px, 2.8vw, 18px);
+    padding: 8px 12px;
+  }
+  .player-answer .letter { width: 32px; height: 32px; font-size: 14px; }
+
+  /* Voting/lobby-baserte skjermer */
+  .login-screen { gap: 12px; padding: 14px; }
+  .login-screen > div[style*="font-size: 90px"] { font-size: 56px !important; }
+  .login-screen > div[style*="font-size: 80px"] { font-size: 48px !important; }
+  .login-screen > div[style*="font-size: 64px"] { font-size: 42px !important; }
+  .login-screen > div[style*="font-size: 120px"] { font-size: 64px !important; }
+  .login-title { font-size: 30px; }
+  .lobby-msg { font-size: 18px; }
+  .name-big { font-size: 22px; }
+
+  /* Scatter-play: tettere inputs */
+  .scatter-play .player-q-wrap > div[style*="flex: 1"] { gap: 6px; }
+  .scatter-play label span { font-size: 11px; }
+  .scatter-play input[type=text] { padding: 8px 10px; font-size: 14px; }
+
+  /* Lie-play: tettere liste */
+  .lie-claim { padding: 10px 14px; font-size: 16px; }
+  .lie-list { gap: 6px; }
+  .lie-form input[type=text] { padding: 8px; font-size: 14px; }
+
+  /* Avatar grid: 10 per rad i stedet for 7 */
+  .avatar-grid { grid-template-columns: repeat(10, 1fr); gap: 5px; }
+  .avatar-choice { font-size: 20px; }
+
+  /* Reactions — skjul i aktive spillfaser så det ikke overlapper */
+  .player-game-wrap .reaction-bar { display: none; }
+}
+
+/* Små mobilskjermer i portrait (iPhone SE etc.) */
+@media (orientation: portrait) and (max-width: 400px) {
+  .player-q-text { font-size: 18px; }
+  .player-answer { font-size: 18px; padding: 12px 14px; min-height: 56px; }
+  .player-answer .letter { width: 36px; height: 36px; font-size: 16px; }
+  .avatar-grid { grid-template-columns: repeat(6, 1fr); }
+  .avatar-choice { font-size: 22px; }
+  .name-input { font-size: 17px; padding: 12px 14px; }
+  .bomb-btn { width: 108px; height: 108px; font-size: 44px; bottom: calc(20px + env(safe-area-inset-bottom)); right: 20px; }
+  .joystick-wrap { bottom: calc(20px + env(safe-area-inset-bottom)); left: 16px; }
+  .joystick-base { width: 152px; height: 152px; }
+  .reaction-bar button { width: 46px; height: 46px; font-size: 22px; }
+}
+
+/* Landscape for HOST (presentasjon på iPad el.) — gjør spill-overlays
+   bredere-kompatible */
+@media (orientation: landscape) and (min-width: 1000px) and (max-height: 800px) {
+  .quiz-wrap { inset: 64px 36px 36px; gap: 18px; }
+  .quiz-question { font-size: 36px; }
+  .quiz-emoji { font-size: 96px; }
+  .big-center .prompt { font-size: 38px; }
+  .countdown-num { font-size: 200px; }
 }

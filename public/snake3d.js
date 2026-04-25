@@ -88,6 +88,7 @@ export class SnakeRenderer {
 
     this.onResize = this.onResize.bind(this);
     window.addEventListener('resize', this.onResize);
+    window.addEventListener('orientationchange', () => setTimeout(this.onResize, 120));
     this.onResize();
 
     this.running = true;

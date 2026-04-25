@@ -322,6 +322,8 @@ function showVoting(s){
 }
 
 function showScatterPlay(s){
+  // Idempotent — ikke rebuild UI mens brukeren skriver
+  if (document.querySelector('.scatter-play input[data-i]')) return;
   const entries = new Array(5).fill('');
   app.innerHTML = `
     <div class="player-q-wrap scatter-play">
@@ -382,6 +384,8 @@ function showWheel(s){
 function showLieCollect(s){
   const submitted = s.players.find(p => p.id === me.id)?.hasSubmitted;
   if (submitted){ showWaitScreen('Sendt! Venter på andre... ('+s.lie.submittedCount+'/'+s.lie.total+')'); return; }
+  // Idempotent — bevar skjema-tekst når andre spillere sender
+  if (document.querySelector('.lie-form input[data-i]')) return;
   const items = ['', '', ''];
   let lieIdx = 0;
   app.innerHTML = `
@@ -469,9 +473,13 @@ function showWaitScreen(msg){
 
 // ====== Snake game view ======
 function showSnakeGame(s){
+  // Idempotent — bare build DOM + bind første gang, så state-updates ikke
+  // ødelegger event-listenere.
+  if (document.getElementById('snake-canvas')) return;
   app.innerHTML = `
     <div class="player-game-wrap">
       <canvas id="snake-canvas"></canvas>
+      <div class="swipe-layer" id="snake-swipe"></div>
       <div class="player-header">
         <div><b id="snake-score-me">0</b> poeng</div>
         <div id="snake-timer"></div>
@@ -482,6 +490,7 @@ function showSnakeGame(s){
         <button class="r" data-d="right">▶</button>
         <button class="d" data-d="down">▼</button>
       </div>
+      <div class="swipe-hint">Sveip i retning — eller bruk pilene</div>
     </div>
   `;
   import('./snake3d.js').then(m => {
@@ -491,7 +500,7 @@ function showSnakeGame(s){
 }
 
 function bindSnakeControls(){
-  // Keyboard
+  // ===== Keyboard =====
   const keys = new Set();
   const keyDir = e => {
     const k = e.key.toLowerCase();
@@ -501,45 +510,71 @@ function bindSnakeControls(){
     if (['arrowright','d'].includes(k)) return 'right';
     return null;
   };
-  const onDown = e => {
+  const onKD = e => {
     const d = keyDir(e); if (!d) return;
     if (keys.has(d)) return;
     keys.add(d);
     socket.emit('player:snake-dir', { dir: d });
   };
-  const onUp = e => {
+  const onKU = e => {
     const d = keyDir(e); if (!d) return;
     keys.delete(d);
   };
-  window.addEventListener('keydown', onDown);
-  window.addEventListener('keyup', onUp);
+  window.addEventListener('keydown', onKD);
+  window.addEventListener('keyup', onKU);
 
-  // Arrow pad
+  // ===== Arrow pad — touch FIRST for rask respons, stopPropagation =====
   app.querySelectorAll('.arrow-pad button').forEach(b => {
-    b.addEventListener('pointerdown', e => {
+    const fire = (e) => {
       e.preventDefault();
+      e.stopPropagation();
       socket.emit('player:snake-dir', { dir: b.dataset.d });
       sfx.tick();
       haptic.tap();
-    });
+    };
+    b.addEventListener('touchstart', fire, { passive: false });
+    b.addEventListener('mousedown', fire);
   });
 
-  // Swipe on screen
-  let tStart = null;
-  const wrap = document.querySelector('.player-game-wrap');
-  wrap.addEventListener('pointerdown', e => { tStart = { x: e.clientX, y: e.clientY, t: Date.now() }; });
-  wrap.addEventListener('pointerup', e => {
-    if (!tStart) return;
-    const dx = e.clientX - tStart.x, dy = e.clientY - tStart.y;
+  // ===== Swipe på dedikert layer (under arrow-pad, over canvas) =====
+  // Bruker native touch-events fordi de er mer pålitelige på mobil enn pointer-events
+  const layer = document.getElementById('snake-swipe');
+  let startX = 0, startY = 0, startT = 0, active = false;
+
+  const handleStart = (x, y) => {
+    startX = x; startY = y; startT = Date.now(); active = true;
+  };
+  const handleEnd = (x, y) => {
+    if (!active) return;
+    active = false;
+    const dx = x - startX, dy = y - startY;
     const mag = Math.hypot(dx, dy);
-    tStart = null;
-    if (mag < 30) return;
+    const dt = Date.now() - startT;
+    if (mag < 24 || dt > 1500) return;  // for kort / for sakte = ikke en swipe
     if (Math.abs(dx) > Math.abs(dy)){
       socket.emit('player:snake-dir', { dir: dx > 0 ? 'right' : 'left' });
     } else {
       socket.emit('player:snake-dir', { dir: dy > 0 ? 'down' : 'up' });
     }
-  });
+    sfx.tick();
+    haptic.tap();
+  };
+
+  // Touch events (primær for mobil)
+  layer.addEventListener('touchstart', (e) => {
+    const t = e.changedTouches[0];
+    handleStart(t.clientX, t.clientY);
+  }, { passive: true });
+  layer.addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0];
+    handleEnd(t.clientX, t.clientY);
+  }, { passive: true });
+  layer.addEventListener('touchcancel', () => { active = false; }, { passive: true });
+
+  // Mouse events (for PC, drag-swipe)
+  layer.addEventListener('mousedown', (e) => { handleStart(e.clientX, e.clientY); });
+  layer.addEventListener('mouseup', (e) => { handleEnd(e.clientX, e.clientY); });
+  layer.addEventListener('mouseleave', () => { active = false; });
 }
 
 function updateSnakeHeader(d){
@@ -557,6 +592,8 @@ function updateSnakeHeader(d){
 
 // ====== Bomb game view ======
 function showBombGame(s){
+  // Idempotent — state-updates skal ikke rebuilde event-listenere
+  if (document.getElementById('bomb-canvas')) return;
   app.innerHTML = `
     <div class="player-game-wrap">
       <canvas id="bomb-canvas"></canvas>
