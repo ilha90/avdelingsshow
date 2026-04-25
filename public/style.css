@@ -618,7 +618,9 @@ body::before {
   -webkit-backdrop-filter: blur(8px);
   overflow-y: auto; z-index: 3; }
 /* Host-main må ha position relative slik at .snake-screen kan posisjonere seg innenfor */
-.host-main { position: relative; padding: 0 !important; }
+.host-main { position: relative; }
+/* Når game-screen er aktiv, fjern padding så canvas fyller mer av viewport */
+.host-main:has(.snake-screen) { padding: 0; }
 .snake-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(11,13,26,0.7); backdrop-filter: blur(4px); }
 .snake-countdown { font-size: 240px; font-weight: 900; line-height: 1;
   background: linear-gradient(135deg, var(--gold), var(--gold-2), #fff);
