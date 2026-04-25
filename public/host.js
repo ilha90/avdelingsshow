@@ -1192,12 +1192,15 @@ function renderEnd(s){
 const mascot = document.getElementById('mascot');
 const mascotBubble = document.getElementById('mascot-bubble');
 function wanderMascot(){
+  // Hold deg unna venstre-panel (QR) — bruk kun høyre halvdel
   const zones = [
-    { left: '40px', bottom: '40px' }, { right: '40px', bottom: '40px' },
-    { left: '40px', top: '120px' }, { right: '40px', top: '120px' }
+    { right: '40px', bottom: '40px' },
+    { right: '40px', top: '120px' },
+    { right: '420px', bottom: '40px' },
+    { right: '420px', top: '120px' }
   ];
   const z = zones[(Math.random()*zones.length)|0];
-  mascot.style.left = z.left || 'auto';
+  mascot.style.left = 'auto';
   mascot.style.right = z.right || 'auto';
   mascot.style.top = z.top || 'auto';
   mascot.style.bottom = z.bottom || 'auto';

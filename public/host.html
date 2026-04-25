@@ -43,7 +43,7 @@
 </div>
 
 <!-- Mascot -->
-<div id="mascot" class="mascot" style="left: 60px; bottom: 60px;">
+<div id="mascot" class="mascot" style="right: 40px; bottom: 40px;">
   <div class="antenna"></div>
   <div class="mascot-body">
     <div class="mascot-eye left"></div>
@@ -77,25 +77,37 @@
 
   <!-- Center: state-driven -->
   <section id="center" class="panel">
-    <h3>Handlinger</h3>
-    <button class="btn-primary" id="btn-menu">🎮 Velg spill</button>
-    <button class="btn" id="btn-leaderboard">🏆 Topplisten</button>
-    <button class="btn danger" id="btn-reset">Tilbake til lobby</button>
-    <div class="ai-box">
-      <h3>✨ AI-quiz</h3>
-      <label>API-key <input id="ai-key" type="password" placeholder="sk-..." /></label>
-      <label>Tema <input id="ai-topic" type="text" placeholder="f.eks. norsk fotball" /></label>
-      <label>Antall <select id="ai-count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></label>
-      <button class="btn gold" id="ai-gen">Generer</button>
-      <small id="ai-status"></small>
+    <div class="lobby-hero">
+      <h2 class="lobby-hero-title">Klar for show?</h2>
+      <p class="lobby-hero-sub">Skann QR-koden på telefonen for å bli med — velg et spill når alle er inne.</p>
     </div>
-    <div class="ai-box" style="border-color: rgba(71,209,151,.25); background: rgba(71,209,151,.06);">
-      <h3>🗳️ Egne 'mest sannsynlig'-spørsmål</h3>
-      <textarea id="mlp-input" rows="4" placeholder="Én linje per spørsmål, f.eks.:&#10;...glemmer kaffekoppen igjen&#10;...tar trappen i stedet for heisen"></textarea>
-      <button class="btn" id="mlp-add">Legg til</button>
-      <small id="mlp-status"></small>
+    <div class="center-actions">
+      <button class="btn-primary btn-lg" id="btn-menu">🎮 Velg spill</button>
+      <button class="btn btn-lg gold" id="btn-leaderboard">🏆 Topplisten</button>
+      <button class="btn btn-lg danger" id="btn-reset">↺ Tilbake til lobby</button>
     </div>
-    <div id="center-msg" style="color:var(--muted); font-size:13px;">Åpne menyen for å starte et spill.</div>
+
+    <details class="drawer">
+      <summary>✨ AI-quiz — generer egne spørsmål</summary>
+      <div class="drawer-body">
+        <label>API-key <input id="ai-key" type="password" placeholder="sk-..." /></label>
+        <label>Tema <input id="ai-topic" type="text" placeholder="f.eks. norsk fotball" /></label>
+        <label>Antall <select id="ai-count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></label>
+        <button class="btn gold" id="ai-gen">Generer</button>
+        <small id="ai-status"></small>
+      </div>
+    </details>
+
+    <details class="drawer">
+      <summary>🗳️ Egne 'mest sannsynlig'-spørsmål</summary>
+      <div class="drawer-body">
+        <textarea id="mlp-input" rows="4" placeholder="Én linje per spørsmål, f.eks.:&#10;...glemmer kaffekoppen igjen&#10;...tar trappen i stedet for heisen"></textarea>
+        <button class="btn" id="mlp-add">Legg til</button>
+        <small id="mlp-status"></small>
+      </div>
+    </details>
+
+    <div id="center-msg" class="center-msg">Venter på spillere...</div>
   </section>
 
   <!-- Right: players -->

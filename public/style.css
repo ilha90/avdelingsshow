@@ -45,21 +45,37 @@ body::after {
   display: flex; align-items: center; gap: 12px;
   font-family: var(--font-display);
   font-weight: 800; letter-spacing: -0.01em; font-size: 20px;
-  background: linear-gradient(110deg, var(--dnb-green-500) 0%, var(--dnb-coldgreen-200) 45%, var(--dnb-gold-400) 100%);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  filter: drop-shadow(0 2px 12px rgba(71,209,151,.25));
+  color: var(--accent-soft);
+  /* Fallback-farge hvis background-clip ikke støttes eller font ikke lastet */
 }
 .brand .dot {
   width: 11px; height: 11px; border-radius: 50%;
   background: var(--dnb-green-500);
   box-shadow: 0 0 16px var(--dnb-green-500), 0 0 32px rgba(71,209,151,.6);
   animation: pulse-dot 1.4s ease-in-out infinite;
+  flex-shrink: 0;
 }
-.brand .shine { display: inline-block; position: relative; }
+.brand .shine {
+  display: inline-block; position: relative;
+  background: linear-gradient(110deg, var(--dnb-green-500) 0%, var(--dnb-coldgreen-200) 45%, var(--dnb-gold-400) 100%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 12px rgba(71,209,151,.35));
+  /* Hvis background-clip ikke funker, text-fill fallback til accent-soft */
+}
+/* Hvis fontene ikke lastet, @supports sørger for at vi fortsatt ser teksten */
+@supports not (-webkit-background-clip: text){
+  .brand .shine {
+    background: none;
+    color: var(--accent-soft);
+    -webkit-text-fill-color: initial;
+  }
+}
 .brand .shine::after {
   content: ''; position: absolute; inset: 0;
   background: linear-gradient(110deg, transparent 40%, rgba(255,255,255,.85) 50%, transparent 60%);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
   animation: brand-shine 7s ease-in-out infinite; pointer-events: none;
 }
 @keyframes pulse-dot { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(1.5); opacity: .55 } }
@@ -188,10 +204,15 @@ body::after {
   background: rgba(0,0,0,.35);
   padding: 9px 14px;
   border-radius: var(--r-sm);
-  font-size: 13px;
-  word-break: break-all; text-align: center;
+  font-size: 12px;
+  text-align: center;
   border: 1px solid var(--stage-hairline);
   letter-spacing: -0.01em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-soft);
 }
 
 /* ===== Players — GRID av KORT ===== */
@@ -2207,3 +2228,151 @@ body.dim-lights .end-screen { transform: scale(1.02); }
   20% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
   100% { opacity: 0; transform: translate(-50%, -150%) scale(1); }
 }
+
+/* ============================================================
+   Lobby-hero + nye center-panel
+   ============================================================ */
+.lobby-hero {
+  text-align: center;
+  padding: 8px 4px 12px;
+  border-bottom: 1px solid var(--stage-hairline);
+  margin-bottom: 4px;
+}
+.lobby-hero-title {
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.05;
+  margin: 0 0 8px;
+  background: linear-gradient(135deg, var(--dnb-green-500) 0%, var(--dnb-coldgreen-200) 50%, var(--dnb-gold-400) 100%);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 4px 24px rgba(71,209,151,.35));
+}
+@supports not (-webkit-background-clip: text){
+  .lobby-hero-title { background: none; color: var(--accent-soft); -webkit-text-fill-color: initial; }
+}
+.lobby-hero-sub {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  max-width: 340px;
+  margin: 0 auto;
+}
+
+.center-actions {
+  display: grid;
+  gap: 10px;
+}
+.btn-lg {
+  padding: 16px 22px;
+  font-size: 16px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -0.005em;
+  border-radius: var(--r);
+}
+
+.center-msg {
+  color: var(--ink-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 14px 8px 4px;
+  font-style: italic;
+  border-top: 1px dashed var(--stage-hairline);
+  margin-top: 4px;
+}
+
+/* Drawer (collapse) */
+.drawer {
+  background: rgba(255,255,255,.02);
+  border: 1px solid var(--stage-hairline);
+  border-radius: var(--r);
+  overflow: hidden;
+  transition: background .2s, border-color .2s;
+}
+.drawer[open] {
+  background: rgba(71,209,151,.05);
+  border-color: var(--stage-edge);
+}
+.drawer > summary {
+  list-style: none;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color .15s;
+}
+.drawer > summary::-webkit-details-marker { display: none; }
+.drawer > summary::after {
+  content: '▸';
+  color: var(--ink-muted);
+  font-size: 12px;
+  transition: transform .2s;
+}
+.drawer[open] > summary::after { transform: rotate(90deg); }
+.drawer > summary:hover { color: var(--accent); }
+.drawer-body {
+  padding: 4px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: drawer-in .3s var(--ease-out-back);
+}
+@keyframes drawer-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+.drawer-body label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--ink-muted);
+}
+.drawer-body input[type=text],
+.drawer-body input[type=password],
+.drawer-body select,
+.drawer-body textarea {
+  background: rgba(0,0,0,.35);
+  color: var(--ink);
+  border: 1px solid var(--stage-hairline);
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  font-family: inherit;
+}
+.drawer-body textarea {
+  resize: vertical;
+  min-height: 80px;
+  font-size: 13px;
+}
+.drawer-body small {
+  color: var(--ink-muted);
+  font-size: 12px;
+  min-height: 14px;
+}
+
+/* Bedre spiller-kort-grid når få spillere */
+.panel #players { min-height: 80px; }
+.players:empty::before {
+  content: 'Venter på første spiller...';
+  color: var(--ink-muted);
+  font-size: 13px;
+  text-align: center;
+  display: block;
+  padding: 24px 8px;
+  font-style: italic;
+}
+
+/* Ensure stage-bg canvas actually sits behind everything */
+#stage-bg { z-index: -3 !important; }
+
+/* Skjul de gamle inline-AI-box-stilene hvis de blir brukt */
+.ai-box[style*="border-color"] { background: rgba(71,209,151,.06) !important; }
