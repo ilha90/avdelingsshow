@@ -260,32 +260,92 @@ export class BombRenderer {
   }
 
   explosion(cells){
-    // shockwave ring + particles
+    // shockwave ring + particles + directional blast debris
     for (const [x,y] of cells){
       const ring = new THREE.Mesh(
-        new THREE.RingGeometry(0.2, 0.3, 24),
-        new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+        new THREE.RingGeometry(0.2, 0.3, 32),
+        new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
       );
       ring.rotation.x = -Math.PI/2;
       ring.position.set(x+0.5, 0.3, y+0.5);
       ring.userData = { born: performance.now(), type: 'shockwave' };
       this.fxGroup.add(ring);
 
-      const flash = new THREE.PointLight(0xff9a3a, 6, 6, 2);
+      // Andre shockwave-ring (forskjøvet fase)
+      const ring2 = new THREE.Mesh(
+        new THREE.RingGeometry(0.2, 0.28, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffcf4a, transparent: true, opacity: 0.75, side: THREE.DoubleSide })
+      );
+      ring2.rotation.x = -Math.PI/2;
+      ring2.position.set(x+0.5, 0.31, y+0.5);
+      ring2.userData = { born: performance.now() + 120, type: 'shockwave' };
+      this.fxGroup.add(ring2);
+
+      const flash = new THREE.PointLight(0xff9a3a, 8, 7, 2);
       flash.position.set(x+0.5, 1.0, y+0.5);
       flash.userData = { born: performance.now(), type: 'flash' };
       this.fxGroup.add(flash);
 
       const sphere = new THREE.Mesh(
-        new THREE.SphereGeometry(0.5, 12, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffcf4a, transparent: true, opacity: 0.8 })
+        new THREE.SphereGeometry(0.5, 14, 10),
+        new THREE.MeshBasicMaterial({ color: 0xffe38a, transparent: true, opacity: 0.9 })
       );
       sphere.position.set(x+0.5, 0.5, y+0.5);
       sphere.userData = { born: performance.now(), type: 'boom' };
       this.fxGroup.add(sphere);
+
+      // Gnister — 8 små flyvende partikler
+      for (let k = 0; k < 6; k++){
+        const spark = new THREE.Mesh(
+          new THREE.SphereGeometry(0.08, 6, 4),
+          new THREE.MeshBasicMaterial({ color: Math.random() < 0.5 ? 0xffcf4a : 0xff6a2a, transparent: true })
+        );
+        const ang = Math.random() * Math.PI * 2;
+        const spd = 0.08 + Math.random() * 0.12;
+        spark.position.set(x+0.5, 0.5, y+0.5);
+        spark.userData = {
+          born: performance.now(), type: 'spark',
+          vx: Math.cos(ang) * spd,
+          vz: Math.sin(ang) * spd,
+          vy: 0.04 + Math.random() * 0.08
+        };
+        this.fxGroup.add(spark);
+      }
     }
-    this.shakeMag = 0.35;
-    this.shakeUntil = performance.now() + 350;
+    // Sterkere, lengre shake
+    this.shakeMag = 0.62;
+    this.shakeUntil = performance.now() + 520;
+  }
+
+  // Death-animasjon når en spiller blir sprengt: rød kule + "hoppe bakover"
+  deathAnim(pid, x, y){
+    const rec = this.playerMeshes.get(pid);
+    if (!rec) return;
+    // Rød glow-sphere på dødsstedet
+    const deadSphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.6, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.85 })
+    );
+    deadSphere.position.set(x+0.5, 0.5, y+0.5);
+    deadSphere.userData = { born: performance.now(), type: 'death' };
+    this.fxGroup.add(deadSphere);
+    // Ekstra gnistpartikler
+    for (let k = 0; k < 14; k++){
+      const p = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 6, 4),
+        new THREE.MeshBasicMaterial({ color: 0xff5a6b, transparent: true })
+      );
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 0.12 + Math.random() * 0.18;
+      p.position.set(x+0.5, 0.6, y+0.5);
+      p.userData = {
+        born: performance.now(), type: 'spark',
+        vx: Math.cos(ang) * spd,
+        vz: Math.sin(ang) * spd,
+        vy: 0.1 + Math.random() * 0.1
+      };
+      this.fxGroup.add(p);
+    }
   }
 
   killCamAt(x, y, ms = 2500){
@@ -320,18 +380,31 @@ export class BombRenderer {
       const m = this.fxGroup.children[i];
       const age = (now - m.userData.born) / 1000;
       if (m.userData.type === 'shockwave'){
-        const r = 0.3 + age * 5;
+        const r = 0.3 + age * 6;
         m.scale.set(r, r, 1);
-        m.material.opacity = Math.max(0, 0.9 - age*1.4);
-        if (age > 0.7) this.fxGroup.remove(m);
+        m.material.opacity = Math.max(0, 0.95 - age * 1.6);
+        if (age > 0.8) this.fxGroup.remove(m);
       } else if (m.userData.type === 'boom'){
-        const s = 1 + age * 4;
+        const s = 1 + age * 4.5;
         m.scale.setScalar(s);
-        m.material.opacity = Math.max(0, 0.8 - age*2);
+        m.material.opacity = Math.max(0, 0.9 - age * 2.1);
         if (age > 0.5) this.fxGroup.remove(m);
       } else if (m.userData.type === 'flash'){
-        m.intensity = Math.max(0, 6 - age*20);
-        if (age > 0.4) this.fxGroup.remove(m);
+        m.intensity = Math.max(0, 8 - age * 22);
+        if (age > 0.45) this.fxGroup.remove(m);
+      } else if (m.userData.type === 'spark'){
+        // Fysikk
+        m.position.x += m.userData.vx;
+        m.position.z += m.userData.vz;
+        m.position.y += m.userData.vy;
+        m.userData.vy -= 0.008;
+        m.material.opacity = Math.max(0, 1 - age * 1.2);
+        if (age > 0.9 || m.position.y < 0) this.fxGroup.remove(m);
+      } else if (m.userData.type === 'death'){
+        const s = 1 + age * 3;
+        m.scale.setScalar(s);
+        m.material.opacity = Math.max(0, 0.85 - age * 1.5);
+        if (age > 0.6) this.fxGroup.remove(m);
       }
     }
 
@@ -356,9 +429,10 @@ export class BombRenderer {
 
     // Shake
     if (now < this.shakeUntil){
-      const f = Math.max(0, (this.shakeUntil - now) / 350);
+      const f = Math.max(0, (this.shakeUntil - now) / 520);
       this.camera.position.x += (Math.random() - 0.5) * this.shakeMag * f;
       this.camera.position.z += (Math.random() - 0.5) * this.shakeMag * f;
+      this.camera.position.y += (Math.random() - 0.5) * this.shakeMag * f * 0.4;
     }
 
     this.renderer.render(this.scene, this.camera);

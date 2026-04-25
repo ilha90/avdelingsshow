@@ -59,6 +59,17 @@ app.get('/connect-url', (req, res) => {
   res.json({ url: getConnectUrl(req) });
 });
 
+// Health endpoint + keep-alive ping for Render free tier
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    ts: Date.now(),
+    players: game.players.size,
+    phase: game.phase,
+    uptime: process.uptime()
+  });
+});
+
 app.get('/qr', async (req, res) => {
   try {
     const url = getConnectUrl(req);
@@ -164,7 +175,22 @@ const game = {
   // Tutorial
   tutorialGame: null,
   tutorialText: '',
-  _tutorialNextFn: null
+  _tutorialNextFn: null,
+  // Awards / match stats — per-spill-statistikk som vises i end-screen.
+  // Hver stat er Map<playerId, number>, + meta for siste spill
+  matchStats: {
+    firstAnswers: new Map(),   // quiz: antall ganger først ute
+    correctAnswers: new Map(), // quiz: antall riktige
+    bestStreak: new Map(),     // quiz: høyeste streak i løpet av spillet
+    kills: new Map(),          // bomb: antall kills
+    survived: new Map(),       // bomb: antall ganger siste overlevende
+    biggestSnake: new Map(),   // snake: lengste slange noensinne
+    apples: new Map(),         // snake: antall matebiter
+    bestScatter: new Map(),    // scatter: beste enkeltinnsending
+    votesReceived: new Map(),  // voting: totalt antall stemmer fått
+    liesCaught: new Map()      // lie: antall løgner gjenkjent
+  },
+  lastGame: null  // 'quiz' | 'bomb' | 'snake' | ...
 };
 
 function teamForIndex(i){
@@ -189,7 +215,8 @@ function publicState(){
     team: p.team ? { name: p.team.name, emoji: p.team.emoji, color: p.team.color } : null,
     hasAnswered: game.quiz ? game.quiz.answers.has(p.id) : false,
     hasVoted: game.vote ? game.vote.votes.has(p.id) : false,
-    hasSubmitted: (game.scatter && game.scatter.entries.has(p.id)) || (game.lie && game.lie.claims.has(p.id))
+    hasSubmitted: (game.scatter && game.scatter.entries.has(p.id)) || (game.lie && game.lie.claims.has(p.id)),
+    streak: game.quiz ? (game.quiz.streaks.get(p.id) || 0) : 0
   }));
   const base = {
     phase: game.phase,
@@ -243,7 +270,73 @@ function publicState(){
   if (game.wheel){
     base.wheel = { chosen: game.wheel.chosen };
   }
+  // Awards — kun når vi er på end-phase
+  if (game.phase === 'end'){
+    base.awards = computeAwards();
+    base.lastGame = game.lastGame;
+  }
   return base;
+}
+
+function computeAwards(){
+  const awards = [];
+  const pName = (pid) => (game.players.get(pid) || {}).name || '?';
+  const pEmoji = (pid) => (game.players.get(pid) || {}).emoji || '🎉';
+  const topOf = (map) => {
+    let best = null, bestVal = 0;
+    for (const [pid, v] of map){
+      if (v > bestVal){ bestVal = v; best = pid; }
+    }
+    return best ? { pid: best, value: bestVal, name: pName(best), emoji: pEmoji(best) } : null;
+  };
+  const add = (icon, label, winner, valueText) => {
+    if (!winner) return;
+    awards.push({ icon, label, winner: winner.name, emoji: winner.emoji, value: valueText });
+  };
+  const lg = game.lastGame;
+
+  // Quiz-type spill
+  if (lg === 'quiz' || lg === 'lightning'){
+    const ff = topOf(game.matchStats.firstAnswers);
+    if (ff) add('⚡', 'Lynhurtig', ff, ff.value + ' × først ute');
+    const ca = topOf(game.matchStats.correctAnswers);
+    if (ca) add('🎯', 'Treffsikker', ca, ca.value + ' riktige');
+    const bs = topOf(game.matchStats.bestStreak);
+    if (bs && bs.value >= 3) add('🔥', 'Beste streak', bs, bs.value + ' på rad');
+  }
+  // Bomb
+  if (lg === 'bomb'){
+    const k = topOf(game.matchStats.kills);
+    if (k) add('💣', 'Bombemester', k, k.value + ' kills');
+    const s = topOf(game.matchStats.survived);
+    if (s) add('🛡️', 'Siste mann', s, 'overlevde runden');
+  }
+  // Snake
+  if (lg === 'snake'){
+    const big = topOf(game.matchStats.biggestSnake);
+    if (big) add('🐍', 'Slangekonge', big, big.value + ' segmenter');
+    const a = topOf(game.matchStats.apples);
+    if (a) add('🍎', 'Fråtser', a, a.value + ' epler');
+  }
+  // Generelt — høyeste score uansett spill
+  const players = Array.from(game.players.values()).sort((a, b) => b.score - a.score);
+  if (players.length > 0 && players[0].score > 0){
+    add('🏆', 'Totalseier', { name: players[0].name, emoji: players[0].emoji }, players[0].score + ' poeng');
+  }
+  return awards;
+}
+
+function resetMatchStats(){
+  game.matchStats.firstAnswers.clear();
+  game.matchStats.correctAnswers.clear();
+  game.matchStats.bestStreak.clear();
+  game.matchStats.kills.clear();
+  game.matchStats.survived.clear();
+  game.matchStats.biggestSnake.clear();
+  game.matchStats.apples.clear();
+  game.matchStats.bestScatter.clear();
+  game.matchStats.votesReceived.clear();
+  game.matchStats.liesCaught.clear();
 }
 
 function broadcast(){
@@ -348,7 +441,9 @@ io.on('connection', socket => {
     game.quiz = null; game.vote = null; game.scatter = null; game.lie = null;
     game.icebreaker = null; game.wheel = null;
     game.snake = null; game.bomb = null;
+    game.lastGame = null;
     for (const p of game.players.values()) p.score = 0;
+    resetMatchStats();
     broadcast();
   });
 
@@ -641,15 +736,20 @@ function revealQuiz(){
       const timeLeft = Math.max(0, (game.quiz.deadline - ans.t) / 1000);
       base = Math.round((500 + Math.min(500, timeLeft / secs * 500)) * mult);
       p.score += base;
+      // Match stats — correct
+      game.matchStats.correctAnswers.set(pid, (game.matchStats.correctAnswers.get(pid) || 0) + 1);
       // Streak
       const s = (game.quiz.streaks.get(pid) || 0) + 1;
       game.quiz.streaks.set(pid, s);
+      const prevBest = game.matchStats.bestStreak.get(pid) || 0;
+      if (s > prevBest) game.matchStats.bestStreak.set(pid, s);
       if (s === 3 || s === 5 || s === 7) trophies.push({ kind: 'streak', n: s });
       // First
       if (!game.quiz.correctFirstPid){
         game.quiz.correctFirstPid = pid;
         trophies.push({ kind: 'first' });
         p.score += 100;
+        game.matchStats.firstAnswers.set(pid, (game.matchStats.firstAnswers.get(pid) || 0) + 1);
       }
     } else {
       game.quiz.streaks.set(pid, 0);
@@ -698,6 +798,7 @@ function finishQuiz(){
   if (!game.quiz) return;
   const isLightning = game.quiz.isLightning;
   const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+  game.lastGame = isLightning ? 'lightning' : 'quiz';
   game.phase = 'end';
   game.quiz = null;
   broadcast();
@@ -972,6 +1073,7 @@ function endSnake(){
   if (game.snake.tickTimer){ clearInterval(game.snake.tickTimer); game.snake.tickTimer = null; }
   const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
   recordScores('snake', players);
+  game.lastGame = 'snake';
   game.phase = 'end';
   game.snake = null;
   broadcast();
@@ -1022,12 +1124,16 @@ function snakeTick(){
       game.snake.food.splice(foodIdx, 1);
       s.growBy += 1;
       const p = game.players.get(s.id); if (p) p.score += 10;
+      game.matchStats.apples.set(s.id, (game.matchStats.apples.get(s.id) || 0) + 1);
     }
     if (s.growBy > 0){
       s.growBy--;
     } else {
       s.segs.pop();
     }
+    // Track biggest snake length
+    const prevMax = game.matchStats.biggestSnake.get(s.id) || 0;
+    if (s.segs.length > prevMax) game.matchStats.biggestSnake.set(s.id, s.segs.length);
     heads.push({ id: s.id, x: nx, y: ny, len: s.segs.length });
   }
 
@@ -1310,9 +1416,11 @@ function endBomberman(){
   const alive = Array.from(game.bomb.players.values()).filter(p => p.alive);
   if (alive.length === 1){
     const p = game.players.get(alive[0].id); if (p) p.score += 200;
+    game.matchStats.survived.set(alive[0].id, (game.matchStats.survived.get(alive[0].id) || 0) + 1);
   }
   const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
   recordScores('bomb', players);
+  game.lastGame = 'bomb';
   game.phase = 'end';
   game.bomb = null;
   broadcast();
@@ -1453,7 +1561,10 @@ function bombTick(){
             killerPlayer.score += 100;
           }
           const killerBP = game.bomb.players.get(b.owner);
-          if (killerBP && b.owner !== p.id) killerBP.kills++;
+          if (killerBP && b.owner !== p.id){
+            killerBP.kills++;
+            game.matchStats.kills.set(b.owner, (game.matchStats.kills.get(b.owner) || 0) + 1);
+          }
         }
       }
       // Break soft walls; maybe drop powerup

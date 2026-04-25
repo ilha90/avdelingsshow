@@ -44,7 +44,7 @@ export class SnakeRenderer {
     g.receiveShadow = true;
     this.scene.add(g);
 
-    // Grid tiles (subtle checkerboard)
+    // Grid tiles
     const tileGeo = new THREE.PlaneGeometry(CELL*0.96, CELL*0.96);
     const matLight = new THREE.MeshStandardMaterial({ color: 0x143b2d, roughness: 1 });
     const matDark = new THREE.MeshStandardMaterial({ color: 0x0c2a20, roughness: 1 });
@@ -58,7 +58,7 @@ export class SnakeRenderer {
     }
 
     // Walls
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x5de0ae, emissive: 0x072a1d, roughness: .4 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x47D197, emissive: 0x072a1d, roughness: .4 });
     const wb = new THREE.BoxGeometry(COLS + 1, 1.2, 0.6);
     const ws = new THREE.BoxGeometry(0.6, 1.2, ROWS + 1);
     const w1 = new THREE.Mesh(wb, wallMat); w1.position.set(COLS/2, 0.6, -0.3); this.scene.add(w1);
@@ -69,11 +69,18 @@ export class SnakeRenderer {
     // Groups
     this.snakeGroup = new THREE.Group();
     this.foodGroup = new THREE.Group();
+    this.fxGroup = new THREE.Group();
+    this.trailGroup = new THREE.Group();
     this.scene.add(this.snakeGroup);
     this.scene.add(this.foodGroup);
+    this.scene.add(this.trailGroup);
+    this.scene.add(this.fxGroup);
 
-    // Internal maps
-    this.segMeshes = new Map(); // id -> array of meshes per segment (interpolated)
+    // Internal
+    this.segMeshes = new Map();
+    this.prevFoodKeys = new Set();
+    this.prevAliveIds = new Set();
+    this.prevHeadPos = new Map(); // id -> {x, z} for trail spawning
     this.prevState = null;
     this.curState = null;
     this.interpT = 1;
@@ -98,30 +105,48 @@ export class SnakeRenderer {
   }
 
   setState(state){
-    // state = { snakes: [{id,name,segs:[{x,y}],alive,len}], food: [{x,y}] }
     this.prevState = this.curState;
     this.curState = state;
     this.interpT = 0;
     this.lastTickTime = performance.now();
 
-    // Food
+    // ===== Mat — spawn spark ved borte-mat =====
+    const newFoodKeys = new Set((state.food || []).map(f => f.x + ':' + f.y));
+    for (const k of this.prevFoodKeys){
+      if (!newFoodKeys.has(k)){
+        const [fx, fy] = k.split(':').map(Number);
+        this.spawnFoodSparks(fx, fy);
+      }
+    }
+    this.prevFoodKeys = newFoodKeys;
+
+    // ===== Mat-meshes =====
     this.foodGroup.clear();
     const foodGeo = new THREE.SphereGeometry(0.35, 16, 12);
-    const foodMat = new THREE.MeshStandardMaterial({ color: 0xffcf4a, emissive: 0xd4af37, emissiveIntensity: 0.6, roughness: 0.3 });
+    const foodMat = new THREE.MeshStandardMaterial({ color: 0xffcf4a, emissive: 0xCAAB51, emissiveIntensity: 0.7, roughness: 0.3 });
     for (const f of (state.food || [])){
       const m = new THREE.Mesh(foodGeo, foodMat);
-      m.position.set(f.x + 0.5, 0.5 + 0.1 * Math.sin(performance.now()*0.002 + f.x + f.y), f.y + 0.5);
+      m.position.set(f.x + 0.5, 0.5 + 0.12 * Math.sin(performance.now()*0.002 + f.x + f.y), f.y + 0.5);
       m.castShadow = true;
       this.foodGroup.add(m);
     }
 
-    // Snakes
+    // ===== Snakes =====
+    const currentAliveIds = new Set();
     this.snakeGroup.clear();
     this.segMeshes.clear();
     for (const s of (state.snakes || [])){
-      if (!s.alive) continue;
+      if (!s.alive){
+        // Hvis slangen var i live og nå er død → death-explosion ved hode-pos
+        if (this.prevAliveIds.has(s.id)){
+          const head = this.prevHeadPos.get(s.id);
+          if (head) this.spawnDeathExplosion(head.x, head.z, s.color || 0xff5a6b);
+        }
+        continue;
+      }
+      currentAliveIds.add(s.id);
       const color = s.color || colorFor(s.name || s.id);
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.15 });
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.18 });
       const arr = [];
       s.segs.forEach((p, i) => {
         const size = i === 0 ? 0.95 : 0.82;
@@ -129,6 +154,8 @@ export class SnakeRenderer {
         const m = new THREE.Mesh(geo, mat);
         m.position.set(p.x + 0.5, size/2, p.y + 0.5);
         m.castShadow = true;
+        // Subtil taper: lengre ned fra hode = mindre metalness
+        if (i > 0) m.material = new THREE.MeshStandardMaterial({ color, roughness: 0.55 + Math.min(0.3, i * 0.02), metalness: 0.1 });
         this.snakeGroup.add(m);
         arr.push(m);
 
@@ -142,10 +169,75 @@ export class SnakeRenderer {
           e2.position.set(p.x + 0.7, 0.8, p.y + 0.65);
           this.snakeGroup.add(e1); this.snakeGroup.add(e2);
           arr.push(e1); arr.push(e2);
+
+          // Spawn trail-ghost (fades over tid)
+          const prevHead = this.prevHeadPos.get(s.id);
+          if (prevHead && (prevHead.x !== p.x || prevHead.z !== p.y)){
+            this.spawnTrail(prevHead.x, prevHead.z, color);
+          }
+          this.prevHeadPos.set(s.id, { x: p.x, z: p.y });
         }
       });
       this.segMeshes.set(s.id, arr);
     }
+
+    this.prevAliveIds = currentAliveIds;
+  }
+
+  spawnFoodSparks(x, y){
+    for (let k = 0; k < 8; k++){
+      const spark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08, 6, 4),
+        new THREE.MeshBasicMaterial({ color: 0xffcf4a, transparent: true })
+      );
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 0.08 + Math.random() * 0.12;
+      spark.position.set(x + 0.5, 0.5, y + 0.5);
+      spark.userData = {
+        born: performance.now(), type: 'spark',
+        vx: Math.cos(ang) * spd,
+        vz: Math.sin(ang) * spd,
+        vy: 0.06 + Math.random() * 0.08
+      };
+      this.fxGroup.add(spark);
+    }
+  }
+
+  spawnDeathExplosion(x, y, color){
+    for (let k = 0; k < 18; k++){
+      const spark = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 6, 4),
+        new THREE.MeshBasicMaterial({ color, transparent: true })
+      );
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 0.14 + Math.random() * 0.2;
+      spark.position.set(x + 0.5, 0.5, y + 0.5);
+      spark.userData = {
+        born: performance.now(), type: 'spark',
+        vx: Math.cos(ang) * spd,
+        vz: Math.sin(ang) * spd,
+        vy: 0.12 + Math.random() * 0.1
+      };
+      this.fxGroup.add(spark);
+    }
+    const shock = new THREE.Mesh(
+      new THREE.RingGeometry(0.2, 0.3, 24),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+    );
+    shock.rotation.x = -Math.PI/2;
+    shock.position.set(x + 0.5, 0.15, y + 0.5);
+    shock.userData = { born: performance.now(), type: 'shock' };
+    this.fxGroup.add(shock);
+  }
+
+  spawnTrail(x, y, color){
+    const ghost = new THREE.Mesh(
+      new THREE.BoxGeometry(0.85, 0.85, 0.85),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35 })
+    );
+    ghost.position.set(x + 0.5, 0.42, y + 0.5);
+    ghost.userData = { born: performance.now(), type: 'trail' };
+    this.trailGroup.add(ghost);
   }
 
   dispose(){
@@ -160,9 +252,40 @@ export class SnakeRenderer {
     const t = performance.now();
     // Animate food bob
     this.foodGroup.children.forEach((m, i) => {
-      m.position.y = 0.5 + 0.1 * Math.sin(t*0.003 + i);
-      m.rotation.y += 0.02;
+      m.position.y = 0.5 + 0.12 * Math.sin(t*0.003 + i);
+      m.rotation.y += 0.025;
+      const pulse = 1 + 0.06 * Math.sin(t * 0.006 + i);
+      m.scale.setScalar(pulse);
     });
+
+    // Trail fade
+    for (let i = this.trailGroup.children.length - 1; i >= 0; i--){
+      const g = this.trailGroup.children[i];
+      const age = (t - g.userData.born) / 1000;
+      g.material.opacity = Math.max(0, 0.35 - age * 0.7);
+      g.scale.setScalar(1 - age * 0.4);
+      if (age > 0.5) this.trailGroup.remove(g);
+    }
+
+    // FX-partikler / shockwaves
+    for (let i = this.fxGroup.children.length - 1; i >= 0; i--){
+      const m = this.fxGroup.children[i];
+      const age = (t - m.userData.born) / 1000;
+      if (m.userData.type === 'spark'){
+        m.position.x += m.userData.vx;
+        m.position.z += m.userData.vz;
+        m.position.y += m.userData.vy;
+        m.userData.vy -= 0.008;
+        m.material.opacity = Math.max(0, 1 - age * 1.3);
+        if (age > 0.9 || m.position.y < 0) this.fxGroup.remove(m);
+      } else if (m.userData.type === 'shock'){
+        const r = 0.3 + age * 6;
+        m.scale.set(r, r, 1);
+        m.material.opacity = Math.max(0, 0.8 - age * 1.4);
+        if (age > 0.7) this.fxGroup.remove(m);
+      }
+    }
+
     this.renderer.render(this.scene, this.camera);
   }
 }

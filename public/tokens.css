@@ -1,0 +1,101 @@
+/* tokens.css — DNB Eufemia-palett + show-stage design tokens
+   Denne fila definerer alle design tokens. style.css konsumerer dem. */
+
+:root {
+  /* ===== DNB Eufemia farger (autorativ kilde) ===== */
+  --dnb-green-500: #47D197;   /* primær grønn, signatur */
+  --dnb-green-600: #20B580;
+  --dnb-green-700: #007B5E;   /* mørk grønn for kontraster */
+  --dnb-green-800: #004E4A;
+
+  --dnb-coldgreen-200: #BCE8DC; /* lys mynte for aksenter */
+  --dnb-coldgreen-400: #7BD0B6;
+
+  --dnb-gold-400: #CAAB51;    /* gull-aksent */
+  --dnb-gold-500: #B6903A;
+
+  --dnb-blue-500: #4784E1;
+  --dnb-purple-500: #7D7DD4;
+  --dnb-orange-500: #FF7633;
+  --dnb-fire: #E40B1C;
+  --dnb-summer: #FFB81C;
+
+  /* ===== Semantiske show-farger ===== */
+  --stage-deep: #02100B;         /* dypeste bakgrunn */
+  --stage: #07180F;              /* hoved-stage */
+  --stage-elev: #0E281D;         /* panels / elevated surfaces */
+  --stage-elev-2: #143929;
+  --stage-hairline: rgba(255,255,255,.08);
+  --stage-edge: rgba(71,209,151,.22);
+
+  --ink: #EAFFF5;                /* primær tekst */
+  --ink-soft: #B8D6CC;
+  --ink-muted: #7AA697;
+  --ink-dim: #4D7668;
+
+  --accent: var(--dnb-green-500);
+  --accent-deep: var(--dnb-green-700);
+  --accent-soft: var(--dnb-coldgreen-200);
+  --gold: var(--dnb-gold-400);
+  --gold-deep: var(--dnb-gold-500);
+
+  --danger: #FF5A6B;
+  --warn: #FFB14A;
+  --ok: var(--dnb-green-500);
+
+  /* Legacy-aliaser (holder style.css kompatibel) */
+  --bg: var(--stage);
+  --bg-2: var(--stage-elev);
+  --panel: rgba(14, 40, 29, .82);
+  --panel-2: rgba(20, 57, 41, .72);
+  --mint: var(--dnb-green-500);
+  --mint-2: var(--dnb-green-700);
+  --text: var(--ink);
+  --muted: var(--ink-muted);
+
+  /* Quiz-svar-farger (broadcast-inspirerte) */
+  --a: #FF4759; --a-glow: rgba(255,71,89,.55);
+  --b: var(--dnb-blue-500);  --b-glow: rgba(71,132,225,.55);
+  --c: var(--dnb-summer);    --c-glow: rgba(255,184,28,.55);
+  --d: var(--dnb-purple-500);--d-glow: rgba(125,125,212,.55);
+  --bad: var(--danger);
+
+  /* ===== Neon / glow ===== */
+  --neon-mint-soft: 0 0 20px rgba(71,209,151,.35);
+  --neon-mint-strong: 0 0 40px rgba(71,209,151,.6), 0 0 80px rgba(71,209,151,.3);
+  --neon-gold-soft: 0 0 24px rgba(202,171,81,.4);
+  --neon-gold-strong: 0 0 50px rgba(202,171,81,.65), 0 0 100px rgba(202,171,81,.3);
+  --neon-danger: 0 0 30px rgba(255,90,107,.6);
+
+  --shadow: 0 10px 40px rgba(0,0,0,.55);
+  --shadow-deep: 0 20px 60px rgba(0,0,0,.65), 0 0 0 1px rgba(71,209,151,.06);
+
+  /* ===== Typografi ===== */
+  --font-display: "Bricolage Grotesque", "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-body: "Plus Jakarta Sans", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ===== Spacing / radius / motion ===== */
+  --r-xs: 8px; --r-sm: 12px; --r: 16px; --r-lg: 20px; --r-xl: 28px; --r-pill: 999px;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --ease-out-back: cubic-bezier(.2, 1.4, .3, 1);
+  --ease-smooth: cubic-bezier(.15, .8, .3, 1);
+
+  /* Z-stack */
+  --z-stage-bg: -3;
+  --z-content: 1;
+  --z-overlay: 40;
+  --z-hud: 50;
+  --z-toast: 150;
+  --z-modal: 200;
+  --z-gate: 300;
+}
+
+/* ===== Reduced motion ===== */
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
