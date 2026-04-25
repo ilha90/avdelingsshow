@@ -1,29 +1,36 @@
 # Avdelingsshow
 
-Live multiplayer quiz/show for avdelingssamlinger — host på storskjerm, spillere kobler seg på fra mobil.
+Live multiplayer show-plattform for avdelingssamlinger.
 
-## Kjør lokalt
+## Kom i gang
 
 ```bash
 npm install
-npm start
+HOST_PASSWORD=dnb node server.js
 ```
 
-Åpne `http://localhost:3000/host` på vert-PCen, og `http://<din-IP>:3000` på mobiler.
+Åpne `http://localhost:3000/host` på storskjerm (passord: `dnb`).
+Spillere skanner QR-koden eller åpner `http://localhost:3000/` på telefon.
 
-## Spillmoduser
+## Spill
 
-- 🧠 **Quiz**: Generelt, Norge, DNB, Pop-kultur, Emoji — 250+ spørsmål totalt
-- ⚡ **Lyn-runde**: 5 sek per spørsmål, dobbel poeng
-- 🗳️ **Hvem er mest sannsynlig**: anonym avstemning
-- 📝 **Kategori-kamp**: bokstav + 5 kategorier, 60 sek
-- 💬 **Bli-kjent-kort**: trekk tilfeldig spørsmål til tilfeldig spiller
-- 🎡 **Lykkehjul**: trekker én av spillerne
-- 🪄 **Egendefinert AI-quiz**: generer spørsmål om hvilket som helst tema (BYOK)
+- 🧠 **Quiz** — 5 kategorier, konfigurerbar lengde og tid
+- ⚡ **Lyn-runde** — rask quiz med dobbel poeng
+- 🗳️ **Hvem er mest sannsynlig** — anonym avstemning
+- 📝 **Kategori-kamp** — Scattergories
+- 🤥 **2 sannheter, 1 løgn** — spillere lurer hverandre
+- 💬 **Bli-kjent-kort** — samtalestartere
+- 🎡 **Lykkehjulet** — tilfeldig spiller
+- 🐍 **Slange-kamp** — 3D multiplayer Snake
+- 💣 **Bomberman** — 3D multiplayer Bomberman
 
 ## Deploy
 
-Lokal Node.js-server (Socket.io) — deploy til Render/Railway/Fly.io.
-Se `render.yaml` for Render-konfig.
+Render (gratis-tier). Se `render.yaml`. Sett `HOST_PASSWORD` som env var.
 
-Krav: Node 18+
+## Stack
+
+Node 20+, Express 4, Socket.io 4, Three.js 0.161 (via ESM importmap).
+Ingen build-step — alt er vanilla JS.
+
+## Se `SPEC.md` for full kravspesifikasjon.

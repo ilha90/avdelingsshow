@@ -1,25 +1,26 @@
 <!DOCTYPE html>
 <html lang="no">
 <head>
-  <meta charset="UTF-8">
-  <title>Avdelingsshow — Spiller</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, viewport-fit=cover">
-  <link rel="stylesheet" href="/style.css">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Avdelingsshow</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" type="image/svg+xml" href="/favicon.ico" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
-  <div id="app">
-    <div class="player-screen" id="screen"></div>
-  </div>
-  <script src="/socket.io/socket.io.js"></script>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
-    }
-  }
-  </script>
-  <script type="module" src="/sound.js"></script>
-  <script type="module" src="/player.js"></script>
+
+<div id="app"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script type="module" src="/player.js"></script>
+
 </body>
 </html>

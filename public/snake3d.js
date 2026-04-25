@@ -1,245 +1,168 @@
-// snake3d.js — Three.js renderer for Snake
+// public/snake3d.js — Three.js Snake-scene
+// Viktig: dynamisk import av addons via importmap — håndter feil.
+
 import * as THREE from 'three';
+import { colorFor } from './avatars.js';
 
-let renderer = null, scene = null, camera = null;
-let floorGroup = null, borderGroup = null;
-let snakeMeshes = new Map(); // pid -> { group, segments: [mesh...], head, color }
-let foodMeshes = [];
-let gridW = 0, gridH = 0;
+const COLS = 40;
+const ROWS = 25;
+const CELL = 1;
 
-const MAT = {
-  floorA: new THREE.MeshStandardMaterial({ color: 0x0f1722, roughness: 0.95 }),
-  floorB: new THREE.MeshStandardMaterial({ color: 0x131c29, roughness: 0.95 }),
-  border: new THREE.MeshStandardMaterial({ color: 0x2a3444, roughness: 0.6, metalness: 0.3 }),
-  food:   new THREE.MeshStandardMaterial({
-    color: 0xffd95c, emissive: 0xffa920, emissiveIntensity: 0.8,
-    roughness: 0.2, metalness: 0.3,
-  }),
-};
+export class SnakeRenderer {
+  constructor(canvas){
+    this.canvas = canvas;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.setClearColor(0x061611, 1);
 
-export function init(canvas, gW, gH) {
-  gridW = gW; gridH = gH;
-  if (renderer) dispose();
+    this.scene = new THREE.Scene();
+    this.scene.fog = new THREE.Fog(0x061611, 35, 90);
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
-  resize();
+    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 300);
+    this.camera.position.set(COLS/2, 50, ROWS*1.3);
+    this.camera.lookAt(COLS/2, 0, ROWS/2);
 
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x060a11);
-  scene.fog = new THREE.Fog(0x060a11, 35, 80);
+    // Lights
+    this.scene.add(new THREE.AmbientLight(0xaabbcc, 0.45));
+    const sun = new THREE.DirectionalLight(0xfff1c0, 1.1);
+    sun.position.set(30, 60, 20);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.left = -30; sun.shadow.camera.right = 60;
+    sun.shadow.camera.top = 40; sun.shadow.camera.bottom = -20;
+    this.scene.add(sun);
 
-  const cx = gW / 2, cz = gH / 2;
-  camera = new THREE.PerspectiveCamera(42, canvas.clientWidth / Math.max(1, canvas.clientHeight), 0.1, 250);
-  // Pull kameraet lengre unna så hele brettet vises også på smale mobil-canvas
-  camera.position.set(cx, Math.max(gH * 1.3, 32), gH + 16);
-  camera.lookAt(cx, 0, cz - 1);
+    // Ground
+    const g = new THREE.Mesh(
+      new THREE.PlaneGeometry(COLS*2, ROWS*2),
+      new THREE.MeshStandardMaterial({ color: 0x0f3225, roughness: 0.95 })
+    );
+    g.rotation.x = -Math.PI/2;
+    g.position.set(COLS/2, 0, ROWS/2);
+    g.receiveShadow = true;
+    this.scene.add(g);
 
-  scene.add(new THREE.AmbientLight(0xe0e8ff, 0.5));
-  const sun = new THREE.DirectionalLight(0xfff3d6, 0.95);
-  sun.position.set(cx - gW * 0.4, gH * 1.4, cz - gH * 0.4);
-  sun.target.position.set(cx, 0, cz);
-  scene.add(sun.target);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -gW * 0.7;
-  sun.shadow.camera.right = gW * 0.7;
-  sun.shadow.camera.top = gH * 0.7;
-  sun.shadow.camera.bottom = -gH * 0.7;
-  sun.shadow.camera.near = 0.5;
-  sun.shadow.camera.far = gH * 3;
-  sun.shadow.bias = -0.0005;
-  scene.add(sun);
+    // Grid tiles (subtle checkerboard)
+    const tileGeo = new THREE.PlaneGeometry(CELL*0.96, CELL*0.96);
+    const matLight = new THREE.MeshStandardMaterial({ color: 0x143b2d, roughness: 1 });
+    const matDark = new THREE.MeshStandardMaterial({ color: 0x0c2a20, roughness: 1 });
+    for (let x=0;x<COLS;x++){
+      for (let z=0;z<ROWS;z++){
+        const m = new THREE.Mesh(tileGeo, (x+z) % 2 === 0 ? matLight : matDark);
+        m.rotation.x = -Math.PI/2;
+        m.position.set(x + 0.5, 0.01, z + 0.5);
+        this.scene.add(m);
+      }
+    }
 
-  // Gulv — sjakkrutet
-  floorGroup = new THREE.Group();
-  const tileGeom = new THREE.PlaneGeometry(1, 1);
-  for (let y = 0; y < gH; y++) {
-    for (let x = 0; x < gW; x++) {
-      const mat = (x + y) % 2 === 0 ? MAT.floorA : MAT.floorB;
-      const t = new THREE.Mesh(tileGeom, mat);
-      t.rotation.x = -Math.PI / 2;
-      t.position.set(x + 0.5, 0, y + 0.5);
-      t.receiveShadow = true;
-      floorGroup.add(t);
+    // Walls
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x5de0ae, emissive: 0x072a1d, roughness: .4 });
+    const wb = new THREE.BoxGeometry(COLS + 1, 1.2, 0.6);
+    const ws = new THREE.BoxGeometry(0.6, 1.2, ROWS + 1);
+    const w1 = new THREE.Mesh(wb, wallMat); w1.position.set(COLS/2, 0.6, -0.3); this.scene.add(w1);
+    const w2 = new THREE.Mesh(wb, wallMat); w2.position.set(COLS/2, 0.6, ROWS + 0.3); this.scene.add(w2);
+    const w3 = new THREE.Mesh(ws, wallMat); w3.position.set(-0.3, 0.6, ROWS/2); this.scene.add(w3);
+    const w4 = new THREE.Mesh(ws, wallMat); w4.position.set(COLS + 0.3, 0.6, ROWS/2); this.scene.add(w4);
+
+    // Groups
+    this.snakeGroup = new THREE.Group();
+    this.foodGroup = new THREE.Group();
+    this.scene.add(this.snakeGroup);
+    this.scene.add(this.foodGroup);
+
+    // Internal maps
+    this.segMeshes = new Map(); // id -> array of meshes per segment (interpolated)
+    this.prevState = null;
+    this.curState = null;
+    this.interpT = 1;
+    this.tickMs = 140;
+
+    this.onResize = this.onResize.bind(this);
+    window.addEventListener('resize', this.onResize);
+    this.onResize();
+
+    this.running = true;
+    this.loop = this.loop.bind(this);
+    this.loop();
+  }
+
+  onResize(){
+    const r = this.canvas.getBoundingClientRect();
+    const w = Math.max(1, r.width|0);
+    const h = Math.max(1, r.height|0);
+    this.renderer.setSize(w, h, false);
+    this.camera.aspect = w/h;
+    this.camera.updateProjectionMatrix();
+  }
+
+  setState(state){
+    // state = { snakes: [{id,name,segs:[{x,y}],alive,len}], food: [{x,y}] }
+    this.prevState = this.curState;
+    this.curState = state;
+    this.interpT = 0;
+    this.lastTickTime = performance.now();
+
+    // Food
+    this.foodGroup.clear();
+    const foodGeo = new THREE.SphereGeometry(0.35, 16, 12);
+    const foodMat = new THREE.MeshStandardMaterial({ color: 0xffcf4a, emissive: 0xd4af37, emissiveIntensity: 0.6, roughness: 0.3 });
+    for (const f of (state.food || [])){
+      const m = new THREE.Mesh(foodGeo, foodMat);
+      m.position.set(f.x + 0.5, 0.5 + 0.1 * Math.sin(performance.now()*0.002 + f.x + f.y), f.y + 0.5);
+      m.castShadow = true;
+      this.foodGroup.add(m);
+    }
+
+    // Snakes
+    this.snakeGroup.clear();
+    this.segMeshes.clear();
+    for (const s of (state.snakes || [])){
+      if (!s.alive) continue;
+      const color = s.color || colorFor(s.name || s.id);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.15 });
+      const arr = [];
+      s.segs.forEach((p, i) => {
+        const size = i === 0 ? 0.95 : 0.82;
+        const geo = new THREE.BoxGeometry(size, size, size);
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(p.x + 0.5, size/2, p.y + 0.5);
+        m.castShadow = true;
+        this.snakeGroup.add(m);
+        arr.push(m);
+
+        if (i === 0){
+          // Eyes
+          const eyeGeo = new THREE.SphereGeometry(0.1, 8, 6);
+          const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+          const e1 = new THREE.Mesh(eyeGeo, eyeMat);
+          const e2 = new THREE.Mesh(eyeGeo, eyeMat);
+          e1.position.set(p.x + 0.7, 0.8, p.y + 0.35);
+          e2.position.set(p.x + 0.7, 0.8, p.y + 0.65);
+          this.snakeGroup.add(e1); this.snakeGroup.add(e2);
+          arr.push(e1); arr.push(e2);
+        }
+      });
+      this.segMeshes.set(s.id, arr);
     }
   }
-  scene.add(floorGroup);
 
-  // Ramme-vegger rundt brettet
-  borderGroup = new THREE.Group();
-  const borderGeom = new THREE.BoxGeometry(1, 0.6, 1);
-  for (let x = -1; x <= gW; x++) {
-    for (const z of [-1, gH]) {
-      const m = new THREE.Mesh(borderGeom, MAT.border);
-      m.position.set(x + 0.5, 0.3, z + 0.5);
-      m.castShadow = true; m.receiveShadow = true;
-      borderGroup.add(m);
-    }
+  dispose(){
+    this.running = false;
+    window.removeEventListener('resize', this.onResize);
+    this.renderer.dispose();
   }
-  for (let z = 0; z < gH; z++) {
-    for (const x of [-1, gW]) {
-      const m = new THREE.Mesh(borderGeom, MAT.border);
-      m.position.set(x + 0.5, 0.3, z + 0.5);
-      m.castShadow = true; m.receiveShadow = true;
-      borderGroup.add(m);
-    }
-  }
-  scene.add(borderGroup);
-}
 
-function resize() {
-  if (!renderer) return;
-  const canvas = renderer.domElement;
-  const parent = canvas.parentElement;
-  if (!parent) return;
-  const w = parent.clientWidth, h = parent.clientHeight;
-  if (w === 0 || h === 0) return;
-  renderer.setSize(w, h, false);
-  if (camera) {
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-  }
-}
-
-const labelCache = new Map();
-function getEmojiLabel(emoji, color) {
-  const key = (emoji || '') + '|' + color;
-  if (labelCache.has(key)) return labelCache.get(key);
-  const cv = document.createElement('canvas');
-  cv.width = 128; cv.height = 128;
-  const ctx = cv.getContext('2d');
-  ctx.fillStyle = color;
-  ctx.beginPath(); ctx.arc(64, 64, 56, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.arc(64, 64, 56, 0, Math.PI * 2); ctx.stroke();
-  ctx.font = '80px system-ui, Apple Color Emoji, Segoe UI Emoji';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(emoji || '🐍', 64, 70);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  labelCache.set(key, tex);
-  return tex;
-}
-
-function ensureSnake(s) {
-  let obj = snakeMeshes.get(s.id || s.name); // fallback to name since snake uses name
-  const key = s.id || s.name;
-  if (!obj) {
-    const group = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({
-      color: s.color, roughness: 0.35, metalness: 0.15,
-      emissive: new THREE.Color(s.color), emissiveIntensity: 0.25,
+  loop(){
+    if (!this.running) return;
+    requestAnimationFrame(this.loop);
+    const t = performance.now();
+    // Animate food bob
+    this.foodGroup.children.forEach((m, i) => {
+      m.position.y = 0.5 + 0.1 * Math.sin(t*0.003 + i);
+      m.rotation.y += 0.02;
     });
-    // Label over hodet
-    const labelTex = getEmojiLabel(s.emoji, s.color);
-    const label = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.1, 1.1),
-      new THREE.MeshBasicMaterial({ map: labelTex, transparent: true, depthWrite: false })
-    );
-    label.position.y = 1.5;
-    group.add(label);
-    scene.add(group);
-    obj = { group, label, segments: [], mat };
-    snakeMeshes.set(key, obj);
+    this.renderer.render(this.scene, this.camera);
   }
-  return obj;
-}
-
-function updateSnakeSegments(obj, body, alive, isHead) {
-  // Fjern overflødig
-  while (obj.segments.length > body.length) {
-    const m = obj.segments.pop();
-    obj.group.remove(m);
-  }
-  // Legg til nye
-  while (obj.segments.length < body.length) {
-    const isFirst = obj.segments.length === 0;
-    const geom = isFirst
-      ? new THREE.SphereGeometry(0.42, 16, 14)
-      : new THREE.SphereGeometry(0.36, 14, 12);
-    const m = new THREE.Mesh(geom, obj.mat);
-    m.castShadow = true;
-    obj.group.add(m);
-    obj.segments.push(m);
-  }
-  // Oppdater posisjoner
-  for (let i = 0; i < body.length; i++) {
-    const seg = body[i];
-    obj.segments[i].position.set(seg.x + 0.5, i === 0 ? 0.45 : 0.38, seg.y + 0.5);
-  }
-  obj.mat.opacity = alive ? 1 : 0.25;
-  obj.mat.transparent = !alive;
-  obj.mat.emissiveIntensity = alive ? 0.25 : 0.05;
-  // Label over hodet
-  if (body.length > 0 && obj.label) {
-    const head = body[0];
-    obj.label.position.set(head.x + 0.5, 1.5, head.y + 0.5);
-  }
-  obj.group.visible = body.length > 0;
-}
-
-export function update(snakeSnap) {
-  if (!snakeSnap || !scene) return;
-  resize();
-
-  // Snakes
-  const seen = new Set();
-  for (const s of snakeSnap.snakes) {
-    const key = s.id || s.name;
-    seen.add(key);
-    const obj = ensureSnake(s);
-    updateSnakeSegments(obj, s.body || [], s.alive);
-  }
-  for (const [key, o] of snakeMeshes) {
-    if (!seen.has(key)) {
-      scene.remove(o.group);
-      snakeMeshes.delete(key);
-    }
-  }
-  // Label billboards følger kameraet
-  for (const o of snakeMeshes.values()) {
-    if (o.label && camera) o.label.lookAt(camera.position);
-  }
-
-  // Food — rebuild hver update (lite antall, enkelt)
-  for (const m of foodMeshes) scene.remove(m);
-  foodMeshes = [];
-  const t = Date.now() / 400;
-  for (const f of snakeSnap.food || []) {
-    const g = new THREE.Group();
-    const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 16, 12),
-      MAT.food
-    );
-    const bob = Math.sin(t + f.x * 0.3 + f.y * 0.2) * 0.1;
-    sphere.position.y = 0.45 + bob;
-    sphere.castShadow = true;
-    g.add(sphere);
-    const light = new THREE.PointLight(0xffb040, 0.6, 2);
-    light.position.y = 0.5;
-    g.add(light);
-    g.position.set(f.x + 0.5, 0, f.y + 0.5);
-    scene.add(g);
-    foodMeshes.push(g);
-  }
-}
-
-export function render() {
-  if (renderer && scene && camera) renderer.render(scene, camera);
-}
-
-export function dispose() {
-  if (!renderer) return;
-  renderer.dispose();
-  renderer = null;
-  scene = null;
-  camera = null;
-  snakeMeshes.clear();
-  foodMeshes = [];
-  labelCache.clear();
 }
