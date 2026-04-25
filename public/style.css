@@ -2818,3 +2818,93 @@ button[data-id],
 @media (max-width: 900px) {
   .bsh-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ============================================================
+   Quiz reveal-feedback — STOR synlig riktig/feil på mobil
+   ============================================================ */
+.reveal-feedback {
+  position: fixed; inset: 0;
+  z-index: 220;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 14px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .3s;
+}
+.reveal-feedback.in { opacity: 1; }
+.reveal-feedback.out { opacity: 0; }
+.reveal-feedback.ok   { background: radial-gradient(circle at 50% 42%, rgba(71,209,151,.45) 0%, rgba(2,16,11,.92) 75%); }
+.reveal-feedback.fail { background: radial-gradient(circle at 50% 42%, rgba(228,11,28,.35) 0%, rgba(2,16,11,.95) 75%); }
+.reveal-feedback.skip { background: radial-gradient(circle at 50% 42%, rgba(202,171,81,.3) 0%, rgba(2,16,11,.93) 75%); }
+
+.reveal-feedback .rf-ic {
+  font-size: 96px;
+  filter: drop-shadow(0 0 40px rgba(0,0,0,.6));
+  animation: rf-ic .7s var(--ease-out-back);
+}
+@keyframes rf-ic {
+  0%   { transform: scale(.2) rotate(-25deg); opacity: 0; }
+  60%  { transform: scale(1.25) rotate(8deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); }
+}
+.reveal-feedback .rf-title {
+  font-family: var(--font-display);
+  font-size: 44px; font-weight: 900;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.reveal-feedback.ok   .rf-title { color: var(--accent); text-shadow: 0 0 40px rgba(71,209,151,.8); }
+.reveal-feedback.fail .rf-title { color: var(--danger); text-shadow: 0 0 40px rgba(228,11,28,.8); }
+.reveal-feedback.skip .rf-title { color: var(--gold); text-shadow: 0 0 40px rgba(202,171,81,.7); }
+
+.reveal-feedback .rf-sub {
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--ink);
+  text-align: center;
+  line-height: 1.35;
+  max-width: min(480px, 90vw);
+  padding: 0 20px;
+  letter-spacing: -0.005em;
+}
+.reveal-feedback .rf-sub b {
+  color: var(--accent);
+  font-weight: 800;
+}
+.reveal-feedback.fail .rf-sub b { color: var(--gold); }
+.reveal-feedback .rf-delta {
+  display: inline-block;
+  padding: 6px 16px;
+  background: rgba(71,209,151,.25);
+  color: var(--accent);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--accent);
+  font-weight: 800;
+  font-size: 24px;
+}
+.reveal-feedback .rf-score {
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+  font-size: 14px;
+  padding: 8px 14px;
+  background: rgba(0,0,0,.35);
+  border-radius: var(--r-pill);
+  margin-top: 4px;
+}
+.reveal-feedback .rf-score b {
+  color: var(--accent);
+  font-weight: 800;
+  font-size: 18px;
+}
+
+/* Svar-knapper reveal-styles */
+.player-answer.reveal-correct {
+  animation: pa-correct 1s var(--ease-out-back);
+}
+.player-answer.reveal-wrong { filter: grayscale(.6) brightness(.7); }
+@keyframes pa-correct {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.08); box-shadow: 0 0 60px rgba(71,209,151,.9); }
+  100% { transform: scale(1); }
+}

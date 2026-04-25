@@ -223,6 +223,12 @@ socket.on('connect', () => {
 
 socket.on('bomb:init', d => { bombInit = d; });
 
+// Lagre mitt eget quiz-resultat (for showReveal)
+socket.on('quiz:reveal', ({ correctIdx, results }) => {
+  const mine = results.find(r => r.pid === me?.id);
+  window.lastQuizResult = mine || null;
+});
+
 socket.on('bomb:tick', d => {
   if (bombRenderer){
     bombRenderer.setPlayers(d.players);
@@ -326,6 +332,9 @@ function showQuestion(s){
   const answered = s.players.find(p => p.id === me.id)?.hasAnswered;
   const q = s.quiz.question;
   const qKey = s.quiz.index + ':' + (q.q || '');
+
+  // Nytt spørsmål? reset lastQuizResult slik at reveal-feedback viser riktig
+  if (lastQuizKey !== qKey) window.lastQuizResult = null;
 
   // Ny question → full rebuild. Samme question → kun oppdater disabled + "sendt"-indikator
   if (lastQuizKey === qKey){
@@ -438,22 +447,51 @@ function resetQuizKey(){ lastQuizKey = null; stopQuizHaptic(); }
 
 function showReveal(s){
   const correct = s.quiz?.correctIdx;
-  const a = app.querySelectorAll('.player-answer');
-  if (correct != null){
-    a.forEach((el, i) => {
-      if (i === correct) el.style.outline = '4px solid var(--mint)';
-      else el.style.opacity = '0.3';
-    });
-  }
-  // Subtle feedback
+  if (correct == null) return;
+  const q = s.quiz.question;
   const me_p = s.players.find(p => p.id === me.id);
-  if (me_p){
-    const div = document.createElement('div');
-    div.style.cssText = 'position:fixed; top:14px; left:50%; transform:translateX(-50%); background: rgba(0,0,0,.6); padding: 8px 14px; border-radius: 999px; font-weight:700;';
-    div.textContent = 'Poeng: ' + me_p.score;
-    document.body.appendChild(div);
-    setTimeout(() => div.remove(), 2500);
-  }
+  // Hent mitt resultat fra siste results (lagres i window.lastQuizResult når quiz:reveal kommer)
+  const myResult = window.lastQuizResult || null;
+  const iAnswered = !!myResult;
+  const iCorrect = iAnswered && myResult.correct;
+  const iDelta = myResult ? myResult.delta : 0;
+
+  // Oppdater eksisterende svar-knapper
+  const a = app.querySelectorAll('.player-answer');
+  a.forEach((el, i) => {
+    if (i === correct){
+      el.style.outline = '4px solid var(--accent)';
+      el.style.outlineOffset = '4px';
+      el.classList.add('reveal-correct');
+    } else {
+      el.style.opacity = '0.25';
+      el.classList.add('reveal-wrong');
+    }
+  });
+
+  // Vis stor feedback-kort
+  const existing = document.querySelector('.reveal-feedback');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = 'reveal-feedback ' + (iCorrect ? 'ok' : (iAnswered ? 'fail' : 'skip'));
+  const correctText = q.a ? q.a[correct] : '';
+  const heading = iCorrect ? '✓ Riktig!' : (iAnswered ? '✗ Feil svar' : '⌛ Du svarte ikke');
+  const sub = iCorrect
+    ? (iDelta > 0 ? `<span class="rf-delta">+${iDelta} poeng</span>` : 'Godt gjort!')
+    : `Riktig svar var <b>${escapeHtml(correctText)}</b>`;
+  el.innerHTML = `
+    <div class="rf-ic">${iCorrect ? '🎉' : (iAnswered ? '😅' : '⌛')}</div>
+    <div class="rf-title">${heading}</div>
+    <div class="rf-sub">${sub}</div>
+    ${me_p ? `<div class="rf-score">Total: <b>${me_p.score}</b> poeng</div>` : ''}
+  `;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('in'));
+  // Feedback haptic + lyd
+  if (iCorrect){ haptic.success(); sfx.correct(); }
+  else if (iAnswered){ haptic.fail(); sfx.wrong(); }
+  setTimeout(() => { el.classList.remove('in'); el.classList.add('out'); }, 3200);
+  setTimeout(() => el.remove(), 3800);
 }
 
 function showLeaderboard(s){

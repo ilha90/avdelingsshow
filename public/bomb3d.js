@@ -154,13 +154,11 @@ export class BombRenderer {
       let rec = this.playerMeshes.get(p.id);
       if (!rec){
         const group = new THREE.Group();
-        // Bygg karakter-sprite (SVG-billboard)
         const charId = p.character || 'classic';
-        const sprite = makeCharacterSprite(charId);
+        const sprite = makeCharacterSprite(charId, { walking: false, facing: 'right', powerups: extractPowerups(p) });
         sprite.scale.set(1.25, 1.55, 1);
         sprite.position.y = 0.78;
         group.add(sprite);
-        // Base-platform (liten sylinder under karakteren for skygge + fotstikk)
         const base = new THREE.Mesh(
           new THREE.CircleGeometry(0.34, 24),
           new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 })
@@ -168,12 +166,10 @@ export class BombRenderer {
         base.rotation.x = -Math.PI / 2;
         base.position.y = 0.02;
         group.add(base);
-        // Navn-tag (canvas-tekst over hodet)
         const nameSprite = makeNameTagSprite(p.name, p.color || '#47D197');
         nameSprite.scale.set(1.4, 0.35, 1);
         nameSprite.position.y = 1.7;
         group.add(nameSprite);
-        // Shield-ring
         const ring = new THREE.Mesh(
           new THREE.TorusGeometry(0.55, 0.05, 8, 32),
           new THREE.MeshBasicMaterial({ color: 0x5de0ae, transparent: true, opacity: 0.85 })
@@ -182,26 +178,47 @@ export class BombRenderer {
         ring.position.y = 0.1;
         ring.visible = false;
         group.add(ring);
-        rec = { group, sprite, base, nameSprite, ring, charId, prevX: p.x, prevZ: p.y, curX: p.x, curZ: p.y, dead: false };
+        rec = {
+          group, sprite, base, nameSprite, ring,
+          charId, prevX: p.x, prevZ: p.y, curX: p.x, curZ: p.y, dead: false,
+          facing: 'right', walking: false, walkPhase: 0, lastWalkToggleAt: 0,
+          powerups: extractPowerups(p)
+        };
         this.playerGroup.add(group);
         this.playerMeshes.set(p.id, rec);
       } else if (rec.charId !== (p.character || 'classic')){
-        // Karakter endret (f.eks. ny valg mid-game?) — bytt sprite
+        // Karakter endret
         rec.group.remove(rec.sprite);
         rec.charId = p.character || 'classic';
-        const newSprite = makeCharacterSprite(rec.charId);
-        newSprite.scale.set(1.25, 1.55, 1);
-        newSprite.position.y = 0.78;
-        rec.group.add(newSprite);
-        rec.sprite = newSprite;
+        rec.sprite = makeCharacterSprite(rec.charId, { walking: rec.walking, facing: rec.facing, powerups: rec.powerups });
+        rec.sprite.scale.set(1.25, 1.55, 1);
+        rec.sprite.position.y = 0.78;
+        rec.group.add(rec.sprite);
       }
+
+      // Oppdater facing basert på bevegelse
+      if (rec.curX !== p.x || rec.curZ !== p.y){
+        const dx = p.x - rec.curX;
+        const dy = p.y - rec.curZ;
+        if (Math.abs(dx) > Math.abs(dy)){
+          if (dx > 0) rec.facing = 'right';
+          else if (dx < 0) rec.facing = 'left';
+        }
+      }
+
+      // Oppdater powerups — hvis de endret seg, rebuild sprite
+      const newPU = extractPowerups(p);
+      if (powerupsDiffer(rec.powerups, newPU)){
+        rec.powerups = newPU;
+        this._rebuildSprite(rec);
+      }
+
       rec.prevX = rec.curX; rec.prevZ = rec.curZ;
       rec.curX = p.x; rec.curZ = p.y;
       rec.dead = !p.alive;
       rec.group.visible = !!p.alive;
       rec.ring.visible = (p.shield > 0) || (p.invulnerableUntil && Date.now() < p.invulnerableUntil);
     }
-    // Remove stale
     for (const [id, rec] of this.playerMeshes){
       if (!seen.has(id)){
         this.playerGroup.remove(rec.group);
@@ -209,6 +226,16 @@ export class BombRenderer {
       }
     }
     this.lastTickTime = performance.now();
+  }
+
+  _rebuildSprite(rec){
+    rec.group.remove(rec.sprite);
+    rec.sprite = makeCharacterSprite(rec.charId, {
+      walking: rec.walking, facing: rec.facing, powerups: rec.powerups
+    });
+    rec.sprite.scale.set(1.25, 1.55, 1);
+    rec.sprite.position.y = 0.78;
+    rec.group.add(rec.sprite);
   }
 
   setBombs(bombs){
@@ -399,8 +426,19 @@ export class BombRenderer {
       rec.group.position.x += ((x+0.5) - rec.group.position.x) * this.lerp;
       rec.group.position.z += ((z+0.5) - rec.group.position.z) * this.lerp;
       rec.group.position.y = 0;
-      // Bob — løft kun sprite (children[0] er sprite nå)
       if (rec.sprite) rec.sprite.position.y = 0.78 + Math.sin(now*0.006 + rec.curX) * 0.04;
+
+      // Walking-animation: toggle walking-frame hver 160ms mens beveger seg
+      const isMoving = rec.curX !== rec.prevX || rec.curZ !== rec.prevZ;
+      if (isMoving && (now - rec.lastWalkToggleAt) > 160){
+        rec.walking = !rec.walking;
+        rec.lastWalkToggleAt = now;
+        this._rebuildSprite(rec);
+      } else if (!isMoving && rec.walking){
+        rec.walking = false;
+        rec.lastWalkToggleAt = now;
+        this._rebuildSprite(rec);
+      }
     }
 
     // FX lifetime
@@ -468,23 +506,47 @@ export class BombRenderer {
 }
 
 const _charTexCache = new Map();
-function makeCharacterSprite(charId){
-  // Bygg (eller hent cached) SVG → Image → Texture
-  let tex = _charTexCache.get(charId);
+function makeCharacterSprite(charId, opts = {}){
+  // Nøkkel som tar hensyn til walking-state, facing, powerups
+  const pu = opts.powerups || {};
+  const puKey = `${!!pu.remote}|${!!pu.fire}|${!!pu.punch}|${pu.speed||0}|${!!pu.shield}|${!!pu.kick}`;
+  const key = `${charId}:${opts.walking?1:0}:${opts.facing||'right'}:${puKey}`;
+  let tex = _charTexCache.get(key);
   if (!tex){
     const char = getChar(charId);
-    const svgStr = buildCharSvg(char, { size: 256 });
+    const svgStr = buildCharSvg(char, {
+      size: 256,
+      walking: !!opts.walking,
+      facing: opts.facing || 'right',
+      powerups: pu
+    });
     const img = new Image();
     const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
     img.src = dataUri;
     tex = new THREE.Texture(img);
     tex.colorSpace = THREE.SRGBColorSpace;
     img.onload = () => { tex.needsUpdate = true; };
-    _charTexCache.set(charId, tex);
+    _charTexCache.set(key, tex);
   }
   return new THREE.Sprite(new THREE.SpriteMaterial({
     map: tex, transparent: true, depthWrite: false, sizeAttenuation: true
   }));
+}
+
+function extractPowerups(p){
+  return {
+    remote: !!p.remote,
+    fire: !!p.fire || !!p.fireBomb,
+    punch: !!p.punch,
+    speed: p.speed || 0,
+    shield: !!(p.shield && p.shield > 0),
+    kick: !!p.kick
+  };
+}
+function powerupsDiffer(a, b){
+  if (!a || !b) return true;
+  return a.remote !== b.remote || a.fire !== b.fire || a.punch !== b.punch ||
+         a.speed !== b.speed || a.shield !== b.shield || a.kick !== b.kick;
 }
 
 function makeNameTagSprite(name, color){
