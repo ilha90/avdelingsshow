@@ -548,6 +548,12 @@ io.on('connection', socket => {
     if (!game.hosts.has(socket.id)) return;
     endBomberman();
   });
+  socket.on('host:end-quiz', () => {
+    if (!game.hosts.has(socket.id)) return;
+    if (!game.quiz) return;
+    if (game.quiz.questionTimer){ clearTimeout(game.quiz.questionTimer); game.quiz.questionTimer = null; }
+    finishQuiz();
+  });
   socket.on('host:skip-tutorial', () => {
     if (!game.hosts.has(socket.id)) return;
     if (game.phase === 'tutorial' && game._tutorialNextFn){

@@ -40,17 +40,145 @@
   <button class="icon-btn" id="btn-help" title="Hjelp">?</button>
   <button class="icon-btn" id="btn-fs" title="Fullskjerm">⛶</button>
   <button class="icon-btn" id="btn-mute" title="Lyd av/på">🔊</button>
+  <button class="icon-btn" id="btn-tts" title="Tekst-til-tale av/på">🗣️</button>
 </div>
 
-<!-- Mascot -->
-<div id="mascot" class="mascot" style="right: 40px; bottom: 40px;">
-  <div class="antenna"></div>
-  <div class="mascot-body">
-    <div class="mascot-eye left"></div>
-    <div class="mascot-eye right"></div>
-    <div class="mascot-mouth"></div>
-  </div>
-  <div class="mic">🎤</div>
+<!-- Floating host-dock — alltid synlig, aldri dekket av overlays -->
+<div id="host-dock" class="host-dock hidden">
+  <button class="dock-btn dock-primary" id="dock-menu" title="Velg spill">
+    <span class="dock-ic">🎮</span><span class="dock-lbl">Velg spill</span>
+  </button>
+  <button class="dock-btn" id="dock-ctx" title="Handling for gjeldende fase">
+    <span class="dock-ic">⏭</span><span class="dock-lbl">Neste</span>
+  </button>
+  <button class="dock-btn dock-danger" id="dock-reset" title="Tilbake til lobby">
+    <span class="dock-ic">↺</span><span class="dock-lbl">Lobby</span>
+  </button>
+</div>
+
+<!-- Mascot — gameshow host -->
+<div id="mascot" class="mascot mascot-gh" style="right: 40px; bottom: 40px;">
+  <svg class="gh-svg" viewBox="0 0 220 340" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="suitGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#7A2432"/>
+        <stop offset="1" stop-color="#4A0E18"/>
+      </linearGradient>
+      <linearGradient id="hairGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#FFD95A"/>
+        <stop offset="1" stop-color="#D49820"/>
+      </linearGradient>
+      <linearGradient id="skinGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#FFDEBE"/>
+        <stop offset="1" stop-color="#EBBE92"/>
+      </linearGradient>
+    </defs>
+
+    <!-- Bakskygge -->
+    <ellipse cx="110" cy="325" rx="70" ry="7" fill="rgba(0,0,0,.35)"/>
+
+    <!-- Høyre arm (peker fremover) -->
+    <g class="gh-arm-right">
+      <path d="M148 180 Q165 175 175 195 L185 225 Q183 235 172 232 L168 210 L155 200 Z" fill="url(#suitGrad)"/>
+      <!-- Erme-cuff -->
+      <rect x="165" y="228" width="22" height="6" fill="#2A0810" rx="3"/>
+      <!-- Hånd med peker -->
+      <circle cx="179" cy="238" r="11" fill="url(#skinGrad)" stroke="#A07050" stroke-width="1"/>
+      <path d="M188 234 Q198 232 200 238 L196 244 Q190 246 187 243 Z" fill="url(#skinGrad)" stroke="#A07050" stroke-width="1"/>
+    </g>
+
+    <!-- Venstre arm med quiz-buzzer -->
+    <g class="gh-arm-left">
+      <path d="M72 180 Q55 175 48 195 L45 225 Q47 235 58 232 L62 210 L72 200 Z" fill="url(#suitGrad)"/>
+      <rect x="42" y="228" width="22" height="6" fill="#2A0810" rx="3"/>
+      <circle cx="53" cy="238" r="11" fill="url(#skinGrad)" stroke="#A07050" stroke-width="1"/>
+      <!-- Buzzer -->
+      <g transform="translate(28 195)">
+        <rect x="0" y="0" width="30" height="48" fill="#1A1A1A" rx="5" stroke="#000" stroke-width="1"/>
+        <circle cx="15" cy="12" r="7" fill="#E83040" stroke="#900" stroke-width="1"/>
+        <rect x="4" y="24" width="8" height="7" fill="#FF4759" rx="1.5"/>
+        <rect x="13" y="24" width="8" height="7" fill="#4784E1" rx="1.5"/>
+        <rect x="22" y="24" width="5" height="7" fill="#FFB81C" rx="1.5"/>
+        <rect x="4" y="34" width="8" height="7" fill="#47D197" rx="1.5"/>
+        <rect x="13" y="34" width="8" height="7" fill="#7D7DD4" rx="1.5"/>
+        <rect x="22" y="34" width="5" height="7" fill="#FF7633" rx="1.5"/>
+      </g>
+    </g>
+
+    <!-- Torso (dressjakke) -->
+    <path d="M62 180 Q52 290 90 300 L130 300 Q168 290 158 180 L140 175 L110 200 L80 175 Z" fill="url(#suitGrad)"/>
+    <!-- Stripes -->
+    <g stroke="#8B2F3D" stroke-width=".8" opacity=".55">
+      <line x1="75" y1="195" x2="77" y2="290"/>
+      <line x1="85" y1="198" x2="86" y2="290"/>
+      <line x1="95" y1="200" x2="96" y2="290"/>
+      <line x1="118" y1="200" x2="119" y2="290"/>
+      <line x1="128" y1="198" x2="129" y2="290"/>
+      <line x1="138" y1="195" x2="140" y2="290"/>
+    </g>
+    <!-- Lapels -->
+    <path d="M92 182 L80 175 L110 202 Z" fill="#2A0810"/>
+    <path d="M128 182 L140 175 L110 202 Z" fill="#2A0810"/>
+    <!-- Slips -->
+    <polygon points="105,202 115,202 118,255 102,255" fill="#4030A0"/>
+    <polygon points="105,202 115,202 110,210" fill="#5040C0"/>
+    <!-- Krave -->
+    <path d="M100 200 L110 208 L120 200 L118 210 L102 210 Z" fill="#fff"/>
+    <!-- Knapper -->
+    <circle cx="110" cy="230" r="2.8" fill="#C03040" stroke="#701020" stroke-width=".6"/>
+    <circle cx="110" cy="250" r="2.8" fill="#C03040" stroke="#701020" stroke-width=".6"/>
+    <circle cx="110" cy="270" r="2.8" fill="#C03040" stroke="#701020" stroke-width=".6"/>
+
+    <!-- Nakke -->
+    <rect x="100" y="168" width="20" height="14" fill="url(#skinGrad)"/>
+
+    <!-- Ører -->
+    <ellipse cx="58" cy="120" rx="8" ry="10" fill="url(#skinGrad)" stroke="#A07050" stroke-width="1"/>
+    <ellipse cx="162" cy="120" rx="8" ry="10" fill="url(#skinGrad)" stroke="#A07050" stroke-width="1"/>
+
+    <!-- Hode -->
+    <ellipse cx="110" cy="115" rx="52" ry="55" fill="url(#skinGrad)" stroke="#A07050" stroke-width="1"/>
+
+    <!-- Hår (spiss blond) -->
+    <path d="M60 90
+             Q55 40 80 58
+             Q82 22 100 48
+             Q108 18 118 50
+             Q128 22 140 50
+             Q150 28 160 60
+             Q170 55 160 95
+             Q155 80 145 88
+             Q140 65 130 78
+             Q122 55 115 78
+             Q108 60 100 80
+             Q92 65 82 82
+             Q75 72 68 90 Z"
+          fill="url(#hairGrad)" stroke="#C08810" stroke-width="1"/>
+
+    <!-- Briller -->
+    <g class="gh-glasses">
+      <rect x="72" y="106" width="30" height="22" rx="5" fill="rgba(180,220,255,.15)" stroke="#1a1a1a" stroke-width="2.5"/>
+      <rect x="118" y="106" width="30" height="22" rx="5" fill="rgba(180,220,255,.15)" stroke="#1a1a1a" stroke-width="2.5"/>
+      <line x1="102" y1="117" x2="118" y2="117" stroke="#1a1a1a" stroke-width="2.5"/>
+    </g>
+
+    <!-- Øyne -->
+    <circle class="gh-eye" cx="87" cy="117" r="3.2" fill="#2A60B0"/>
+    <circle class="gh-eye" cx="133" cy="117" r="3.2" fill="#2A60B0"/>
+
+    <!-- Smil med tenner -->
+    <g class="gh-mouth">
+      <path d="M82 142 Q110 168 138 142 Q128 158 110 160 Q92 158 82 142 Z" fill="#8B2030"/>
+      <rect x="90" y="144" width="40" height="9" fill="#fff" rx="1.5"/>
+      <line x1="101" y1="145" x2="101" y2="152" stroke="#E0E0E0" stroke-width=".7"/>
+      <line x1="110" y1="145" x2="110" y2="152" stroke="#E0E0E0" stroke-width=".7"/>
+      <line x1="119" y1="145" x2="119" y2="152" stroke="#E0E0E0" stroke-width=".7"/>
+    </g>
+
+    <!-- Røde sko -->
+    <ellipse cx="95" cy="305" rx="16" ry="5" fill="#C02A3A"/>
+    <ellipse cx="125" cy="305" rx="16" ry="5" fill="#C02A3A"/>
+  </svg>
   <div class="bubble" id="mascot-bubble">Hei!</div>
 </div>
 

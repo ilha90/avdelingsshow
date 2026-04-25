@@ -44,6 +44,7 @@ socket.on('host:ok', () => {
   sessionStorage.setItem('host:pw', pwInput.value || saved || '');
   pwGate.classList.add('hidden');
   hostMain.classList.remove('hidden');
+  document.getElementById('host-dock').classList.remove('hidden');
   initHostUI();
 });
 socket.on('host:denied', () => {
@@ -101,6 +102,47 @@ function initHostUI(){
   document.getElementById('btn-reset').addEventListener('click', () => {
     if (confirm('Tilbake til lobby og nullstille alle poeng?')) socket.emit('host:reset');
   });
+
+  // ===== Floating dock (alltid synlig, aldri dekket av overlays) =====
+  document.getElementById('dock-menu').addEventListener('click', openMenu);
+  document.getElementById('dock-reset').addEventListener('click', () => {
+    if (confirm('Tilbake til lobby og nullstille alle poeng?')) socket.emit('host:reset');
+  });
+  // Ctx-knapp endrer funksjon per fase
+  const dockCtx = document.getElementById('dock-ctx');
+  dockCtx.addEventListener('click', () => {
+    const action = dockCtx.dataset.action;
+    if (!action) return;
+    const [kind, ...args] = action.split(':');
+    switch (kind){
+      case 'skip-tutorial': socket.emit('host:skip-tutorial'); break;
+      case 'scatter-end': socket.emit('host:scatter-end'); break;
+      case 'end-snake': socket.emit('host:end-snake'); break;
+      case 'end-bomb': socket.emit('host:end-bomb'); break;
+      case 'end-quiz': socket.emit('host:end-quiz'); break;
+      case 'next-vote': socket.emit('host:next-vote'); break;
+      case 'next-icebreaker': socket.emit('host:next-icebreaker'); break;
+      case 'spin-wheel': socket.emit('host:spin-wheel'); break;
+      case 'lie-next': socket.emit('host:lie-next'); break;
+    }
+  });
+
+  // ===== TTS-toggle =====
+  const btnTts = document.getElementById('btn-tts');
+  let ttsEnabled = localStorage.getItem('avdelingsshow:tts') !== '0'; // default på
+  updateTtsButton();
+  btnTts.addEventListener('click', () => {
+    ttsEnabled = !ttsEnabled;
+    localStorage.setItem('avdelingsshow:tts', ttsEnabled ? '1' : '0');
+    updateTtsButton();
+    if (!ttsEnabled) stopTts();
+  });
+  function updateTtsButton(){
+    btnTts.textContent = ttsEnabled ? '🗣️' : '🔇🗣️';
+    btnTts.style.opacity = ttsEnabled ? '1' : '0.5';
+    btnTts.title = 'Tekst-til-tale: ' + (ttsEnabled ? 'PÅ' : 'AV');
+  }
+  window._ttsEnabled = () => ttsEnabled;
 
   // AI
   const aiKey = document.getElementById('ai-key');
@@ -504,44 +546,73 @@ function renderCenterControls(s){
     center.appendChild(b);
     return b;
   };
+
+  // Oppdater også floating dock
+  const dockCtx = document.getElementById('dock-ctx');
+  const setDock = (label, icon, action, danger = false) => {
+    dockCtx.style.display = '';
+    dockCtx.dataset.action = action;
+    dockCtx.querySelector('.dock-ic').textContent = icon;
+    dockCtx.querySelector('.dock-lbl').textContent = label;
+    dockCtx.classList.toggle('dock-danger', !!danger);
+  };
+  const hideDock = () => { dockCtx.style.display = 'none'; dockCtx.dataset.action = ''; };
+
   switch(s.phase){
     case 'tutorial':
       add('Hopp over →', () => socket.emit('host:skip-tutorial'));
+      setDock('Hopp over', '⏭', 'skip-tutorial');
+      break;
+    case 'question':
+    case 'reveal':
+      setDock('Avslutt quiz', '⏹', 'end-quiz', true);
       break;
     case 'voting':
     case 'vote-result':
       add('Neste runde', () => socket.emit('host:next-vote'), 'btn gold');
       add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      setDock('Neste runde', '⏭', 'next-vote');
       break;
     case 'scatter-play':
       add('Avslutt runde nå', () => socket.emit('host:scatter-end'));
+      setDock('Avslutt nå', '⏹', 'scatter-end', true);
       break;
     case 'scatter-review':
       add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      hideDock();
       break;
     case 'icebreaker':
       add('Neste kort', () => socket.emit('host:next-icebreaker'), 'btn gold');
       add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      setDock('Neste kort', '⏭', 'next-icebreaker');
       break;
     case 'wheel':
       add('Snurr hjulet', () => socket.emit('host:spin-wheel'), 'btn-primary');
       add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      setDock('Snurr hjulet', '🎡', 'spin-wheel');
       break;
     case 'snake':
       add('Avslutt runde', () => socket.emit('host:end-snake'), 'btn danger');
+      setDock('Avslutt runde', '⏹', 'end-snake', true);
       break;
     case 'bomb':
       add('Avslutt runde', () => socket.emit('host:end-bomb'), 'btn danger');
+      setDock('Avslutt runde', '⏹', 'end-bomb', true);
       break;
     case 'lie-collect':
       add('Start runde (hopp inn)', () => socket.emit('host:lie-next'), 'btn gold');
+      setDock('Start runde', '▶', 'lie-next');
       break;
     case 'lie-play':
       add('Avslør nå', () => socket.emit('host:lie-next'), 'btn gold');
+      setDock('Avslør', '🎭', 'lie-next');
       break;
     case 'lie-reveal':
       add('Neste spiller', () => socket.emit('host:lie-next'), 'btn gold');
+      setDock('Neste spiller', '⏭', 'lie-next');
       break;
+    default:
+      hideDock();
   }
 }
 
@@ -751,6 +822,7 @@ function renderCountdown(s){
   }
 }
 
+let _questionIntroPending = false;
 function renderQuestion(s){
   if (!s.quiz || !s.quiz.question) return;
   const o = document.getElementById('overlays');
@@ -760,7 +832,8 @@ function renderQuestion(s){
   const catKey = (q.category || '').toLowerCase();
 
   // Første gang dette spørsmålet vises: intro-card først
-  if (!o.querySelector('.quiz-wrap')){
+  if (!o.querySelector('.quiz-wrap') && !_questionIntroPending){
+    _questionIntroPending = true;
     // Lightning round? Spesial-flash ved aller første spørsmål
     const isFirstQ = (s.quiz.index === 0);
     if (s.quiz.isLightning && isFirstQ){
@@ -776,6 +849,11 @@ function renderQuestion(s){
     fx.questionIntro({ index: s.quiz.index + 1, total: s.quiz.total, categoryLabel: catLabel, categoryEmoji: catEmoji, durationMs: 1300 });
 
     setTimeout(() => {
+      _questionIntroPending = false;
+      // Sjekk at vi fortsatt er i samme spørsmåls-fase
+      if (!state || !state.quiz || state.phase !== 'question' || state.quiz.index !== s.quiz.index){
+        return;
+      }
       // Build quiz wrap
       o.innerHTML = `
         <div class="quiz-wrap" data-category="${catKey}">
@@ -799,6 +877,9 @@ function renderQuestion(s){
       bar.style.transition = `width ${leftAfterIntro}s linear`;
       setTimeout(() => { bar.style.width = '0%'; }, 50);
       sfx.tick();
+
+      // TTS — les opp spørsmålet hvis aktivert
+      speakQuestion(q);
 
       // Sett opp time-pressure-watcher: aktiver siste 5 sek
       startTimePressureWatcher(s.quiz.deadline);
@@ -837,6 +918,85 @@ function stopTimePressureWatcher(){
   fx.timePressureStop();
 }
 
+// ===== TTS =====
+let _ttsVoice = null;
+function pickNorwegianVoice(){
+  if (!('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  // Prefer nb-NO, nn-NO, nordics, any Norwegian variant
+  const nb = voices.find(v => v.lang === 'nb-NO');
+  if (nb) return nb;
+  const nn = voices.find(v => v.lang === 'nn-NO');
+  if (nn) return nn;
+  const norsk = voices.find(v => /^n[bn]/i.test(v.lang) || /norsk|norw/i.test(v.name));
+  if (norsk) return norsk;
+  // Fallback til svensk/dansk som høres nordisk ut
+  const nordic = voices.find(v => /^(sv|da)/i.test(v.lang));
+  if (nordic) return nordic;
+  // Siste fallback: engelsk
+  return voices.find(v => /^en/i.test(v.lang)) || voices[0] || null;
+}
+
+function ensureVoiceLoaded(cb){
+  if (!('speechSynthesis' in window)) { cb(null); return; }
+  const voices = window.speechSynthesis.getVoices();
+  if (voices.length > 0){
+    _ttsVoice = _ttsVoice || pickNorwegianVoice();
+    cb(_ttsVoice);
+    return;
+  }
+  // Vent på voiceschanged-event (Chrome lazy-laster stemmer)
+  const onChange = () => {
+    window.speechSynthesis.removeEventListener('voiceschanged', onChange);
+    _ttsVoice = pickNorwegianVoice();
+    cb(_ttsVoice);
+  };
+  window.speechSynthesis.addEventListener('voiceschanged', onChange);
+  // Trigg lasting
+  window.speechSynthesis.getVoices();
+}
+
+function speakQuestion(q){
+  if (!window._ttsEnabled || !window._ttsEnabled()) return;
+  if (!('speechSynthesis' in window)) return;
+  if (q.isEmoji) return; // Emoji-gåter leses ikke
+  stopTts();
+  ensureVoiceLoaded((voice) => {
+    const text = q.q;
+    if (!text) return;
+    const utt = new SpeechSynthesisUtterance(text);
+    if (voice) utt.voice = voice;
+    utt.lang = 'nb-NO';
+    utt.rate = 0.95;
+    utt.pitch = 1.05;
+    utt.volume = 0.9;
+    window.speechSynthesis.speak(utt);
+  });
+}
+
+function speakText(text, opts = {}){
+  if (!window._ttsEnabled || !window._ttsEnabled()) return;
+  if (!('speechSynthesis' in window)) return;
+  stopTts();
+  ensureVoiceLoaded((voice) => {
+    const utt = new SpeechSynthesisUtterance(text);
+    if (voice) utt.voice = voice;
+    utt.lang = opts.lang || 'nb-NO';
+    utt.rate = opts.rate ?? 1.0;
+    utt.pitch = opts.pitch ?? 1.0;
+    utt.volume = opts.volume ?? 0.9;
+    window.speechSynthesis.speak(utt);
+  });
+}
+
+function stopTts(){
+  if ('speechSynthesis' in window){
+    try { window.speechSynthesis.cancel(); } catch(e){}
+  }
+}
+// Expose for mute-kontroll
+window.stopTts = stopTts;
+
 function renderReveal(s){
   if (!s.quiz) return;
   const o = document.getElementById('overlays');
@@ -849,6 +1009,10 @@ function renderReveal(s){
   });
   sfx.reveal();
   confetti.burst({ x: window.innerWidth/2, y: window.innerHeight/2 - 100, count: 60 });
+  // TTS: les opp riktig svar
+  if (correct != null && q.a && q.a[correct]){
+    setTimeout(() => speakText('Riktig svar: ' + q.a[correct], { rate: 0.95 }), 900);
+  }
 }
 
 function renderLeaderboard(s){
@@ -881,6 +1045,7 @@ function renderVoting(s){
       </div>
     `;
     mascotSpeak(s.vote.prompt, 4000);
+    speakText('Hvem er mest sannsynlig ' + s.vote.prompt);
   } else {
     const c = o.querySelector('.voting-wrap div[style*="--muted"]:last-child');
     if (c) c.textContent = s.vote.votesCount + ' / ' + s.players.length + ' har stemt';
@@ -967,6 +1132,9 @@ function renderIcebreaker(s){
     </div>
   `;
   mascotSpeak(s.icebreaker.prompt, 6000);
+  let ttsText = s.icebreaker.prompt;
+  if (t) ttsText = (t.name + ': ' + s.icebreaker.prompt);
+  speakText(ttsText);
 }
 
 function renderWheel(s){

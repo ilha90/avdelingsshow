@@ -324,28 +324,52 @@ function showQuestion(s){
   `;
 
   app.querySelectorAll('.player-answer').forEach(btn => {
-    const fire = (e) => {
+    // Immediate visuell respons: ping-klasse legges til ved tap start
+    const ping = () => {
+      btn.classList.add('pinged');
+      setTimeout(() => btn.classList.remove('pinged'), 400);
+    };
+    const fire = (source) => {
       if (btn.disabled) return;
       if (!cooldown('answer', 800)) return;
       const idx = parseInt(btn.dataset.idx, 10);
-      socket.emit('player:answer', { idx });
-      sfx.pop();
-      haptic.tap();
-      // Disable alle umiddelbart (før server-state kommer)
+      ping();
+      // Vis IMMEDIATELY at svaret er registrert — uavhengig av server-respons
       app.querySelectorAll('.player-answer').forEach(b => b.disabled = true);
       btn.style.outline = '4px solid var(--accent)';
       btn.style.outlineOffset = '4px';
+      showSentOverlay(idx);
+      // Send
+      socket.emit('player:answer', { idx });
+      sfx.pop();
+      haptic.tap();
       stopQuizHaptic();
     };
-    btn.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      fire(e);
-    }, { passive: false });
-    btn.addEventListener('click', fire);
+    // Bruk BÅDE pointerdown og click som backup (pointerdown fires før click,
+    // men vi cooldown-beskytter slik at begge ikke fyrer samme tap)
+    btn.addEventListener('pointerdown', (e) => { fire('pointerdown'); });
+    btn.addEventListener('click', (e) => { fire('click'); });
   });
 
   // Haptic-hjerteslag siste 5s (kun hvis ikke svart)
   startQuizHaptic(s.quiz.deadline);
+}
+
+function showSentOverlay(idx){
+  // Stort "Svar sendt ✓"-overlay som dekker skjermen kort
+  const existing = document.querySelector('.sent-overlay');
+  if (existing) existing.remove();
+  const el = document.createElement('div');
+  el.className = 'sent-overlay';
+  el.innerHTML = `
+    <div class="so-check">✓</div>
+    <div class="so-text">Svar sendt</div>
+    <div class="so-letter">${['A','B','C','D'][idx] || '?'}</div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('in'), 20);
+  setTimeout(() => { el.classList.remove('in'); el.classList.add('out'); }, 1400);
+  setTimeout(() => el.remove(), 1900);
 }
 
 let _quizHapticTimer = null;
@@ -435,7 +459,6 @@ function showVoting(s){
       app.querySelectorAll('button[data-id]').forEach(x => { x.disabled = true; x.style.opacity = '0.4'; });
       b.style.opacity = '1'; b.style.outline = '3px solid var(--accent)';
     };
-    b.addEventListener('touchstart', (e) => { e.preventDefault(); fire(e); }, { passive: false });
     b.addEventListener('click', fire);
   });
 }

@@ -1042,12 +1042,97 @@ body::after {
 }
 @keyframes mouth-open { from { height: 4px } to { height: 14px } }
 @keyframes hop { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
-@keyframes dance {
-  0%,100% { transform: rotate(-8deg) translateY(0); }
-  25% { transform: rotate(8deg) translateY(-6px); }
-  50% { transform: rotate(-6deg) translateY(-10px); }
-  75% { transform: rotate(6deg) translateY(-6px); }
+/* ===== Gameshow-host maskot (SVG-basert) ===== */
+.mascot {
+  position: fixed;
+  width: 160px; height: 240px;
+  z-index: var(--z-overlay);
+  transition: left 2s var(--ease-smooth), top 2s var(--ease-smooth),
+              right 2s var(--ease-smooth), bottom 2s var(--ease-smooth);
+  pointer-events: none;
+  filter: drop-shadow(0 14px 28px rgba(0,0,0,.5));
 }
+.mascot .gh-svg {
+  width: 100%; height: 100%;
+  display: block;
+  animation: gh-idle 4s ease-in-out infinite;
+}
+@keyframes gh-idle {
+  0%,100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.mascot .gh-eye { transition: transform .1s; }
+.mascot.blinking .gh-eye {
+  transform: scaleY(.1);
+  transform-origin: center;
+  transform-box: fill-box;
+}
+.mascot.happy .gh-mouth path:first-child { transform: scale(1.05); transform-box: fill-box; transform-origin: center; }
+.mascot.excited .gh-mouth path:first-child { transform: scaleY(1.3); transform-box: fill-box; transform-origin: center top; }
+
+.mascot.speaking .gh-arm-right {
+  animation: gh-point 0.9s ease-in-out infinite;
+  transform-origin: 150px 185px;
+  transform-box: fill-box;
+}
+@keyframes gh-point {
+  0%,100% { transform: rotate(0deg); }
+  50% { transform: rotate(-12deg); }
+}
+.mascot.celebrating .gh-svg { animation: gh-hop 0.5s ease-in-out infinite; }
+@keyframes gh-hop {
+  0%,100% { transform: translateY(0); }
+  50% { transform: translateY(-22px); }
+}
+.mascot.dancing .gh-svg { animation: gh-dance 1.2s ease-in-out infinite; }
+@keyframes gh-dance {
+  0%,100% { transform: rotate(-6deg) translateY(0); }
+  25% { transform: rotate(6deg) translateY(-4px); }
+  50% { transform: rotate(-4deg) translateY(-8px); }
+  75% { transform: rotate(4deg) translateY(-4px); }
+}
+
+.mascot .bubble {
+  position: absolute;
+  right: 160px; bottom: 40px;
+  background: #fff; color: var(--stage);
+  padding: 12px 16px;
+  border-radius: var(--r);
+  font-family: var(--font-display);
+  font-size: 14px; font-weight: 700;
+  min-width: 160px; max-width: 280px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  opacity: 0; transform: scale(.8);
+  transform-origin: 100% 100%;
+  transition: .25s var(--ease-out-back);
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+}
+.mascot.speaking .bubble,
+.mascot.celebrating .bubble { opacity: 1; transform: scale(1); }
+.mascot .bubble::before {
+  content: ''; position: absolute;
+  right: -8px; bottom: 14px;
+  border: 8px solid transparent;
+  border-left-color: #fff;
+}
+
+/* Gammel robot-CSS (nå skjult — vi bruker SVG) */
+.mascot-body, .mascot-eye, .mascot-mouth, .mascot .antenna, .mascot .mic {
+  display: none !important;
+}
+
+/* Landscape / small screen — mindre maskot */
+@media (orientation: landscape) and (max-height: 540px) {
+  .mascot { width: 100px; height: 150px; }
+  .mascot .bubble { right: 100px; font-size: 12px; min-width: 120px; }
+}
+@media (max-width: 780px) {
+  .mascot { width: 110px; height: 165px; }
+  .mascot .bubble { right: 110px; bottom: 20px; }
+}
+
+/* Gamle keyframes holder vi (breathe/hop/dance/mouth-open/antenna-glow) siden andre kan avhenge av dem */
 
 /* ===== Login (player) ===== */
 .login-screen {
@@ -2376,3 +2461,170 @@ body.dim-lights .end-screen { transform: scale(1.02); }
 
 /* Skjul de gamle inline-AI-box-stilene hvis de blir brukt */
 .ai-box[style*="border-color"] { background: rgba(71,209,151,.06) !important; }
+
+/* ============================================================
+   Floating host-dock — alltid synlig, høy z-index
+   ============================================================ */
+.host-dock {
+  position: fixed;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(14,40,29,.92) 0%, rgba(7,24,15,.96) 100%);
+  border: 1px solid var(--stage-edge);
+  border-radius: var(--r-lg);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  box-shadow:
+    0 20px 60px rgba(0,0,0,.7),
+    0 0 40px rgba(71,209,151,.15),
+    inset 0 1px 0 rgba(255,255,255,.05);
+  animation: dock-in .4s var(--ease-out-back) backwards;
+  pointer-events: auto;
+}
+@keyframes dock-in {
+  from { opacity: 0; transform: translate(-50%, 20px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Ticker kolliderer med dock når begge er aktive — gjør plass */
+body:has(.live-ticker.visible) .host-dock {
+  bottom: calc(60px + env(safe-area-inset-bottom));
+}
+
+.dock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-radius: var(--r);
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--stage-hairline);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  cursor: pointer;
+  transition: transform .15s, background .2s, border-color .2s, box-shadow .2s;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.dock-btn:hover {
+  background: rgba(71,209,151,.18);
+  border-color: var(--stage-edge);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(71,209,151,.25);
+}
+.dock-btn:active { transform: translateY(0) scale(.96); }
+.dock-btn .dock-ic { font-size: 18px; }
+
+.dock-btn.dock-primary {
+  background: linear-gradient(135deg, var(--dnb-green-500) 0%, var(--dnb-green-700) 100%);
+  color: #042018;
+  border-color: transparent;
+  box-shadow: 0 8px 24px rgba(71,209,151,.4);
+}
+.dock-btn.dock-primary:hover {
+  box-shadow: 0 12px 32px rgba(71,209,151,.55);
+}
+
+.dock-btn.dock-danger {
+  background: rgba(228,11,28,.14);
+  border-color: rgba(228,11,28,.4);
+  color: #FFA5AD;
+}
+.dock-btn.dock-danger:hover {
+  background: rgba(228,11,28,.28);
+  box-shadow: 0 8px 24px rgba(228,11,28,.35);
+}
+
+/* Mindre labels på smale skjermer */
+@media (max-width: 780px) {
+  .host-dock { gap: 6px; padding: 8px; }
+  .dock-btn { padding: 10px 12px; font-size: 13px; }
+  .dock-btn .dock-lbl { display: none; }
+}
+
+/* Hide-class (for når host ikke er logget inn) */
+.host-dock.hidden { display: none; }
+
+/* TTS-ikon-state */
+#btn-tts { transition: opacity .2s; }
+
+/* ============================================================
+   Mobile tap-fixes — forhindre tap-delay + tydelig feedback
+   ============================================================ */
+.player-answer,
+.player-answer *,
+.reaction-bar button,
+.lie-claim,
+button[data-id],
+.avatar-choice,
+.arrow-pad button,
+.bomb-btn,
+.remote-btn {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: rgba(71,209,151,.3);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Ping-animasjon — umiddelbar feedback når spiller tapper */
+.player-answer.pinged {
+  animation: tap-ping .4s ease-out;
+}
+@keyframes tap-ping {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.04); box-shadow: 0 0 40px rgba(71,209,151,.8); }
+  100% { transform: scale(1); }
+}
+
+/* Sent-overlay — stort, tydelig bekreftelsesskjerm */
+.sent-overlay {
+  position: fixed; inset: 0;
+  z-index: 250;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 12px;
+  background: radial-gradient(circle at 50% 45%, rgba(71,209,151,.45) 0%, rgba(2,16,11,.88) 70%);
+  opacity: 0;
+  transition: opacity .3s;
+  pointer-events: none;
+}
+.sent-overlay.in { opacity: 1; }
+.sent-overlay.out { opacity: 0; }
+.sent-overlay .so-check {
+  font-size: 120px;
+  color: var(--accent);
+  filter: drop-shadow(0 0 40px rgba(71,209,151,.9));
+  animation: so-check 0.6s var(--ease-out-back) backwards;
+  line-height: 1;
+}
+.sent-overlay .so-text {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 32px;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.sent-overlay .so-letter {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 72px;
+  color: var(--gold);
+  background: rgba(0,0,0,.4);
+  padding: 0 28px;
+  border-radius: var(--r);
+  border: 2px solid var(--stage-edge);
+  margin-top: 4px;
+}
+@keyframes so-check {
+  0% { transform: scale(.2) rotate(-40deg); opacity: 0; }
+  60% { transform: scale(1.3) rotate(8deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); }
+}
