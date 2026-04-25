@@ -1,2022 +1,1710 @@
-// server.js — Avdelingsshow live multiplayer
+// server.js — Avdelingsshow server (ESM)
 import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
+import http from 'http';
+import { Server as IOServer } from 'socket.io';
 import QRCode from 'qrcode';
+import fs from 'fs';
+import path from 'path';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import os from 'os';
-import { QUIZ_CATEGORIES, MOST_LIKELY, SCATTERGORIES, ICEBREAKERS, TEAM_NAMES } from './public/data.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+import {
+  QUIZ_CATEGORIES,
+  MOST_LIKELY,
+  SCATTERGORIES,
+  ICEBREAKERS,
+  TEAM_NAMES,
+  TUTORIAL_TEXT
+} from './public/data.js';
 
-// Feilsikring: Ikke krasj serveren på uventede feil
-process.on('uncaughtException', (e) => console.error('[Uncaught]', e?.stack || e));
-process.on('unhandledRejection', (e) => console.error('[UnhandledRejection]', e?.stack || e));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const MAX_PLAYERS = 100;
-const SANITIZE_NAME_MAX = 20;
-const SANITIZE_EMOJI_MAX = 6;
+const PORT = process.env.PORT || 3000;
 const HOST_PASSWORD = process.env.HOST_PASSWORD || 'dnb';
-const rateBuckets = new Map(); // socketId:key -> last timestamp
-function rateLimit(sid, key, minMs) {
-  const bucket = sid + ':' + key;
-  const now = Date.now();
-  const last = rateBuckets.get(bucket) || 0;
-  if (now - last < minMs) return false;
-  rateBuckets.set(bucket, now);
-  return true;
-}
+const SCORES_FILE = path.join(__dirname, 'scores.json');
 
-// Track brukte spørsmål per kategori i denne sesjonen — unngå gjentak mellom runder
-const usedQuestions = new Map(); // categoryKey -> Set of question texts
-
+// ==================== Express setup ====================
 const app = express();
-const http = createServer(app);
-const io = new Server(http, {
-  // Komprimer payloads over 1 KB
-  perMessageDeflate: { threshold: 1024 },
-  // Hurtigere upgrade til WebSocket
-  transports: ['websocket', 'polling'],
-  pingInterval: 10000,
-  pingTimeout: 20000,
-});
+const server = http.createServer(app);
+const io = new IOServer(server, { cors: { origin: '*' }, maxHttpBufferSize: 256 * 1024 });
 
-// Utled offentlig URL (fungerer lokalt + Render/Railway/Fly)
-function publicUrl(req) {
-  if (process.env.PUBLIC_URL) return process.env.PUBLIC_URL;
-  if (process.env.RENDER_EXTERNAL_URL) return process.env.RENDER_EXTERNAL_URL;
-  if (req) {
-    const proto = req.headers['x-forwarded-proto'] || (req.connection.encrypted ? 'https' : 'http');
-    const host = req.headers.host;
-    if (host) return `${proto}://${host}`;
-  }
-  const ips = getLocalIPs();
-  return ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}`;
-}
-
-// No-cache for HTML/JS så oppdateringer slår gjennom umiddelbart
 app.use((req, res, next) => {
-  if (/\.(html|js|css)$/.test(req.path) || req.path === '/' || req.path === '/host') {
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
+  if (req.path.endsWith('.html') || req.path.endsWith('.js') || req.path.endsWith('.css') ||
+      req.path === '/' || req.path === '/host') {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   }
   next();
 });
-app.use(express.static(join(__dirname, 'public')));
-// Favicon: en enkel SVG-emoji så 404 forsvinner
+
+app.use(express.json({ limit: '128kb' }));
+app.use(express.static(path.join(__dirname, 'public'), { etag: false, maxAge: 0 }));
+
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'player.html')));
+app.get(['/host', '/Host'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'host.html')));
+
+// Favicon — SVG bombe
 app.get('/favicon.ico', (req, res) => {
-  res.type('image/svg+xml').send(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><text y="52" font-size="52">💣</text></svg>`
-  );
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.send(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="28" cy="36" r="20" fill="#111"/><path d="M44 22 L50 16 L56 18 L58 24 L52 26" stroke="#d4af37" stroke-width="4" fill="none" stroke-linecap="round"/><circle cx="58" cy="24" r="3" fill="#ff6a2a"/></svg>`);
 });
-app.get('/host', (_, res) => res.sendFile(join(__dirname, 'public', 'host.html')));
-app.get('/', (_, res) => res.sendFile(join(__dirname, 'public', 'player.html')));
-app.get('/qr', async (req, res) => {
-  const url = publicUrl(req);
-  try {
-    const buf = await QRCode.toBuffer(url, { width: 400, margin: 1 });
-    res.type('png').send(buf);
-  } catch { res.status(500).send('qr-feil'); }
-});
+
+// Connect URL (for QR)
+function getConnectUrl(req){
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost:' + PORT;
+  const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+  return `${proto}://${host}/`;
+}
+
 app.get('/connect-url', (req, res) => {
-  res.json({ url: publicUrl(req) });
+  res.json({ url: getConnectUrl(req) });
 });
 
-// ==== Persistent score-board ====
-const SCORES_FILE = join(__dirname, 'scores.json');
-const SCORE_MIN_PLAYERS = 4;
-const SCORE_GAMES = new Set(['quiz', 'lightning', 'snake', 'bomb', 'scatter', 'lie']);
-let scoresData = { players: {}, updatedAt: 0 };
-function loadScores() {
+app.get('/qr', async (req, res) => {
   try {
-    if (existsSync(SCORES_FILE)) {
-      scoresData = JSON.parse(readFileSync(SCORES_FILE, 'utf-8'));
-      if (!scoresData.players) scoresData.players = {};
-    }
-  } catch (e) { console.warn('[scores] load failed:', e?.message || e); }
-}
-let saveTimer = null;
-function saveScores() {
-  if (saveTimer) return; // debounce 500ms
-  saveTimer = setTimeout(() => {
-    try {
-      writeFileSync(SCORES_FILE, JSON.stringify(scoresData, null, 2));
-    } catch (e) { console.warn('[scores] save failed:', e?.message || e); }
-    saveTimer = null;
-  }, 500);
-}
-function recordScores(gameType, playerList) {
-  if (!SCORE_GAMES.has(gameType)) return;
-  if (!Array.isArray(playerList) || playerList.length < SCORE_MIN_PLAYERS) return;
-  for (const p of playerList) {
-    if (!p?.name || typeof p.score !== 'number') continue;
-    const name = String(p.name).slice(0, SANITIZE_NAME_MAX);
-    if (!scoresData.players[name]) scoresData.players[name] = {};
-    const entry = scoresData.players[name][gameType] || { totalScore: 0, gamesPlayed: 0, bestScore: 0 };
-    entry.totalScore += p.score;
-    entry.gamesPlayed += 1;
-    if (p.score > entry.bestScore) entry.bestScore = p.score;
-    entry.lastPlayed = Date.now();
-    scoresData.players[name][gameType] = entry;
+    const url = getConnectUrl(req);
+    const buf = await QRCode.toBuffer(url, { width: 440, margin: 1, color: { dark: '#0a1a15', light: '#ffffff' } });
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.send(buf);
+  } catch(e){
+    res.status(500).send('qr-error');
   }
-  scoresData.updatedAt = Date.now();
-  saveScores();
-}
-app.get('/scores', (req, res) => {
-  const game = String(req.query.game || 'all');
-  const result = [];
-  for (const [name, games] of Object.entries(scoresData.players)) {
-    if (game === 'all') {
-      let total = 0, played = 0, best = 0;
-      for (const g of Object.values(games)) {
-        total += g.totalScore || 0;
-        played += g.gamesPlayed || 0;
-        if ((g.bestScore || 0) > best) best = g.bestScore;
-      }
-      if (total > 0) result.push({ name, totalScore: total, gamesPlayed: played, bestScore: best });
-    } else if (games[game]) {
-      result.push({
-        name,
-        totalScore: games[game].totalScore,
-        gamesPlayed: games[game].gamesPlayed,
-        bestScore: games[game].bestScore || 0,
-      });
-    }
-  }
-  result.sort((a, b) => b.totalScore - a.totalScore);
-  res.json({ game, minPlayers: SCORE_MIN_PLAYERS, scores: result.slice(0, 100) });
 });
 
-const PORT = process.env.PORT || 3000;
+// Scores API
+app.get('/scores', (req, res) => {
+  const game = (req.query.game || 'all').toString();
+  const data = loadScores();
+  const arr = (game === 'all')
+    ? Object.values(data).flat()
+    : (data[game] || []);
+  arr.sort((a,b) => b.score - a.score);
+  res.json(arr.slice(0, 100));
+});
 
-// ---- Game state ----
+// ==================== Scores persistence ====================
+function loadScores(){
+  try {
+    if (!fs.existsSync(SCORES_FILE)) return {};
+    return JSON.parse(fs.readFileSync(SCORES_FILE, 'utf8'));
+  } catch(e){ return {}; }
+}
+function saveScores(obj){
+  try { fs.writeFileSync(SCORES_FILE, JSON.stringify(obj)); } catch(e) {}
+}
+function recordScores(gameType, playerList){
+  if (!playerList || playerList.length < 4) return;
+  const data = loadScores();
+  if (!data[gameType]) data[gameType] = [];
+  const now = Date.now();
+  for (const p of playerList){
+    if (!p || !p.name || typeof p.score !== 'number' || p.score <= 0) continue;
+    data[gameType].push({ name: p.name, score: p.score, at: now });
+  }
+  data[gameType].sort((a,b) => b.score - a.score);
+  data[gameType] = data[gameType].slice(0, 200);
+  saveScores(data);
+}
+
+// ==================== Helpers ====================
+function sanitizeName(s){
+  return String(s || '').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 20);
+}
+function sanitizeEmoji(s){
+  return String(s || '🦊').trim().slice(0, 6);
+}
+function sanitizeText(s, max = 300){
+  return String(s || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
+}
+function shuffle(arr){
+  const a = arr.slice();
+  for (let i=a.length-1;i>0;i--){
+    const j = (Math.random() * (i+1)) | 0;
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function rand(arr){ return arr[(Math.random()*arr.length)|0]; }
+
+// ==================== Game state ====================
 const game = {
-  phase: 'lobby',           // lobby | question | reveal | leaderboard | wheel | voting | vote-result | scatter-play | scatter-review | icebreaker | end
-  mode: null,               // quiz | emoji | voting | scatter | icebreaker
-  category: null,           // key in QUIZ_CATEGORIES
-  teamMode: false,
-  teams: [],                // [{id, name, color, emoji, score}]
-  questions: [],
-  qIndex: -1,
-  questionStartedAt: 0,
-  timeLimit: 20000,
-  configTimeLimit: 20000,
-  players: new Map(),       // socketId -> {name, teamId, score, streak, lastDelta, lastCorrect, answered, vote, scatterAnswers}
-  answers: new Map(),       // socketId -> {choice, ms}
-  answerOrder: [],          // track who answered first (for FIRST trophy)
-  hostId: null,
-  wheelResult: null,
-  paused: false,
-  pauseRemainingMs: 0,
-  lightning: false,
-  countdownEndsAt: 0,
-  // Voting specific
-  votingPrompt: null,
-  // Scattergories specific
-  scatterLetter: null,
-  scatterCategories: [],
-  scatterSubmissions: new Map(),  // socketId -> [word, word, word, word, word]
-  scatterEndTimer: null,
-  // Icebreaker specific
-  icebreakerPrompt: null,
-  icebreakerTarget: null,
-  // Lie-game (2 sannheter og 1 løgn) specific
-  lieRound: null,
-  lieTimer: null,
-  // Snake specific
-  snake: null,
-  snakeTickInterval: null,
-  snakeEndTimer: null,
-  // Bomberman specific
-  bomb: null,
-  bombTickInterval: null,
-  bombEndTimer: null,
-  // Config
-  questionCount: 10,
-  leaderboardEvery: 3,
-  snakeDuration: 60000,
-  bombDuration: 90000,
-  scatterDuration: 60000,
-  lieVoteDuration: 30000,
-  lightningDuration: 5000,
+  phase: 'lobby',
+  players: new Map(),  // id -> { id, name, emoji, color, score, team, alive, ... }
+  hosts: new Set(),    // socket ids
+  config: {
+    teams: false,
+    qcount: 10,
+    qtime: 20,
+    lbevery: 3,
+    lighttime: 5,
+    scattertime: 60,
+    lietime: 30,
+    snaketime: 90,
+    bombtime: 120
+  },
+  // Quiz state
+  quiz: null,  // { questions, index, question, startAt, deadline, answers: Map(pid -> {idx, t}), isLightning, streaks: Map }
+  // Voting
+  vote: null,  // { prompt, votes: Map(pid->targetId) }
+  // Scatter
+  scatter: null, // { letter, categories, deadline, entries: Map(pid -> [5 strings]) }
+  // Lie
+  lie: null,    // { claims: Map(pid -> {items:[3], lieIdx}), order: [pid,...], i: 0, votes: Map(pid -> 0..2), deadline }
+  // Wheel
+  wheel: null,  // { chosen }
+  // Icebreaker
+  icebreaker: null, // { prompt, target }
+  // Snake
+  snake: null,  // { snakes: Map, food: [], tickTimer, endAt }
+  // Bomb
+  bomb: null,   // { players: Map, bombs: Map, hard: [], soft: [], powerups: [], tickTimer, endAt, explosions }
+  // AI questions
+  customQuestions: [],
+  customMostLikely: [],
+  // Tutorial
+  tutorialGame: null,
+  tutorialText: '',
+  _tutorialNextFn: null
 };
 
-function publicState() {
-  const showQuestion = ['countdown', 'question', 'reveal'].includes(game.phase);
-  const q = showQuestion && game.questions[game.qIndex];
-  return {
-    phase: game.phase,
-    mode: game.mode,
-    category: game.category,
-    teamMode: game.teamMode,
-    teams: game.teams,
-    qIndex: game.qIndex,
-    tutorialGame: game.phase === 'tutorial' ? game.tutorialGame : null,
-    tutorialText: game.phase === 'tutorial' ? game.tutorialText : null,
-    tutorialEndsAt: game.phase === 'tutorial' ? game.tutorialEndsAt : 0,
-    total: game.questions.length,
-    paused: game.paused,
-    questionCount: game.questionCount,
-    leaderboardEvery: game.leaderboardEvery,
-    snakeDuration: game.snakeDuration,
-    bombDuration: game.bombDuration,
-    scatterDuration: game.scatterDuration,
-    lieVoteDuration: game.lieVoteDuration,
-    lightningDuration: game.lightningDuration,
-    timeLimit: game.timeLimit,
-    configTimeLimit: game.configTimeLimit,
-    lightning: game.lightning,
-    countdownEndsAt: game.phase === 'countdown' ? game.countdownEndsAt : 0,
-    question: q ? {
-      text: game.phase === 'countdown' ? null : q.q,
-      options: game.phase === 'countdown' ? null : q.a,
-      timeLimit: game.timeLimit,
-      startedAt: game.questionStartedAt,
-      correct: game.phase === 'reveal' ? q.c : null,
-      isEmoji: !!q.isEmoji,
-    } : null,
-    players: [...game.players.entries()].map(([id, p]) => ({
-      id, name: p.name, emoji: p.emoji, teamId: p.teamId, score: p.score,
-      answered: p.answered, lastDelta: p.lastDelta, lastCorrect: p.lastCorrect, streak: p.streak,
-      bestStreak: p.bestStreak || 0, totalCorrect: p.totalCorrect || 0, totalWrong: p.totalWrong || 0,
-      fastestMs: p.fastestMs, firstCount: p.firstCount || 0,
-      voted: p.vote != null,
-    })),
-    wheelResult: game.wheelResult,
-    votingPrompt: game.votingPrompt,
-    votingResults: game.phase === 'vote-result' ? computeVoteResults() : null,
-    scatterLetter: game.scatterLetter,
-    scatterCategories: game.scatterCategories,
-    scatterStartedAt: game.phase === 'scatter-play' ? game.questionStartedAt : 0,
-    scatterTimeLimit: game.phase === 'scatter-play' ? (game.scatterTimeLimit || game.scatterDuration || SCATTER_TIME_DEFAULT) : 0,
-    scatterReview: game.phase === 'scatter-review' ? buildScatterReview() : null,
-    icebreakerPrompt: game.icebreakerPrompt,
-    icebreakerTarget: game.icebreakerTarget,
-    lieCollect: game.phase === 'lie-collect' && game.lieRound ? {
-      submittedIds: [...game.lieRound.submissions.keys()],
-      totalPlayers: game.players.size,
-    } : null,
-    liePlay: (game.phase === 'lie-play' || game.phase === 'lie-reveal') && game.lieRound ? (() => {
-      const pid = game.lieRound.currentPid;
-      const sub = game.lieRound.submissions.get(pid);
-      const pl = game.players.get(pid);
-      if (!sub || !pl) return null;
-      const statements = game.lieRound.shuffleOrder.map(i => sub.s[i]);
-      const lieDisplayIdx = game.lieRound.shuffleOrder.indexOf(sub.lieIdx);
-      const voteBreakdown = [0, 0, 0];
-      const voterNames = [[], [], []];
-      for (const [voterPid, v] of game.lieRound.votes) {
-        voteBreakdown[v] = (voteBreakdown[v] || 0) + 1;
-        const voter = game.players.get(voterPid);
-        if (voter) voterNames[v].push(voter.name);
-      }
-      return {
-        currentId: pid,
-        currentName: pl.name,
-        currentEmoji: pl.emoji || null,
-        statements,
-        turnIdx: game.lieRound.idx + 1,
-        totalTurns: game.lieRound.order.length,
-        votedIds: [...game.lieRound.votes.keys()],
-        voteBreakdown,
-        voterNames: game.phase === 'lie-reveal' ? voterNames : null,
-        lieDisplayIdx: game.phase === 'lie-reveal' ? lieDisplayIdx : -1,
-        roundTimeMs: game.lieVoteDuration || LIE_VOTE_TIME_DEFAULT,
-      };
-    })() : null,
-  };
+function teamForIndex(i){
+  return TEAM_NAMES[i % TEAM_NAMES.length];
 }
 
-function broadcast() { io.emit('state', publicState()); }
-
-// ---- Lifecycle helpers ----
-function resetPlayersForRound() {
-  for (const p of game.players.values()) {
-    p.answered = false; p.lastDelta = 0; p.lastCorrect = null;
-    p.vote = null; p.scatterAnswers = null;
-  }
-  game.answers.clear();
-  game.answerOrder = [];
-  game.scatterSubmissions.clear();
-}
-
-function startQuestion() {
-  game.phase = 'countdown';
-  game.countdownEndsAt = Date.now() + 3200;
-  resetPlayersForRound();
-  broadcast();
-  const idx = game.qIndex;
-  setTimeout(() => {
-    if (game.qIndex !== idx) return;
-    game.phase = 'question';
-    game.questionStartedAt = Date.now();
-    broadcast();
-    setTimeout(() => {
-      if (game.phase === 'question' && game.qIndex === idx && !game.paused) revealAnswer();
-    }, game.timeLimit + 500);
-  }, 3000);
-}
-
-function revealAnswer() {
-  if (game.phase !== 'question') return;
-  const q = game.questions[game.qIndex];
-  if (!q) return;
-  const teamDeltas = new Map();
-  const trophies = [];
-  const firstCorrect = game.answerOrder.find(sid => {
-    const a = game.answers.get(sid);
-    return a && a.choice === q.c;
-  });
-  for (const [sid, p] of game.players) {
-    const a = game.answers.get(sid);
-    if (a && a.choice === q.c) {
-      const timeFactor = Math.max(0, 1 - a.ms / game.timeLimit);
-      const baseMult = game.lightning ? 2 : 1;
-      const base = (500 + Math.floor(500 * timeFactor)) * baseMult;
-      const streakBonus = p.streak >= 1 ? p.streak * 100 : 0;
-      const delta = base + streakBonus;
-      p.score += delta;
-      p.streak += 1;
-      p.bestStreak = Math.max(p.bestStreak || 0, p.streak);
-      p.totalCorrect = (p.totalCorrect || 0) + 1;
-      p.fastestMs = p.fastestMs == null ? a.ms : Math.min(p.fastestMs, a.ms);
-      p.lastDelta = delta;
-      p.lastCorrect = true;
-      if (sid === firstCorrect) {
-        p.firstCount = (p.firstCount || 0) + 1;
-        trophies.push({ type: 'first', name: p.name, emoji: '⚡', label: 'FØRSTE UTE' });
-      }
-      if (p.streak === 3) trophies.push({ type: 'streak', name: p.name, emoji: '🔥', label: '3 PÅ RAD' });
-      else if (p.streak === 5) trophies.push({ type: 'streak', name: p.name, emoji: '🌋', label: '5 PÅ RAD' });
-      else if (p.streak >= 7) trophies.push({ type: 'streak', name: p.name, emoji: '🚀', label: p.streak + ' PÅ RAD' });
-      if (game.teamMode && p.teamId != null) {
-        teamDeltas.set(p.teamId, (teamDeltas.get(p.teamId) || 0) + delta);
-      }
-    } else {
-      p.streak = 0;
-      p.lastDelta = 0;
-      p.lastCorrect = a ? false : null;
-      if (a) p.totalWrong = (p.totalWrong || 0) + 1;
-      else p.totalSkipped = (p.totalSkipped || 0) + 1;
-    }
-  }
-  const players = [...game.players.values()];
-  if (players.length >= 2 && players.every(p => p.lastCorrect === true)) {
-    trophies.push({ type: 'perfect', name: '', emoji: '💯', label: 'ALLE RIKTIG!' });
-  }
-  if (game.teamMode) {
-    for (const [tid, delta] of teamDeltas) {
-      const team = game.teams.find(t => t.id === tid);
-      if (team) team.score += delta;
-    }
-  }
-  game.phase = 'reveal';
-  if (trophies.length) io.emit('trophies', trophies);
-  broadcast();
-  // Auto-advance etter 5s hvis hosten ikke gjør noe
-  scheduleAutoAdvance();
-}
-
-let autoAdvanceTimer = null;
-function clearAutoAdvance() {
-  if (autoAdvanceTimer) { clearTimeout(autoAdvanceTimer); autoAdvanceTimer = null; }
-}
-function scheduleAutoAdvance() {
-  clearAutoAdvance();
-  const curIdx = game.qIndex;
-  autoAdvanceTimer = setTimeout(() => {
-    if (game.phase !== 'reveal' || game.qIndex !== curIdx) return;
-    // Hver N-te spørsmål OG på siste: vis leaderboard før vi går videre
-    const every = Math.max(0, game.leaderboardEvery || 0);
-    const isLast = curIdx + 1 >= game.questions.length;
-    const shouldShowBoard = (every > 0 && (curIdx + 1) % every === 0) || isLast;
-    if (shouldShowBoard) {
-      game.phase = 'leaderboard';
-      broadcast();
-      autoAdvanceTimer = setTimeout(() => {
-        if (game.phase === 'leaderboard') nextQuestion();
-      }, 6000);
-    } else {
-      nextQuestion();
-    }
-  }, 5000);
-}
-
-function nextQuestion() {
-  clearAutoAdvance();
-  if (game.qIndex + 1 >= game.questions.length) {
-    // Quiz/lyn-runde ferdig — persist score
-    const gt = game.lightning ? 'lightning' : 'quiz';
-    recordScores(gt, [...game.players.values()].map(p => ({ name: p.name, score: p.score })));
-    game.phase = 'end';
-    broadcast();
+function assignTeams(){
+  if (!game.config.teams){
+    for (const p of game.players.values()) p.team = null;
     return;
   }
-  game.qIndex += 1;
-  startQuestion();
+  const teamCount = Math.min(TEAM_NAMES.length, Math.max(2, Math.ceil(game.players.size / 3)));
+  const arr = Array.from(game.players.values());
+  shuffle(arr).forEach((p, i) => {
+    p.team = teamForIndex(i % teamCount);
+  });
 }
 
-// ============ TUTORIAL-SYSTEM ============
-// Vises før hvert spill starter — mascoten "leser opp" reglene
-const TUTORIAL_TEXT = {
-  quiz:      '🧠 Quiz — Svar raskt for flere poeng! Først ute får bonus.',
-  lightning: '⚡ Lyn-runde — Bare 5 sekunder per spørsmål og DOBBEL poeng! Ingen nøling!',
-  bomb:      '💣 Bomberman — Spreng vegger og motstandere. Plukk opp powerups. Siste overlevende vinner!',
-  snake:     '🐍 Slange-kamp — Spis mat og voks! Krasj du i en mindre slange spiser du henne. Unngå vegger og din egen kropp.',
-  scatter:   '📝 Kategori-kamp — Én bokstav, fem kategorier. Skriv unike ord som starter med bokstaven. Unike ord gir full score!',
-  lie:       '🤥 2 sannheter, 1 løgn — Skriv 3 ting om deg selv (2 sanne, 1 løgn). Gjett hvem som lyver!',
-  voting:    '🗳️ Hvem er mest sannsynlig — Stem anonymt på hvem som passer best.',
-};
-let tutorialTimer = null;
-function playTutorialThen(gameType, nextFn, durationMs = 5500) {
-  if (tutorialTimer) { clearTimeout(tutorialTimer); tutorialTimer = null; }
+function publicState(){
+  const players = Array.from(game.players.values()).map(p => ({
+    id: p.id, name: p.name, emoji: p.emoji, color: p.color, score: p.score|0,
+    team: p.team ? { name: p.team.name, emoji: p.team.emoji, color: p.team.color } : null,
+    hasAnswered: game.quiz ? game.quiz.answers.has(p.id) : false,
+    hasVoted: game.vote ? game.vote.votes.has(p.id) : false,
+    hasSubmitted: (game.scatter && game.scatter.entries.has(p.id)) || (game.lie && game.lie.claims.has(p.id))
+  }));
+  const base = {
+    phase: game.phase,
+    players,
+    config: game.config,
+    tutorialGame: game.tutorialGame,
+    tutorialText: game.tutorialText,
+    customQuestionsCount: game.customQuestions.length
+  };
+  if (game.quiz){
+    const q = game.quiz.question;
+    base.quiz = {
+      index: game.quiz.index,
+      total: game.quiz.questions.length,
+      question: q ? { q: q.q, a: q.a, isEmoji: q.isEmoji, category: q.category } : null,
+      deadline: game.quiz.deadline,
+      isLightning: !!game.quiz.isLightning,
+      answersCount: game.quiz.answers ? game.quiz.answers.size : 0,
+      correctIdx: game.quiz.revealCorrect ? q?.c : null
+    };
+  }
+  if (game.vote){
+    base.vote = {
+      prompt: game.vote.prompt,
+      votesCount: game.vote.votes.size,
+      results: game.vote.revealResults ? game.vote.results : null
+    };
+  }
+  if (game.scatter){
+    base.scatter = {
+      letter: game.scatter.letter,
+      categories: game.scatter.categories,
+      deadline: game.scatter.deadline,
+      submittedCount: game.scatter.entries.size,
+      review: game.scatter.review || null
+    };
+  }
+  if (game.lie){
+    base.lie = {
+      stage: game.lie.stage, // 'collect' | 'play' | 'reveal'
+      current: game.lie.current || null,
+      submittedCount: game.lie.claims.size,
+      total: game.players.size,
+      votesCount: game.lie.votes ? game.lie.votes.size : 0,
+      deadline: game.lie.deadline
+    };
+  }
+  if (game.icebreaker){
+    base.icebreaker = { prompt: game.icebreaker.prompt, target: game.icebreaker.target };
+  }
+  if (game.wheel){
+    base.wheel = { chosen: game.wheel.chosen };
+  }
+  return base;
+}
+
+function broadcast(){
+  io.emit('state', publicState());
+}
+
+// ==================== Socket handlers ====================
+io.on('connection', socket => {
+
+  // ===== Player join / reconnect =====
+  socket.on('player:hello', ({ name, emoji, token } = {}) => {
+    const n = sanitizeName(name);
+    if (!n) { socket.emit('error:msg', 'Ugyldig navn'); return; }
+    const e = sanitizeEmoji(emoji);
+    // Reconnect by token if provided
+    let rec = null;
+    if (token){
+      for (const p of game.players.values()){
+        if (p.token === token){ rec = p; break; }
+      }
+    }
+    if (rec){
+      rec.id = socket.id;
+      rec.name = n; rec.emoji = e;
+    } else {
+      const p = {
+        id: socket.id,
+        token: Math.random().toString(36).slice(2) + Date.now().toString(36),
+        name: n, emoji: e,
+        color: randColor(),
+        score: 0,
+        team: null
+      };
+      if (game.config.teams){
+        const counts = new Map();
+        for (const q of game.players.values()){
+          if (q.team) counts.set(q.team.name, (counts.get(q.team.name) || 0) + 1);
+        }
+        const activeTeams = TEAM_NAMES.slice(0, Math.min(TEAM_NAMES.length, Math.max(2, Math.ceil((game.players.size+1)/3))));
+        activeTeams.sort((a,b) => (counts.get(a.name)||0) - (counts.get(b.name)||0));
+        p.team = activeTeams[0];
+      }
+      game.players.set(socket.id, p);
+      rec = p;
+    }
+    socket.emit('player:welcome', { id: socket.id, token: rec.token, team: rec.team });
+    broadcast();
+  });
+
+  socket.on('player:reaction', (emoji) => {
+    const now = Date.now();
+    if (!socket._reactAt) socket._reactAt = 0;
+    if (now - socket._reactAt < 200) return;
+    socket._reactAt = now;
+    io.emit('reaction', { emoji: sanitizeEmoji(emoji) || '👍' });
+  });
+
+  socket.on('disconnect', () => {
+    game.hosts.delete(socket.id);
+    if (game.players.has(socket.id)){
+      // Don't delete immediately — allow reconnect via token for 60s
+      const p = game.players.get(socket.id);
+      setTimeout(() => {
+        const still = game.players.get(socket.id);
+        if (still && still.id === socket.id && !io.sockets.sockets.get(socket.id)){
+          game.players.delete(socket.id);
+          broadcast();
+        }
+      }, 60000);
+    }
+    broadcast();
+  });
+
+  // ===== Host =====
+  socket.on('host:hello', ({ password } = {}) => {
+    if (password !== HOST_PASSWORD) { socket.emit('host:denied'); return; }
+    game.hosts.add(socket.id);
+    socket.emit('host:ok', { connectUrl: null });
+    broadcast();
+  });
+
+  socket.on('host:config', (cfg) => {
+    if (!game.hosts.has(socket.id)) return;
+    const c = game.config;
+    if (cfg.teams !== undefined) c.teams = !!cfg.teams;
+    if (cfg.qcount) c.qcount = clamp(parseInt(cfg.qcount,10), 5, 20);
+    if (cfg.qtime) c.qtime = clamp(parseInt(cfg.qtime,10), 5, 60);
+    if (cfg.lbevery !== undefined) c.lbevery = clamp(parseInt(cfg.lbevery,10), 0, 20);
+    if (cfg.lighttime) c.lighttime = clamp(parseInt(cfg.lighttime,10), 3, 20);
+    if (cfg.scattertime) c.scattertime = clamp(parseInt(cfg.scattertime,10), 20, 300);
+    if (cfg.lietime) c.lietime = clamp(parseInt(cfg.lietime,10), 10, 180);
+    if (cfg.snaketime !== undefined) c.snaketime = clamp(parseInt(cfg.snaketime,10), 0, 600);
+    if (cfg.bombtime !== undefined) c.bombtime = clamp(parseInt(cfg.bombtime,10), 0, 600);
+    if (cfg.teams !== undefined) assignTeams();
+    broadcast();
+  });
+
+  socket.on('host:reset', () => {
+    if (!game.hosts.has(socket.id)) return;
+    stopAllTimers();
+    game.phase = 'lobby';
+    game.quiz = null; game.vote = null; game.scatter = null; game.lie = null;
+    game.icebreaker = null; game.wheel = null;
+    game.snake = null; game.bomb = null;
+    for (const p of game.players.values()) p.score = 0;
+    broadcast();
+  });
+
+  socket.on('host:ai-questions', (qs) => {
+    if (!game.hosts.has(socket.id)) return;
+    if (!Array.isArray(qs)) return;
+    for (const q of qs){
+      if (q && typeof q.q === 'string' && Array.isArray(q.a) && q.a.length === 4 && Number.isInteger(q.c)){
+        game.customQuestions.push({
+          q: sanitizeText(q.q, 300),
+          a: q.a.map(x => sanitizeText(x, 120)),
+          c: Math.max(0, Math.min(3, q.c|0)),
+          category: 'custom'
+        });
+      }
+    }
+    if (game.customQuestions.length > 200) game.customQuestions = game.customQuestions.slice(-200);
+    broadcast();
+  });
+
+  // Game starters (imported later)
+  socket.on('host:start-quiz', ({ category } = {}) => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('quiz', () => startQuiz({ category, isLightning: false }));
+  });
+  socket.on('host:start-lightning', ({ category } = {}) => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('lightning', () => startQuiz({ category, isLightning: true }));
+  });
+  socket.on('host:start-voting', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('voting', () => startVoting());
+  });
+  socket.on('host:next-vote', () => {
+    if (!game.hosts.has(socket.id)) return;
+    nextVote();
+  });
+  socket.on('host:start-scatter', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('scatter', () => startScatter());
+  });
+  socket.on('host:scatter-end', () => {
+    if (!game.hosts.has(socket.id)) return;
+    endScatter();
+  });
+  socket.on('host:start-lie', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('lie', () => startLie());
+  });
+  socket.on('host:lie-next', () => {
+    if (!game.hosts.has(socket.id)) return;
+    advanceLie();
+  });
+  socket.on('host:start-icebreaker', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('icebreaker', () => startIcebreaker());
+  });
+  socket.on('host:next-icebreaker', () => {
+    if (!game.hosts.has(socket.id)) return;
+    startIcebreaker();
+  });
+  socket.on('host:start-wheel', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('wheel', () => startWheel());
+  });
+  socket.on('host:spin-wheel', () => {
+    if (!game.hosts.has(socket.id)) return;
+    spinWheel();
+  });
+  socket.on('host:start-snake', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('snake', () => startSnake());
+  });
+  socket.on('host:end-snake', () => {
+    if (!game.hosts.has(socket.id)) return;
+    endSnake();
+  });
+  socket.on('host:start-bomb', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('bomb', () => startBomberman());
+  });
+  socket.on('host:end-bomb', () => {
+    if (!game.hosts.has(socket.id)) return;
+    endBomberman();
+  });
+  socket.on('host:skip-tutorial', () => {
+    if (!game.hosts.has(socket.id)) return;
+    if (game.phase === 'tutorial' && game._tutorialNextFn){
+      const fn = game._tutorialNextFn;
+      game._tutorialNextFn = null;
+      fn();
+    }
+  });
+
+  // ===== Quiz answer =====
+  socket.on('player:answer', ({ idx } = {}) => {
+    if (!game.quiz || game.phase !== 'question') return;
+    const p = game.players.get(socket.id); if (!p) return;
+    if (game.quiz.answers.has(socket.id)) return;
+    if (!Number.isInteger(idx) || idx < 0 || idx > 3) return;
+    game.quiz.answers.set(socket.id, { idx, t: Date.now() });
+    broadcast();
+    // Alle har svart?
+    if (game.quiz.answers.size >= game.players.size){
+      revealQuizEarly();
+    }
+  });
+
+  // ===== Voting =====
+  socket.on('player:vote', ({ targetId } = {}) => {
+    if (!game.vote || game.phase !== 'voting') return;
+    const p = game.players.get(socket.id); if (!p) return;
+    if (!game.players.has(targetId)) return;
+    game.vote.votes.set(socket.id, targetId);
+    broadcast();
+    if (game.vote.votes.size >= game.players.size){
+      revealVote();
+    }
+  });
+
+  // ===== Scatter submit =====
+  socket.on('player:scatter', ({ entries } = {}) => {
+    if (!game.scatter || game.phase !== 'scatter-play') return;
+    if (!Array.isArray(entries)) return;
+    const clean = entries.slice(0, 5).map(s => sanitizeText(s, 60));
+    game.scatter.entries.set(socket.id, clean);
+    broadcast();
+  });
+
+  // ===== Lie submit =====
+  socket.on('player:lie-submit', ({ items, lieIdx } = {}) => {
+    if (!game.lie || game.lie.stage !== 'collect') return;
+    if (!Array.isArray(items) || items.length !== 3) return;
+    if (!Number.isInteger(lieIdx) || lieIdx < 0 || lieIdx > 2) return;
+    const clean = items.map(s => sanitizeText(s, 160));
+    game.lie.claims.set(socket.id, { items: clean, lieIdx });
+    broadcast();
+    // Alle inne? Gå videre.
+    if (game.lie.claims.size >= game.players.size){
+      startLiePlay();
+    }
+  });
+
+  socket.on('player:lie-vote', ({ idx } = {}) => {
+    if (!game.lie || game.lie.stage !== 'play') return;
+    if (!Number.isInteger(idx) || idx < 0 || idx > 2) return;
+    // Kan ikke stemme på egen
+    if (game.lie.current && socket.id === game.lie.current.pid) return;
+    game.lie.votes.set(socket.id, idx);
+    broadcast();
+  });
+
+  // ===== Snake controls =====
+  socket.on('player:snake-dir', ({ dir } = {}) => {
+    if (!game.snake) return;
+    const s = game.snake.snakes.get(socket.id); if (!s || !s.alive) return;
+    if (!['up','down','left','right'].includes(dir)) return;
+    s.nextDir = dir;
+  });
+
+  // ===== Bomb controls =====
+  socket.on('player:bomb-move', ({ dirs } = {}) => {
+    if (!game.bomb) return;
+    const p = game.bomb.players.get(socket.id); if (!p || !p.alive) return;
+    if (!Array.isArray(dirs)) return;
+    p.dirs = new Set(dirs.filter(d => ['up','down','left','right'].includes(d)));
+  });
+  socket.on('player:bomb-action', () => {
+    if (!game.bomb) return;
+    const p = game.bomb.players.get(socket.id); if (!p || !p.alive) return;
+    p.actionPending = true;
+  });
+  socket.on('player:bomb-detonate', () => {
+    if (!game.bomb) return;
+    const p = game.bomb.players.get(socket.id); if (!p || !p.alive) return;
+    if (!p.remote) return;
+    // Detoner alle dine bomber
+    for (const b of game.bomb.bombs.values()){
+      if (b.owner === socket.id && !b.exploded){
+        b.fuse = 0;
+      }
+    }
+  });
+});
+
+function randColor(){
+  const palette = ['#ff5a6b','#ff9d4a','#ffcf4a','#9ae053','#2fbf71','#3cc1d6','#5cc7ff','#7a9bff','#b074ff','#e56bff'];
+  return palette[(Math.random()*palette.length)|0];
+}
+function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v|0)); }
+
+function playTutorialThen(gameType, startFn, ms = 5500){
+  stopAllTimers();
   game.phase = 'tutorial';
   game.tutorialGame = gameType;
   game.tutorialText = TUTORIAL_TEXT[gameType] || '';
-  game.tutorialEndsAt = Date.now() + durationMs;
-  game._tutorialNextFn = nextFn;
+  game._tutorialNextFn = startFn;
   broadcast();
-  tutorialTimer = setTimeout(() => {
-    tutorialTimer = null;
-    if (game.phase !== 'tutorial') return;
-    const fn = game._tutorialNextFn;
-    game._tutorialNextFn = null;
-    if (fn) fn();
-  }, durationMs);
-}
-function skipTutorial() {
-  if (game.phase !== 'tutorial') return;
-  if (tutorialTimer) { clearTimeout(tutorialTimer); tutorialTimer = null; }
-  const fn = game._tutorialNextFn;
-  game._tutorialNextFn = null;
-  if (fn) fn();
+  setTimeout(() => {
+    if (game.phase === 'tutorial' && game._tutorialNextFn === startFn){
+      game._tutorialNextFn = null;
+      startFn();
+    }
+  }, ms);
 }
 
-function startQuizGame(categoryKey, lightning = false) {
-  const cat = QUIZ_CATEGORIES[categoryKey];
-  if (!cat) return;
-  game.mode = 'quiz';
-  game.category = categoryKey;
-  game.lightning = !!lightning;
-  // Track brukte spørsmål — ikke gjenta i samme sesjon
-  if (!usedQuestions.has(categoryKey)) usedQuestions.set(categoryKey, new Set());
-  const used = usedQuestions.get(categoryKey);
-  const countWant = lightning ? Math.min(12, cat.questions.length) : game.questionCount;
-  let available = cat.questions.filter(q => !used.has(q.q));
-  // Hvis vi har for få ubrukte, reset bassenget (men hold de siste få som "nylig brukt")
-  if (available.length < countWant) {
-    used.clear();
-    available = [...cat.questions];
-  }
-  const selected = shuffle([...available]).slice(0, countWant);
-  selected.forEach(q => used.add(q.q));
-  if (lightning) {
-    game.timeLimit = Math.max(2000, Math.min(30000, game.lightningDuration || 5000));
+function stopAllTimers(){
+  if (game.snake && game.snake.tickTimer){ clearInterval(game.snake.tickTimer); game.snake.tickTimer = null; }
+  if (game.bomb && game.bomb.tickTimer){ clearInterval(game.bomb.tickTimer); game.bomb.tickTimer = null; }
+  if (game.quiz && game.quiz.questionTimer){ clearTimeout(game.quiz.questionTimer); game.quiz.questionTimer = null; }
+  if (game.scatter && game.scatter.timer){ clearTimeout(game.scatter.timer); game.scatter.timer = null; }
+  if (game.lie && game.lie.timer){ clearTimeout(game.lie.timer); game.lie.timer = null; }
+}
+
+// Game logic lives in server-games.js (imported at bottom)
+
+// ==================== Quiz ====================
+function startQuiz({ category, isLightning } = {}){
+  stopAllTimers();
+  const pool = [];
+  if (category === 'custom'){
+    pool.push(...game.customQuestions);
+  } else if (category && QUIZ_CATEGORIES[category]){
+    pool.push(...QUIZ_CATEGORIES[category].questions.map(q => ({ ...q, category })));
+    if (game.customQuestions.length) pool.push(...game.customQuestions);
   } else {
-    game.timeLimit = game.configTimeLimit;
+    for (const [k, v] of Object.entries(QUIZ_CATEGORIES)){
+      pool.push(...v.questions.map(q => ({ ...q, category: k })));
+    }
+    if (game.customQuestions.length) pool.push(...game.customQuestions);
   }
-  game.questions = selected;
-  game.qIndex = -1;
-  for (const p of game.players.values()) {
-    p.score = 0; p.streak = 0; p.bestStreak = 0; p.totalCorrect = 0;
-    p.totalWrong = 0; p.totalSkipped = 0; p.fastestMs = null; p.firstCount = 0;
-  }
-  for (const t of game.teams) t.score = 0;
-  nextQuestion();
-}
-
-function shuffle(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-function resetToLobby() {
-  snakeCleanTimers();
-  bombCleanTimers();
-  clearAutoAdvance();
-  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
-  if (tutorialTimer) { clearTimeout(tutorialTimer); tutorialTimer = null; }
-  game._tutorialNextFn = null;
-  game.tutorialGame = null;
-  game.tutorialText = null;
-  game.snake = null;
-  game.bomb = null;
-  game.lieRound = null;
-  game.phase = 'lobby';
-  game.mode = null;
-  game.category = null;
-  game.qIndex = -1;
-  game.questions = [];
-  game.wheelResult = null;
-  game.paused = false;
-  game.lightning = false;
-  game.timeLimit = game.configTimeLimit;
-  game.votingPrompt = null;
-  game.scatterLetter = null;
-  game.scatterCategories = [];
-  game.scatterSubmissions.clear();
-  game.icebreakerPrompt = null;
-  game.icebreakerTarget = null;
-  // Reset voting-pool til defaults (fjerner AI-lagde prompts når man går tilbake til lobby)
-  customVotingPrompts.length = 0;
-  refreshVotingPool();
-  for (const p of game.players.values()) {
-    p.score = 0; p.streak = 0; p.answered = false;
-    p.lastDelta = 0; p.lastCorrect = null; p.vote = null; p.scatterAnswers = null;
-  }
-  for (const t of game.teams) t.score = 0;
+  const total = Math.min(isLightning ? Math.min(12, game.config.qcount) : game.config.qcount, pool.length);
+  const questions = shuffle(pool).slice(0, total);
+  game.quiz = {
+    questions, index: -1, question: null,
+    startAt: 0, deadline: 0,
+    answers: new Map(),
+    streaks: new Map(),  // pid -> streak count
+    isLightning: !!isLightning,
+    revealCorrect: false,
+    questionTimer: null,
+    correctFirstPid: null
+  };
+  for (const p of game.players.values()) p.score = 0;
+  // Countdown 3s
+  game.phase = 'countdown';
   broadcast();
+  setTimeout(() => nextQuizQuestion(), 3000);
 }
 
-// ---- Team helpers ----
-function enableTeams(numTeams) {
-  game.teamMode = true;
-  const n = Math.max(2, Math.min(TEAM_NAMES.length, numTeams || 2));
-  game.teams = TEAM_NAMES.slice(0, n).map((t, i) => ({ id: i, ...t, score: 0 }));
-  redistributePlayersToTeams();
+function nextQuizQuestion(){
+  if (!game.quiz) return;
+  game.quiz.index++;
+  if (game.quiz.index >= game.quiz.questions.length){
+    return finishQuiz();
+  }
+  const q = game.quiz.questions[game.quiz.index];
+  game.quiz.question = q;
+  game.quiz.answers = new Map();
+  game.quiz.revealCorrect = false;
+  game.quiz.correctFirstPid = null;
+  game.quiz.startAt = Date.now();
+  const secs = game.quiz.isLightning ? game.config.lighttime : game.config.qtime;
+  game.quiz.deadline = Date.now() + secs * 1000;
+  game.phase = 'question';
+  broadcast();
+  game.quiz.questionTimer = setTimeout(() => revealQuiz(), secs * 1000 + 100);
 }
 
-function disableTeams() {
-  game.teamMode = false;
-  game.teams = [];
-  for (const p of game.players.values()) p.teamId = null;
+function revealQuizEarly(){
+  if (!game.quiz || game.phase !== 'question') return;
+  if (game.quiz.questionTimer){ clearTimeout(game.quiz.questionTimer); game.quiz.questionTimer = null; }
+  revealQuiz();
 }
 
-function redistributePlayersToTeams() {
-  if (!game.teamMode) return;
-  const players = [...game.players.values()];
-  shuffle(players);
-  players.forEach((p, i) => {
-    p.teamId = i % game.teams.length;
-  });
+function revealQuiz(){
+  if (!game.quiz) return;
+  const q = game.quiz.question; if (!q) return;
+  const secs = game.quiz.isLightning ? game.config.lighttime : game.config.qtime;
+  const mult = game.quiz.isLightning ? 2 : 1;
+  // Sorter svar etter tid
+  const answersArr = Array.from(game.quiz.answers.entries()); // [pid, {idx,t}]
+  answersArr.sort((a,b) => a[1].t - b[1].t);
+  const results = [];
+  for (const [pid, ans] of answersArr){
+    const p = game.players.get(pid); if (!p) continue;
+    const correct = ans.idx === q.c;
+    let base = 0, trophies = [];
+    if (correct){
+      const timeLeft = Math.max(0, (game.quiz.deadline - ans.t) / 1000);
+      base = Math.round((500 + Math.min(500, timeLeft / secs * 500)) * mult);
+      p.score += base;
+      // Streak
+      const s = (game.quiz.streaks.get(pid) || 0) + 1;
+      game.quiz.streaks.set(pid, s);
+      if (s === 3 || s === 5 || s === 7) trophies.push({ kind: 'streak', n: s });
+      // First
+      if (!game.quiz.correctFirstPid){
+        game.quiz.correctFirstPid = pid;
+        trophies.push({ kind: 'first' });
+        p.score += 100;
+      }
+    } else {
+      game.quiz.streaks.set(pid, 0);
+    }
+    results.push({ pid, name: p.name, correct, delta: base + (trophies.find(t=>t.kind==='first') ? 100 : 0), trophies });
+  }
+  // Ikke-svarende får streak-brudd
+  for (const p of game.players.values()){
+    if (!game.quiz.answers.has(p.id)){
+      game.quiz.streaks.set(p.id, 0);
+    }
+  }
+  game.quiz.revealCorrect = true;
+  game.phase = 'reveal';
+  game.quiz.results = results;
+  broadcast();
+  io.emit('quiz:reveal', { correctIdx: q.c, results });
+
+  // Leaderboard?
+  const N = game.config.lbevery;
+  const isLast = game.quiz.index === game.quiz.questions.length - 1;
+  const showLb = !isLast && N > 0 && ((game.quiz.index + 1) % N === 0);
+  const delay = showLb ? 4500 : 4500;
+  setTimeout(() => {
+    if (!game.quiz) return;
+    if (isLast){
+      finishQuiz();
+    } else if (showLb){
+      game.phase = 'leaderboard';
+      broadcast();
+      setTimeout(() => {
+        if (!game.quiz) return;
+        game.phase = 'countdown';
+        broadcast();
+        setTimeout(() => nextQuizQuestion(), 3000);
+      }, 6000);
+    } else {
+      game.phase = 'countdown';
+      broadcast();
+      setTimeout(() => nextQuizQuestion(), 2500);
+    }
+  }, delay);
 }
 
-// ---- Voting ("Hvem er mest sannsynlig til å...") ----
-const customVotingPrompts = []; // AI-added prompts for this session
-let votingPool = [...MOST_LIKELY];
-function refreshVotingPool() {
-  votingPool = shuffle([...MOST_LIKELY, ...customVotingPrompts]);
+function finishQuiz(){
+  if (!game.quiz) return;
+  const isLightning = game.quiz.isLightning;
+  const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+  game.phase = 'end';
+  game.quiz = null;
+  broadcast();
+  recordScores(isLightning ? 'lightning' : 'quiz', players);
 }
 
-function startVoting(prompt) {
+// ==================== Voting ====================
+function startVoting(){
+  const pool = [...MOST_LIKELY, ...game.customMostLikely];
+  game.vote = {
+    prompt: rand(pool),
+    votes: new Map(),
+    revealResults: false,
+    results: null
+  };
   game.phase = 'voting';
-  game.mode = 'voting';
-  if (prompt) game.votingPrompt = prompt;
-  else {
-    if (!votingPool.length) refreshVotingPool();
-    game.votingPrompt = votingPool.shift();
-  }
-  for (const p of game.players.values()) p.vote = null;
   broadcast();
 }
-
-function computeVoteResults() {
-  const tally = new Map(); // playerId -> count
-  for (const p of game.players.values()) {
-    if (p.vote) tally.set(p.vote, (tally.get(p.vote) || 0) + 1);
-  }
-  const result = [];
-  for (const [pid, count] of tally) {
-    const target = game.players.get(pid);
-    if (target) result.push({ id: pid, name: target.name, count });
-  }
-  return result.sort((a, b) => b.count - a.count);
+function nextVote(){
+  const pool = [...MOST_LIKELY, ...game.customMostLikely];
+  game.vote = { prompt: rand(pool), votes: new Map(), revealResults: false, results: null };
+  game.phase = 'voting';
+  broadcast();
 }
-
-function endVoting() {
+function revealVote(){
+  if (!game.vote) return;
+  const counts = new Map();
+  for (const t of game.vote.votes.values()){
+    counts.set(t, (counts.get(t) || 0) + 1);
+  }
+  const results = [];
+  for (const p of game.players.values()){
+    results.push({ id: p.id, name: p.name, emoji: p.emoji, color: p.color, votes: counts.get(p.id) || 0 });
+  }
+  results.sort((a,b) => b.votes - a.votes);
+  game.vote.results = results;
+  game.vote.revealResults = true;
   game.phase = 'vote-result';
   broadcast();
 }
 
-// ---- Scattergories ----
-const SCATTER_TIME_DEFAULT = 60000;
-function startScatter() {
-  if (game.scatterEndTimer) { clearTimeout(game.scatterEndTimer); game.scatterEndTimer = null; }
-  const duration = Math.max(15000, Math.min(300000, game.scatterDuration || SCATTER_TIME_DEFAULT));
+// ==================== Scatter ====================
+function startScatter(){
+  const letter = rand(SCATTERGORIES.letters);
+  const categories = rand(SCATTERGORIES.categorySets);
+  game.scatter = {
+    letter, categories: categories.slice(),
+    deadline: Date.now() + game.config.scattertime * 1000,
+    entries: new Map(),
+    review: null,
+    timer: null
+  };
   game.phase = 'scatter-play';
-  game.mode = 'scatter';
-  game.scatterLetter = SCATTERGORIES.letters[Math.floor(Math.random() * SCATTERGORIES.letters.length)];
-  game.scatterCategories = SCATTERGORIES.categorySets[Math.floor(Math.random() * SCATTERGORIES.categorySets.length)];
-  game.scatterSubmissions.clear();
-  for (const p of game.players.values()) { p.scatterAnswers = null; p.answered = false; p.lastDelta = 0; }
-  game.questionStartedAt = Date.now();
-  game.scatterTimeLimit = duration;
   broadcast();
-  const started = game.questionStartedAt;
-  game.scatterEndTimer = setTimeout(() => {
-    if (game.phase === 'scatter-play' && game.questionStartedAt === started) endScatter();
-  }, duration + 500);
+  game.scatter.timer = setTimeout(() => endScatter(), game.config.scattertime * 1000 + 100);
 }
-
-function endScatter() {
-  if (game.scatterEndTimer) { clearTimeout(game.scatterEndTimer); game.scatterEndTimer = null; }
-  // Score: 100 pr ord som starter med letter (case insensitive) og er unikt blant innsendinger for samme kategori
-  const letter = (game.scatterLetter || '').toLowerCase();
-  const counts = game.scatterCategories.map(() => new Map()); // catIdx -> word -> count
-
-  for (const [sid, arr] of game.scatterSubmissions) {
-    if (!arr) continue;
-    arr.forEach((w, i) => {
-      const word = (w || '').trim().toLowerCase();
-      if (!word || word[0] !== letter) return;
-      counts[i].set(word, (counts[i].get(word) || 0) + 1);
-    });
-  }
-
-  // Award points
-  for (const [sid, arr] of game.scatterSubmissions) {
-    const p = game.players.get(sid);
-    if (!p || !arr) continue;
-    let delta = 0;
-    arr.forEach((w, i) => {
-      const word = (w || '').trim().toLowerCase();
-      if (!word || word[0] !== letter) return;
-      const c = counts[i].get(word) || 0;
-      if (c === 1) delta += 100; // unique → full
-      else if (c > 1) delta += 50; // shared
-    });
-    p.score += delta;
-    p.lastDelta = delta;
-    if (game.teamMode && p.teamId != null) {
-      const team = game.teams.find(t => t.id === p.teamId);
-      if (team) team.score += delta;
+function endScatter(){
+  if (!game.scatter) return;
+  if (game.scatter.timer){ clearTimeout(game.scatter.timer); game.scatter.timer = null; }
+  // Tell opp: for hver kategori, finn ord. Unikt = 100, delt = 50. Tomt/ugyldig = 0.
+  const cats = game.scatter.categories;
+  const review = cats.map(() => []);
+  for (const [pid, entry] of game.scatter.entries){
+    const p = game.players.get(pid);
+    for (let i=0;i<cats.length;i++){
+      const word = (entry[i] || '').trim();
+      if (!word) continue;
+      if (word[0].toLowerCase() !== game.scatter.letter.toLowerCase()) continue;
+      review[i].push({ pid, name: p?.name || '?', word, points: 0 });
     }
   }
-  // Persist score hvis ≥4 spillere
-  recordScores('scatter', [...game.players.values()].map(p => ({ name: p.name, score: p.lastDelta || 0 })));
+  // Count duplicates per category
+  for (let i=0;i<cats.length;i++){
+    const counts = new Map();
+    for (const r of review[i]){
+      const key = r.word.toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    for (const r of review[i]){
+      const k = r.word.toLowerCase();
+      r.points = counts.get(k) === 1 ? 100 : 50;
+      const p = game.players.get(r.pid);
+      if (p) p.score += r.points;
+    }
+  }
+  game.scatter.review = review;
   game.phase = 'scatter-review';
   broadcast();
+  // Auto-avslutt etter 25s
+  setTimeout(() => {
+    if (game.phase === 'scatter-review'){
+      const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+      recordScores('scatter', players);
+      game.phase = 'end';
+      game.scatter = null;
+      broadcast();
+    }
+  }, 25000);
 }
 
-function buildScatterReview() {
-  const rows = [];
-  for (const [sid, arr] of game.scatterSubmissions) {
-    const p = game.players.get(sid);
-    if (!p || !arr) continue;
-    rows.push({ name: p.name, teamId: p.teamId, answers: arr, delta: p.lastDelta || 0 });
-  }
-  rows.sort((a, b) => b.delta - a.delta);
-  return rows;
-}
-
-// ---- Icebreaker ----
-function drawIcebreaker() {
-  const players = [...game.players.values()];
-  if (!players.length) return;
-  game.phase = 'icebreaker';
-  game.mode = 'icebreaker';
-  game.icebreakerPrompt = ICEBREAKERS[Math.floor(Math.random() * ICEBREAKERS.length)];
-  game.icebreakerTarget = players[Math.floor(Math.random() * players.length)].name;
-  broadcast();
-}
-
-// ---- 2 sannheter og 1 løgn ----
-const LIE_VOTE_TIME_DEFAULT = 30000;
-const LIE_REVEAL_TIME = 7000;
-
-function startLieGame() {
-  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
-  game.phase = 'lie-collect';
-  game.mode = 'lie';
-  game.lieRound = {
-    submissions: new Map(), // pid -> { s: [s1,s2,s3], lieIdx }
+// ==================== Lie (2 truths 1 lie) ====================
+function startLie(){
+  game.lie = {
+    stage: 'collect',
+    claims: new Map(),
     order: [],
-    idx: -1,
-    currentPid: null,
-    shuffleOrder: [0, 1, 2],
-    votes: new Map(),       // voterPid -> displayIdx
+    i: 0,
+    current: null,
+    votes: new Map(),
+    timer: null,
+    deadline: 0
   };
-  for (const p of game.players.values()) {
-    p.answered = false;
-    p.lastDelta = 0;
-    p.lastCorrect = null;
-  }
+  game.phase = 'lie-collect';
   broadcast();
 }
-
-function startLiePlayRound() {
-  if (!game.lieRound) return;
-  const order = [...game.lieRound.submissions.keys()];
+function startLiePlay(){
+  if (!game.lie) return;
+  const order = Array.from(game.lie.claims.keys());
   shuffle(order);
-  game.lieRound.order = order;
-  game.lieRound.idx = -1;
-  nextLieTurn();
+  game.lie.order = order;
+  game.lie.i = 0;
+  nextLieRound();
 }
-
-function nextLieTurn() {
-  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
-  if (!game.lieRound) return;
-  game.lieRound.idx++;
-  if (game.lieRound.idx >= game.lieRound.order.length) {
-    // Done with all players -> leaderboard, deretter end
-    // Persist score hvis ≥4 spillere (bruker akkumulert score-delta fra løgn-runden)
-    recordScores('lie', [...game.players.values()].map(p => ({ name: p.name, score: p.score })));
-    game.phase = 'leaderboard';
+function nextLieRound(){
+  if (!game.lie) return;
+  if (game.lie.i >= game.lie.order.length){
+    // Done
+    const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+    recordScores('lie', players);
+    game.phase = 'end';
+    game.lie = null;
     broadcast();
-    scheduleAutoAdvance();
     return;
   }
-  const pid = game.lieRound.order[game.lieRound.idx];
-  const sub = game.lieRound.submissions.get(pid);
-  if (!sub || !game.players.has(pid)) { nextLieTurn(); return; }
-  game.lieRound.currentPid = pid;
-  game.lieRound.shuffleOrder = shuffle([0, 1, 2]);
-  game.lieRound.votes = new Map();
-  for (const p of game.players.values()) {
-    p.answered = false;
-    p.lastDelta = 0;
-    p.lastCorrect = null;
-  }
+  const pid = game.lie.order[game.lie.i];
+  const claim = game.lie.claims.get(pid);
+  if (!claim){ game.lie.i++; return nextLieRound(); }
+  const p = game.players.get(pid);
+  if (!p){ game.lie.i++; return nextLieRound(); }
+  game.lie.current = {
+    pid, name: p.name, emoji: p.emoji, color: p.color,
+    items: claim.items, lieIdx: null // Skjules til reveal
+  };
+  game.lie.votes = new Map();
+  game.lie.stage = 'play';
+  game.lie.deadline = Date.now() + game.config.lietime * 1000;
   game.phase = 'lie-play';
   broadcast();
-  const startedIdx = game.lieRound.idx;
-  const voteTime = Math.max(10000, Math.min(120000, game.lieVoteDuration || LIE_VOTE_TIME_DEFAULT));
-  game.lieTimer = setTimeout(() => {
-    if (game.phase === 'lie-play' && game.lieRound && game.lieRound.idx === startedIdx) endLieTurn();
-  }, voteTime + 500);
+  if (game.lie.timer) clearTimeout(game.lie.timer);
+  game.lie.timer = setTimeout(() => revealLie(), game.config.lietime * 1000 + 100);
 }
-
-function endLieTurn() {
-  if (game.lieTimer) { clearTimeout(game.lieTimer); game.lieTimer = null; }
-  if (!game.lieRound) return;
-  const pid = game.lieRound.currentPid;
-  const sub = game.lieRound.submissions.get(pid);
-  if (!sub) { nextLieTurn(); return; }
-  const lieDisplayIdx = game.lieRound.shuffleOrder.indexOf(sub.lieIdx);
+function revealLie(){
+  if (!game.lie || !game.lie.current) return;
+  const c = game.lie.current;
+  const claim = game.lie.claims.get(c.pid);
+  if (!claim){ advanceLie(); return; }
+  c.lieIdx = claim.lieIdx;
+  // Score
+  const liar = game.players.get(c.pid);
   let fooled = 0;
-  for (const [voterPid, vote] of game.lieRound.votes) {
-    if (voterPid === pid) continue;
+  for (const [voterPid, idx] of game.lie.votes){
     const voter = game.players.get(voterPid);
     if (!voter) continue;
-    if (vote === lieDisplayIdx) {
+    if (idx === claim.lieIdx){
       voter.score += 100;
-      voter.lastDelta = 100;
-      voter.lastCorrect = true;
     } else {
-      voter.lastDelta = 0;
-      voter.lastCorrect = false;
       fooled++;
     }
   }
-  const submitter = game.players.get(pid);
-  if (submitter) {
-    const bonus = fooled * 50;
-    submitter.score += bonus;
-    submitter.lastDelta = bonus;
-    submitter.lastCorrect = null;
-    if (game.teamMode && submitter.teamId != null) {
-      const t = game.teams.find(x => x.id === submitter.teamId);
-      if (t) t.score += bonus;
-    }
-  }
-  if (game.teamMode) {
-    for (const [voterPid, vote] of game.lieRound.votes) {
-      if (vote === lieDisplayIdx) {
-        const voter = game.players.get(voterPid);
-        if (voter && voter.teamId != null) {
-          const t = game.teams.find(x => x.id === voter.teamId);
-          if (t) t.score += 100;
-        }
+  if (liar) liar.score += 50 * fooled;
+  if (game.config.teams && liar && liar.team){
+    // Team gets points too
+    for (const p of game.players.values()){
+      if (p.team && p.team.name === liar.team.name && p.id !== liar.id){
+        // subtle team bonus
       }
     }
   }
+  game.lie.stage = 'reveal';
   game.phase = 'lie-reveal';
   broadcast();
-  const curIdx = game.lieRound.idx;
-  game.lieTimer = setTimeout(() => {
-    if (game.phase === 'lie-reveal' && game.lieRound && game.lieRound.idx === curIdx) nextLieTurn();
-  }, LIE_REVEAL_TIME);
+}
+function advanceLie(){
+  if (!game.lie) return;
+  if (game.lie.stage === 'play'){
+    if (game.lie.timer){ clearTimeout(game.lie.timer); game.lie.timer = null; }
+    return revealLie();
+  }
+  if (game.lie.stage === 'reveal'){
+    game.lie.i++;
+    return nextLieRound();
+  }
+  if (game.lie.stage === 'collect'){
+    // Tvinge videre hvis host vil
+    if (game.lie.claims.size >= 1){
+      startLiePlay();
+    }
+  }
 }
 
-// ---- Snake game ----
-const SNAKE_GRID = { w: 40, h: 25 };
-const SNAKE_DURATION_DEFAULT = 60000;
+// ==================== Icebreaker ====================
+function startIcebreaker(){
+  const pool = Array.from(game.players.values());
+  const target = pool.length ? rand(pool) : null;
+  game.icebreaker = {
+    prompt: rand(ICEBREAKERS),
+    target: target ? { id: target.id, name: target.name, emoji: target.emoji, color: target.color } : null
+  };
+  game.phase = 'icebreaker';
+  broadcast();
+}
+
+// ==================== Wheel ====================
+function startWheel(){
+  game.wheel = { chosen: null };
+  game.phase = 'wheel';
+  broadcast();
+}
+function spinWheel(){
+  const pool = Array.from(game.players.values());
+  if (!pool.length){ broadcast(); return; }
+  const target = rand(pool);
+  game.wheel = { chosen: { id: target.id, name: target.name, emoji: target.emoji, color: target.color } };
+  game.phase = 'wheel';
+  broadcast();
+}
+
+// ==================== Snake ====================
+const SNAKE_COLS = 40;
+const SNAKE_ROWS = 25;
 const SNAKE_TICK = 140;
-const SNAKE_COLORS = ['#e54b4b','#3a86ff','#ffbe0b','#29c46a','#a855f7','#ff7b00','#14b8a6','#ec4899','#f59e0b','#06b6d4'];
 
-function snakeCleanTimers() {
-  if (game.snakeTickInterval) { clearInterval(game.snakeTickInterval); game.snakeTickInterval = null; }
-  if (game.snakeEndTimer) { clearTimeout(game.snakeEndTimer); game.snakeEndTimer = null; }
-}
-
-function snakeSpawnFood() {
-  if (!game.snake) return;
-  const occupied = new Set();
-  for (const s of game.snake.snakes.values()) {
-    if (!s.alive) continue;
-    s.body.forEach(seg => occupied.add(seg.x + ',' + seg.y));
-  }
-  for (const f of game.snake.food) occupied.add(f.x + ',' + f.y);
-  for (let tries = 0; tries < 50; tries++) {
-    const x = Math.floor(Math.random() * SNAKE_GRID.w);
-    const y = Math.floor(Math.random() * SNAKE_GRID.h);
-    if (!occupied.has(x + ',' + y)) { game.snake.food.push({ x, y }); return; }
-  }
-}
-
-function snakeRespawn(sid, snake) {
-  // Finn tom plass
-  const occupied = new Set();
-  for (const s of game.snake.snakes.values()) {
-    if (!s.alive) continue;
-    s.body.forEach(seg => occupied.add(seg.x + ',' + seg.y));
-  }
-  for (let tries = 0; tries < 200; tries++) {
-    const x = 5 + Math.floor(Math.random() * (SNAKE_GRID.w - 10));
-    const y = 3 + Math.floor(Math.random() * (SNAKE_GRID.h - 6));
-    let ok = true;
-    for (let d = 0; d < 3; d++) if (occupied.has((x-d) + ',' + y)) { ok = false; break; }
-    if (!ok) continue;
-    snake.body = [{x, y}, {x: x-1, y}, {x: x-2, y}];
-    snake.dir = 'right'; snake.nextDir = 'right';
-    snake.alive = true; snake.deadAt = 0;
-    snake.pendingGrow = 0;
-    return;
-  }
-}
-
-function startSnake() {
-  if (!game.players.size) return;
-  snakeCleanTimers();
-  const rawDur = game.snakeDuration;
-  const isInfinite = rawDur === 0;
-  const duration = isInfinite ? 0 : Math.max(15000, Math.min(300000, rawDur || SNAKE_DURATION_DEFAULT));
-  game.phase = 'snake';
-  game.mode = 'snake';
-  game.snake = {
-    snakes: new Map(),
-    food: [],
-    startedAt: Date.now() + 3000, // 3s countdown
-    endAt: isInfinite ? Number.MAX_SAFE_INTEGER : Date.now() + 3000 + duration,
-    isInfinite,
-    started: false,
-  };
-  let colorIdx = 0;
-  for (const [sid, p] of game.players) {
-    const snake = {
-      name: p.name, emoji: p.emoji,
-      color: SNAKE_COLORS[colorIdx++ % SNAKE_COLORS.length],
-      body: [], dir: 'right', nextDir: 'right',
-      alive: false, deadAt: 0, score: 0,
-    };
-    snakeRespawn(sid, snake);
-    game.snake.snakes.set(sid, snake);
-  }
-  // 5 food items to start
-  for (let i = 0; i < 5; i++) snakeSpawnFood();
-  broadcast();
-  // After countdown, start tick-loop
-  setTimeout(() => {
-    if (game.phase !== 'snake' || !game.snake) return;
-    game.snake.started = true;
-    game.snakeTickInterval = setInterval(snakeTick, SNAKE_TICK);
-  }, 3000);
-  game.snakeEndTimer = isInfinite ? null : setTimeout(() => endSnake(), 3000 + duration);
-}
-
-const OPPOSITE = { up: 'down', down: 'up', left: 'right', right: 'left' };
-function snakeTick() {
-  try {
-    snakeTickInner();
-  } catch (e) {
-    console.error('[SnakeTick error]', e);
-  }
-}
-
-function snakeTickInner() {
-  const sd = game.snake;
-  if (!sd || !sd.started) return;
-  const now = Date.now();
-  // Handle respawns after 3s
-  for (const [sid, s] of sd.snakes) {
-    if (!s.alive && s.deadAt && now - s.deadAt > 3000 && now < sd.endAt - 2000) {
-      snakeRespawn(sid, s);
-    }
-  }
-  // Build collision map of all live snake cells
-  const cells = new Map();
-  for (const [sid, s] of sd.snakes) {
-    if (!s.alive) continue;
-    s.body.forEach(seg => cells.set(seg.x + ',' + seg.y, sid));
-  }
-  const newHeads = new Map();
-  for (const [sid, s] of sd.snakes) {
-    if (!s.alive) continue;
-    // Ignore opposite-direction requests
-    if (s.nextDir && s.nextDir !== OPPOSITE[s.dir]) s.dir = s.nextDir;
-    const head = s.body[0];
-    const next = { x: head.x, y: head.y };
-    if (s.dir === 'up') next.y--;
-    else if (s.dir === 'down') next.y++;
-    else if (s.dir === 'left') next.x--;
-    else if (s.dir === 'right') next.x++;
-    newHeads.set(sid, next);
-  }
-  // Check collisions & determine winners/losers (bigger snake spiser mindre)
-  // deaths: sid → {eater: sid|null, reason: 'wall'|'head'|'body'|'self'}
-  const deaths = new Map();
-
-  // 1) Vegger
-  for (const [sid, next] of newHeads) {
-    if (next.x < 0 || next.x >= SNAKE_GRID.w || next.y < 0 || next.y >= SNAKE_GRID.h) {
-      deaths.set(sid, { eater: null, reason: 'wall' });
-    }
-  }
-
-  // 2) Head-to-head: to eller flere hoder peker på samme celle
-  const headCells = new Map();
-  for (const [sid, next] of newHeads) {
-    if (deaths.has(sid)) continue;
-    const key = next.x + ',' + next.y;
-    if (!headCells.has(key)) headCells.set(key, []);
-    headCells.get(key).push(sid);
-  }
-  for (const [key, sids] of headCells) {
-    if (sids.length < 2) continue;
-    // Sorter etter lengde, lengst først
-    const sorted = [...sids].sort((a, b) => sd.snakes.get(b).body.length - sd.snakes.get(a).body.length);
-    const topLen = sd.snakes.get(sorted[0]).body.length;
-    const winners = sorted.filter(s => sd.snakes.get(s).body.length === topLen);
-    if (winners.length === 1) {
-      // Unik vinner spiser alle andre
-      for (const s of sorted.slice(1)) deaths.set(s, { eater: winners[0], reason: 'head' });
-    } else {
-      // Uavgjort — alle dør
-      for (const s of sids) deaths.set(s, { eater: null, reason: 'head' });
-    }
-  }
-
-  // 3) Head-into-body: spiller går inn i noens kropp
-  for (const [sid, next] of newHeads) {
-    if (deaths.has(sid)) continue;
-    const bodyOwner = cells.get(next.x + ',' + next.y);
-    if (!bodyOwner) continue;
-    if (bodyOwner === sid) {
-      // Inn i egen kropp — med unntak for haleplass som tømmes
-      const owner = sd.snakes.get(sid);
-      const tail = owner.body[owner.body.length - 1];
-      const willEat = sd.food.some(f => f.x === next.x && f.y === next.y);
-      if (next.x === tail.x && next.y === tail.y && !willEat) continue;
-      deaths.set(sid, { eater: null, reason: 'self' });
-    } else {
-      const attacker = sd.snakes.get(sid);
-      const defender = sd.snakes.get(bodyOwner);
-      if (!attacker || !defender || !defender.alive) continue;
-      const aLen = attacker.body.length;
-      const dLen = defender.body.length;
-      if (aLen > dLen) {
-        // Angriper er større → spiser forsvareren
-        deaths.set(bodyOwner, { eater: sid, reason: 'body' });
-      } else if (aLen < dLen) {
-        // Forsvareren er større → angriper dør
-        deaths.set(sid, { eater: bodyOwner, reason: 'body' });
-      } else {
-        // Samme størrelse → begge dør
-        deaths.set(sid, { eater: null, reason: 'body' });
-        if (!deaths.has(bodyOwner)) deaths.set(bodyOwner, { eater: null, reason: 'body' });
-      }
-    }
-  }
-
-  // Påfør dødsfall og gi lengde til spiseren
-  for (const [sid, info] of deaths) {
-    const s = sd.snakes.get(sid);
-    if (!s || !s.alive) continue;
-    s.alive = false;
-    s.deadAt = now;
-    if (info.eater) {
-      const eater = sd.snakes.get(info.eater);
-      if (eater && eater.alive) {
-        const growBy = Math.min(50, s.body.length); // cap 50 så de ikke blir absurde
-        eater.pendingGrow = (eater.pendingGrow || 0) + growBy;
-        eater.score += 20 + growBy * 3; // 20 for drap + 3 per body segment
-      }
-    }
-  }
-
-  // Move surviving snakes
-  for (const [sid, next] of newHeads) {
-    const s = sd.snakes.get(sid);
-    if (!s.alive || deaths.has(sid)) continue;
-    s.body.unshift(next);
-    const foodIdx = sd.food.findIndex(f => f.x === next.x && f.y === next.y);
-    if (foodIdx >= 0) {
-      sd.food.splice(foodIdx, 1);
-      s.score += 10;
-      snakeSpawnFood();
-      if (sd.food.length < Math.max(5, sd.snakes.size * 2) && Math.random() < 0.3) snakeSpawnFood();
-    } else if (s.pendingGrow > 0) {
-      // Voks istedenfor å miste halesegment
-      s.pendingGrow -= 1;
-    } else {
-      s.body.pop();
-    }
-  }
-  io.volatile.emit('snake:tick', snakeSnapshot());
-}
-
-function snakeSnapshot() {
-  if (!game.snake) return null;
-  const now = Date.now();
-  return {
-    grid: SNAKE_GRID,
-    started: game.snake.started,
-    startedAt: game.snake.startedAt,
-    endAt: game.snake.endAt,
-    isInfinite: game.snake.isInfinite || false,
-    timeLeft: game.snake.isInfinite ? null : Math.max(0, game.snake.endAt - now),
-    countdownLeft: Math.max(0, game.snake.startedAt - now),
-    snakes: [...game.snake.snakes.entries()].map(([sid, s]) => ({
-      id: sid, name: s.name, emoji: s.emoji, color: s.color,
-      body: s.body, alive: s.alive, score: s.score,
-      respawnIn: !s.alive && s.deadAt ? Math.max(0, 3000 - (now - s.deadAt)) : 0,
-    })),
-    food: game.snake.food,
-  };
-}
-
-function endSnake() {
-  snakeCleanTimers();
-  if (!game.snake) return;
-  // Award main-game points (både individ og lag)
-  for (const [sid, s] of game.snake.snakes) {
-    const p = game.players.get(sid);
-    if (!p) continue;
-    p.score += s.score;
-    if (game.teamMode && p.teamId != null) {
-      const team = game.teams.find(t => t.id === p.teamId);
-      if (team) team.score += s.score;
-    }
-  }
-  // Persist score hvis minst 4 spillere
-  recordScores('snake', [...game.snake.snakes.values()].map(s => ({ name: s.name, score: s.score })));
-  game.phase = 'snake-end';
-  broadcast();
-}
-
-// ---- Bomberman ----
-const BOMB_GRID = { w: 25, h: 15 };
-const BOMB_DURATION_DEFAULT = 90000;
-const BOMB_TICK = 220;
-const BOMB_FUSE = 2500;
-const BOMB_EXPLOSION_TTL = 700;
-const BOMB_RESPAWN_MS = 5000;
-const BOMB_COLORS = ['#e54b4b','#3a86ff','#ffbe0b','#29c46a','#a855f7','#ff7b00','#14b8a6','#ec4899','#f59e0b','#06b6d4','#84cc16','#a78bfa'];
-
-// Wall-verdier: 0=tom, 1=hard, 2=myk
-function bombGenerateMap() {
-  const W = BOMB_GRID.w, H = BOMB_GRID.h;
-  const grid = new Array(W * H).fill(0);
-  const idx = (x, y) => y * W + x;
-  // Ramme + pillar-mønster (hver annen celle med x/y partall = hard)
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    if (x === 0 || y === 0 || x === W-1 || y === H-1) grid[idx(x,y)] = 1;
-    else if (x % 2 === 0 && y % 2 === 0) grid[idx(x,y)] = 1;
-  }
-  return { grid, W, H, idx };
-}
-
-function bombSpawnPositions() {
-  const W = BOMB_GRID.w, H = BOMB_GRID.h;
-  // Rekkefølge basert på avstand fra andre spawnpunkter
-  return [
-    {x: 1, y: 1}, {x: W-2, y: H-2}, {x: W-2, y: 1}, {x: 1, y: H-2},
-    {x: Math.floor(W/2), y: 1}, {x: Math.floor(W/2), y: H-2},
-    {x: 1, y: Math.floor(H/2)}, {x: W-2, y: Math.floor(H/2)},
-    {x: Math.floor(W/4), y: 1}, {x: Math.floor(3*W/4), y: H-2},
-    {x: Math.floor(W/4), y: H-2}, {x: Math.floor(3*W/4), y: 1},
-    {x: 1, y: Math.floor(H/4)}, {x: W-2, y: Math.floor(3*H/4)},
-    {x: 1, y: Math.floor(3*H/4)}, {x: W-2, y: Math.floor(H/4)},
-    {x: Math.floor(W/2), y: Math.floor(H/2)},
-    {x: 3, y: 3}, {x: W-4, y: H-4}, {x: W-4, y: 3}, {x: 3, y: H-4},
-  ];
-}
-
-function bombFillSoftWalls(map, spawnPts) {
-  // Fyll 60% av tomme celler med myk vegg, men ikke rundt spawn-punkter
-  const safeCells = new Set();
-  for (const p of spawnPts) {
-    safeCells.add(p.x + ',' + p.y);
-    // 2 celler i hver retning
-    for (const [dx, dy] of [[0,1],[1,0],[0,-1],[-1,0],[1,1],[-1,-1],[1,-1],[-1,1]]) {
-      safeCells.add((p.x+dx) + ',' + (p.y+dy));
-    }
-  }
-  for (let i = 0; i < map.grid.length; i++) {
-    if (map.grid[i] !== 0) continue;
-    const x = i % map.W, y = Math.floor(i / map.W);
-    if (safeCells.has(x + ',' + y)) continue;
-    if (Math.random() < 0.70) map.grid[i] = 2;
-  }
-}
-
-function bombCleanTimers() {
-  if (game.bombTickInterval) { clearInterval(game.bombTickInterval); game.bombTickInterval = null; }
-  if (game.bombEndTimer) { clearTimeout(game.bombEndTimer); game.bombEndTimer = null; }
-}
-
-function bombRespawnPlayer(sid, player) {
-  const positions = bombSpawnPositions();
-  const occupied = new Set();
-  for (const p of game.bomb.players.values()) {
-    if (p.alive) occupied.add(p.x + ',' + p.y);
-  }
-  // Sjekk også vegger
-  const { grid, W, idx } = game.bomb.map;
-  for (const pos of positions) {
-    const key = pos.x + ',' + pos.y;
-    if (occupied.has(key)) continue;
-    if (grid[idx(pos.x, pos.y)] !== 0) continue;
-    player.x = pos.x; player.y = pos.y;
-    player.nextDir = null;
-    player.dirs = { up: false, down: false, left: false, right: false };
-    player.alive = true; player.deadAt = 0;
-    player.shield = 1; // respawn-beskyttelse (1 treff)
-    player.invulnerableUntil = Date.now() + 1500; // 1.5s grace
-    player.holdingBomb = null;
-    player.moveAccum = 0;
-    // Clear cells around spawn of soft walls
-    for (const [dx, dy] of [[0,0],[0,1],[1,0],[0,-1],[-1,0]]) {
-      const nx = pos.x + dx, ny = pos.y + dy;
-      if (nx > 0 && nx < W-1 && ny > 0 && ny < BOMB_GRID.h-1) {
-        if (grid[idx(nx, ny)] === 2) grid[idx(nx, ny)] = 0;
-      }
-    }
-    return true;
-  }
-  return false;
-}
-
-function startBomberman() {
-  if (!game.players.size) return;
-  bombCleanTimers();
-  const rawDur = game.bombDuration;
-  const isInfinite = rawDur === 0;
-  const duration = isInfinite ? 0 : Math.max(15000, Math.min(300000, rawDur || BOMB_DURATION_DEFAULT));
-  game.phase = 'bomb';
-  game.mode = 'bomb';
-  const map = bombGenerateMap();
-  const spawnPts = bombSpawnPositions();
-  bombFillSoftWalls(map, spawnPts);
-  game.bomb = {
-    map,
-    players: new Map(),
-    bombs: [],
-    explosions: [],
-    powerups: [],
-    startedAt: Date.now() + 3000,
-    endAt: isInfinite ? Number.MAX_SAFE_INTEGER : Date.now() + 3000 + duration,
-    isInfinite,
-    started: false,
-    bombCounter: 0,
-    wallsVersion: 1,
-    wallsLastSent: 0,
-  };
-  let colorIdx = 0;
-  let posIdx = 0;
-  for (const [sid, p] of game.players) {
-    const color = BOMB_COLORS[colorIdx++ % BOMB_COLORS.length];
-    const pos = spawnPts[posIdx++ % spawnPts.length];
-    game.bomb.players.set(sid, {
-      id: sid, name: p.name, emoji: p.emoji, color,
-      x: pos.x, y: pos.y,
-      nextDir: null, alive: true, deadAt: 0,
-      bombsMax: 1, bombsPlaced: 0, range: 2,
-      shield: 0,
-      speed: 1,            // 1 = normal, 2 = rask, 3 = veldig rask
-      kick: false,          // Kan sparke bomber
-      punch: false,         // Kan kaste bomber
-      remote: false,        // Manuell detonasjon
-      facing: 'down',       // Retning for punch
-      moveAccum: 0,         // For sub-tick-hastighet
-      dirs: { up: false, down: false, left: false, right: false },
-      score: 0, kills: 0,
+function startSnake(){
+  stopAllTimers();
+  const snakes = new Map();
+  const players = Array.from(game.players.values());
+  const positions = spreadSpawns(players.length, SNAKE_COLS, SNAKE_ROWS, 4);
+  players.forEach((p, i) => {
+    const pos = positions[i];
+    snakes.set(p.id, {
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      segs: [{ x: pos.x, y: pos.y }, { x: pos.x, y: pos.y }, { x: pos.x, y: pos.y }],
+      dir: pos.dir,
+      nextDir: pos.dir,
+      alive: true,
+      respawnAt: 0,
+      growBy: 0,
+      teamName: p.team?.name || null
     });
-  }
+    p.score = 0;
+  });
+  game.snake = {
+    snakes,
+    food: spawnFood([], snakes, 8),
+    endAt: game.config.snaketime > 0 ? Date.now() + game.config.snaketime * 1000 : 0,
+    tickTimer: null
+  };
+  game.phase = 'countdown';
   broadcast();
   setTimeout(() => {
-    if (game.phase !== 'bomb' || !game.bomb) return;
-    game.bomb.started = true;
-    game.bombTickInterval = setInterval(bombermanTick, BOMB_TICK);
+    if (!game.snake) return;
+    game.phase = 'snake';
+    broadcast();
+    game.snake.tickTimer = setInterval(snakeTick, SNAKE_TICK);
   }, 3000);
-  game.bombEndTimer = isInfinite ? null : setTimeout(() => endBomberman(), 3000 + duration);
 }
 
-function bombermanTick() {
-  try {
-    bombermanTickInner();
-  } catch (e) {
-    console.error('[BombTick error]', e);
-  }
+function endSnake(){
+  if (!game.snake) return;
+  if (game.snake.tickTimer){ clearInterval(game.snake.tickTimer); game.snake.tickTimer = null; }
+  const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+  recordScores('snake', players);
+  game.phase = 'end';
+  game.snake = null;
+  broadcast();
 }
 
-function bombermanTickInner() {
-  const b = game.bomb;
-  if (!b || !b.started) return;
-  const { grid, W, idx } = b.map;
+function snakeTick(){
+  if (!game.snake) return;
   const now = Date.now();
 
-  // Respawn dead players etter BOMB_RESPAWN_MS
-  for (const [sid, p] of b.players) {
-    if (!p.alive && p.deadAt && now - p.deadAt > BOMB_RESPAWN_MS && now < b.endAt - 2000) {
-      bombRespawnPlayer(sid, p);
+  // Timer over?
+  if (game.snake.endAt && now >= game.snake.endAt){
+    return endSnake();
+  }
+
+  // Respawn dead snakes
+  for (const s of game.snake.snakes.values()){
+    if (!s.alive && s.respawnAt && now >= s.respawnAt){
+      const spawn = findFreeSpot(game.snake);
+      if (spawn){
+        s.segs = [{ x: spawn.x, y: spawn.y }, { x: spawn.x, y: spawn.y }, { x: spawn.x, y: spawn.y }];
+        s.dir = spawn.dir; s.nextDir = spawn.dir;
+        s.alive = true; s.growBy = 0;
+      }
     }
   }
 
-  // Cleanup expired explosions
-  b.explosions = b.explosions.filter(e => e.endsAt > now);
-
-  // Detonate bombs whose time is up
-  const toDetonate = b.bombs.filter(bb => bb.explodesAt <= now);
-  for (const bomb of toDetonate) detonateBomb(bomb);
-  b.bombs = b.bombs.filter(bb => bb.explodesAt > now);
-
-  // Move players (støtter diagonalt, hastighet og kick-mekanikk)
-  const explCells = new Set(b.explosions.map(e => e.x + ',' + e.y));
-  for (const [sid, p] of b.players) {
-    if (!p.alive) continue;
-    // Compute (dx, dy) fra dirs-state eller legacy nextDir
-    let dx = 0, dy = 0;
-    if (p.dirs) {
-      dx = (p.dirs.right ? 1 : 0) - (p.dirs.left ? 1 : 0);
-      dy = (p.dirs.down ? 1 : 0) - (p.dirs.up ? 1 : 0);
-    } else if (p.nextDir) {
-      if (p.nextDir === 'up') dy = -1;
-      else if (p.nextDir === 'down') dy = 1;
-      else if (p.nextDir === 'left') dx = -1;
-      else if (p.nextDir === 'right') dx = 1;
+  // Move all heads
+  const occupied = new Map(); // key "x:y" -> [snakeIds with body]
+  const heads = []; // { id, x, y, len }
+  for (const s of game.snake.snakes.values()){
+    if (!s.alive) continue;
+    // Validate next dir (no reverse 180)
+    if (s.nextDir && !isOpposite(s.nextDir, s.dir)){
+      s.dir = s.nextDir;
     }
-    // Oppdater facing (siste akse-bevegelse) for punch
-    if (dx > 0) p.facing = 'right';
-    else if (dx < 0) p.facing = 'left';
-    else if (dy > 0) p.facing = 'down';
-    else if (dy < 0) p.facing = 'up';
-    if (dx === 0 && dy === 0) continue;
+    const h = s.segs[0];
+    const d = dirDelta(s.dir);
+    const nx = h.x + d.x, ny = h.y + d.y;
+    // Wall?
+    if (nx < 0 || ny < 0 || nx >= SNAKE_COLS || ny >= SNAKE_ROWS){
+      killSnake(s); continue;
+    }
+    // Tentatively advance
+    s.segs.unshift({ x: nx, y: ny });
+    // Food?
+    const foodIdx = game.snake.food.findIndex(f => f.x === nx && f.y === ny);
+    if (foodIdx >= 0){
+      game.snake.food.splice(foodIdx, 1);
+      s.growBy += 1;
+      const p = game.players.get(s.id); if (p) p.score += 10;
+    }
+    if (s.growBy > 0){
+      s.growBy--;
+    } else {
+      s.segs.pop();
+    }
+    heads.push({ id: s.id, x: nx, y: ny, len: s.segs.length });
+  }
 
-    const canPass = (tx, ty) => {
-      if (tx < 0 || tx >= W || ty < 0 || ty >= BOMB_GRID.h) return false;
-      if (grid[idx(tx, ty)] !== 0) return false;
-      // Bomber blokkerer (unntatt den du bærer)
-      if (b.bombs.some(bb => bb.x === tx && bb.y === ty && !bb.held)) return false;
-      return true;
-    };
-    const pickupIfAny = (tx, ty) => {
-      const puIdx = b.powerups.findIndex(u => u.x === tx && u.y === ty);
-      if (puIdx >= 0) {
-        const pu = b.powerups[puIdx];
-        if (pu.type === 'bomb') p.bombsMax = Math.min(8, p.bombsMax + 1);
-        else if (pu.type === 'range') p.range = Math.min(10, p.range + 1);
-        else if (pu.type === 'shield') p.shield = (p.shield || 0) + 1;
-        else if (pu.type === 'gold') p.score += 50;
-        else if (pu.type === 'speed') p.speed = Math.min(1.75, (p.speed || 1) + 0.25);
-        else if (pu.type === 'kick') p.kick = true;
-        else if (pu.type === 'punch') p.punch = true;
-        else if (pu.type === 'remote') p.remote = true;
-        b.powerups.splice(puIdx, 1);
+  // Collisions
+  // 1) own body
+  for (const s of game.snake.snakes.values()){
+    if (!s.alive) continue;
+    const h = s.segs[0];
+    for (let i=1;i<s.segs.length;i++){
+      if (s.segs[i].x === h.x && s.segs[i].y === h.y){
+        killSnake(s); break;
       }
-    };
-    const tryMoveTo = (tx, ty) => {
-      if (!canPass(tx, ty)) {
-        // KICK: hvis det er en bombe der (ikke båret) og spilleren har kick, start sliding
-        if (p.kick) {
-          const bombHere = b.bombs.find(bb => bb.x === tx && bb.y === ty && !bb.held);
-          if (bombHere && bombHere.vx === 0 && bombHere.vy === 0) {
-            const kdx = Math.sign(tx - p.x);
-            const kdy = Math.sign(ty - p.y);
-            bombHere.vx = kdx;
-            bombHere.vy = kdy;
+    }
+  }
+  // 2) head-to-head and head-to-body
+  const headMap = new Map(); // "x:y" -> [head]
+  for (const s of game.snake.snakes.values()){
+    if (!s.alive) continue;
+    const k = s.segs[0].x + ':' + s.segs[0].y;
+    if (!headMap.has(k)) headMap.set(k, []);
+    headMap.get(k).push(s);
+  }
+  // Head-to-head
+  for (const [k, arr] of headMap){
+    if (arr.length < 2) continue;
+    const maxLen = Math.max(...arr.map(s => s.segs.length));
+    const winners = arr.filter(s => s.segs.length === maxLen);
+    if (winners.length === arr.length){
+      // All same length: all die
+      for (const s of arr) killSnake(s);
+    } else {
+      // Longest survives. He eats all shorter
+      const winner = winners[0];
+      let eaten = 0, totalLen = 0;
+      for (const s of arr){
+        if (s === winner) continue;
+        totalLen += s.segs.length;
+        killSnake(s);
+        eaten++;
+      }
+      const grow = Math.min(50 - winner.segs.length, totalLen);
+      if (grow > 0) winner.growBy += grow;
+      const bonus = 20 + totalLen * 3;
+      const p = game.players.get(winner.id); if (p) p.score += bonus;
+    }
+  }
+  // Head-to-body
+  const bodyMap = new Map(); // "x:y" -> snakeId (for non-head body)
+  for (const s of game.snake.snakes.values()){
+    if (!s.alive) continue;
+    for (let i=1;i<s.segs.length;i++){
+      bodyMap.set(s.segs[i].x + ':' + s.segs[i].y, s);
+    }
+  }
+  for (const s of game.snake.snakes.values()){
+    if (!s.alive) continue;
+    const k = s.segs[0].x + ':' + s.segs[0].y;
+    const victim = bodyMap.get(k);
+    if (victim && victim !== s){
+      if (s.segs.length > victim.segs.length){
+        // Attacker wins
+        const grow = Math.min(50 - s.segs.length, victim.segs.length);
+        if (grow > 0) s.growBy += grow;
+        const p = game.players.get(s.id); if (p) p.score += 20 + victim.segs.length * 3;
+        killSnake(victim);
+      } else if (s.segs.length < victim.segs.length){
+        killSnake(s);
+      } else {
+        killSnake(s); killSnake(victim);
+      }
+    }
+  }
+
+  // Replenish food
+  while (game.snake.food.length < 8){
+    const f = randomEmptyCell(game.snake);
+    if (!f) break;
+    game.snake.food.push(f);
+  }
+
+  // Broadcast tick
+  const snakeState = buildSnakeState();
+  io.emit('snake:tick', snakeState);
+
+  // All dead -> end
+  const alive = Array.from(game.snake.snakes.values()).filter(s => s.alive);
+  if (alive.length === 0 && game.snake.snakes.size > 0){
+    // Pause — wait respawn
+  }
+}
+
+function killSnake(s){
+  if (!s.alive) return;
+  s.alive = false;
+  s.respawnAt = Date.now() + 3000;
+  s.segs = [];
+}
+
+function buildSnakeState(){
+  if (!game.snake) return { snakes: [], food: [] };
+  return {
+    snakes: Array.from(game.snake.snakes.values()).map(s => ({
+      id: s.id, name: s.name, color: s.color, alive: s.alive,
+      segs: s.segs.slice(0, 60),
+      len: s.segs.length
+    })),
+    food: game.snake.food.slice(),
+    score: Array.from(game.players.values()).map(p => ({ id: p.id, name: p.name, score: p.score })).sort((a,b)=>b.score-a.score).slice(0, 20),
+    endAt: game.snake.endAt
+  };
+}
+
+function isOpposite(a, b){
+  return (a==='up'&&b==='down')||(a==='down'&&b==='up')||(a==='left'&&b==='right')||(a==='right'&&b==='left');
+}
+function dirDelta(d){
+  switch(d){
+    case 'up': return { x: 0, y: -1 };
+    case 'down': return { x: 0, y: 1 };
+    case 'left': return { x: -1, y: 0 };
+    case 'right': return { x: 1, y: 0 };
+  }
+  return { x: 0, y: 0 };
+}
+
+function spreadSpawns(n, W, H, pad){
+  const pts = [];
+  for (let i=0;i<n;i++){
+    const a = (i / Math.max(1, n)) * Math.PI * 2;
+    const cx = W/2, cy = H/2;
+    const r = Math.min(W,H)/2 - pad - 1;
+    const x = Math.max(1, Math.min(W-2, Math.round(cx + Math.cos(a) * r)));
+    const y = Math.max(1, Math.min(H-2, Math.round(cy + Math.sin(a) * r)));
+    const dirs = ['up','down','left','right'];
+    pts.push({ x, y, dir: dirs[i % 4] });
+  }
+  return pts;
+}
+
+function findFreeSpot(sn){
+  for (let tries = 0; tries < 50; tries++){
+    const x = 1 + ((Math.random() * (SNAKE_COLS - 2)) | 0);
+    const y = 1 + ((Math.random() * (SNAKE_ROWS - 2)) | 0);
+    let ok = true;
+    for (const s of sn.snakes.values()){
+      for (const seg of s.segs){ if (seg.x === x && seg.y === y){ ok = false; break; } }
+      if (!ok) break;
+    }
+    if (ok){
+      return { x, y, dir: ['up','down','left','right'][(Math.random()*4)|0] };
+    }
+  }
+  return null;
+}
+
+function randomEmptyCell(sn){
+  for (let tries=0; tries<50; tries++){
+    const x = (Math.random() * SNAKE_COLS) | 0;
+    const y = (Math.random() * SNAKE_ROWS) | 0;
+    let ok = true;
+    for (const s of sn.snakes.values()){
+      for (const seg of s.segs){ if (seg.x === x && seg.y === y){ ok = false; break; } }
+      if (!ok) break;
+    }
+    for (const f of sn.food){ if (f.x === x && f.y === y){ ok = false; break; } }
+    if (ok) return { x, y };
+  }
+  return null;
+}
+
+function spawnFood(existing, snakes, count){
+  const arr = existing.slice();
+  const sn = { snakes, food: arr };
+  for (let i=0;i<count;i++){
+    const c = randomEmptyCell(sn);
+    if (c) arr.push(c);
+  }
+  return arr;
+}
+
+// ==================== Bomberman ====================
+const BOMB_COLS = 25;
+const BOMB_ROWS = 15;
+const BOMB_TICK = 220;
+const BOMB_FUSE_TICKS = Math.round(2800 / BOMB_TICK);
+
+function startBomberman(){
+  stopAllTimers();
+  // Build map: hard walls in grid pattern, soft walls randomly
+  const hard = [];
+  const soft = [];
+  for (let x=0;x<BOMB_COLS;x++){
+    for (let y=0;y<BOMB_ROWS;y++){
+      if (x===0 || y===0 || x===BOMB_COLS-1 || y===BOMB_ROWS-1){
+        hard.push([x,y]);
+      } else if (x%2===0 && y%2===0){
+        hard.push([x,y]);
+      }
+    }
+  }
+  const hardSet = new Set(hard.map(c => c[0]+':'+c[1]));
+
+  const players = Array.from(game.players.values());
+  const spawnCorners = [
+    { x: 1, y: 1 }, { x: BOMB_COLS-2, y: BOMB_ROWS-2 },
+    { x: BOMB_COLS-2, y: 1 }, { x: 1, y: BOMB_ROWS-2 },
+    { x: Math.floor(BOMB_COLS/2), y: 1 }, { x: Math.floor(BOMB_COLS/2), y: BOMB_ROWS-2 },
+    { x: 1, y: Math.floor(BOMB_ROWS/2) }, { x: BOMB_COLS-2, y: Math.floor(BOMB_ROWS/2) }
+  ];
+  const spawnSet = new Set();
+  for (const s of spawnCorners){
+    for (let dx=-1; dx<=1; dx++) for (let dy=-1; dy<=1; dy++){
+      spawnSet.add((s.x+dx)+':'+(s.y+dy));
+    }
+  }
+  // Soft walls at 70% of remaining cells
+  for (let x=1; x<BOMB_COLS-1; x++){
+    for (let y=1; y<BOMB_ROWS-1; y++){
+      if (hardSet.has(x+':'+y)) continue;
+      if (spawnSet.has(x+':'+y)) continue;
+      if (Math.random() < 0.7) soft.push([x,y]);
+    }
+  }
+
+  const bombPlayers = new Map();
+  players.forEach((p, i) => {
+    const sp = spawnCorners[i % spawnCorners.length];
+    bombPlayers.set(p.id, {
+      id: p.id, name: p.name, color: p.color,
+      x: sp.x, y: sp.y,
+      alive: true, score: 0, kills: 0,
+      dirs: new Set(),
+      actionPending: false,
+      maxBombs: 1, placedBombs: 0,
+      range: 2,
+      kick: false, punch: false, remote: false,
+      shield: 1, // start with 1 shield? spec doesn't say — we'll give 0
+      invulnerableUntil: Date.now() + 2000,
+      respawnAt: 0,
+      carrying: null, // bomb object if carrying (punch)
+      teamName: p.team?.name || null
+    });
+    p.score = 0;
+  });
+  // Spec says start: just player with no shield. Actually we start with 0 shields. Clear shield:
+  for (const bp of bombPlayers.values()) bp.shield = 0;
+
+  game.bomb = {
+    players: bombPlayers,
+    bombs: new Map(),
+    bombIdSeq: 1,
+    hard, soft,
+    hardSet,
+    softSet: new Set(soft.map(c => c[0]+':'+c[1])),
+    powerups: [],  // { x, y, kind }
+    powerupsMap: new Map(),
+    tickTimer: null,
+    endAt: game.config.bombtime > 0 ? Date.now() + game.config.bombtime * 1000 : 0,
+    lastExplosions: [],
+    lastKills: []
+  };
+  game.phase = 'countdown';
+  broadcast();
+  io.emit('bomb:init', {
+    cols: BOMB_COLS, rows: BOMB_ROWS,
+    hard, soft
+  });
+  setTimeout(() => {
+    if (!game.bomb) return;
+    game.phase = 'bomb';
+    broadcast();
+    game.bomb.tickTimer = setInterval(bombTick, BOMB_TICK);
+  }, 3000);
+}
+
+function endBomberman(){
+  if (!game.bomb) return;
+  if (game.bomb.tickTimer){ clearInterval(game.bomb.tickTimer); game.bomb.tickTimer = null; }
+  // Last survivor bonus
+  const alive = Array.from(game.bomb.players.values()).filter(p => p.alive);
+  if (alive.length === 1){
+    const p = game.players.get(alive[0].id); if (p) p.score += 200;
+  }
+  const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+  recordScores('bomb', players);
+  game.phase = 'end';
+  game.bomb = null;
+  broadcast();
+}
+
+function bombTick(){
+  if (!game.bomb) return;
+  const now = Date.now();
+
+  if (game.bomb.endAt && now >= game.bomb.endAt){
+    return endBomberman();
+  }
+
+  // Respawn
+  for (const p of game.bomb.players.values()){
+    if (!p.alive && p.respawnAt && now >= p.respawnAt){
+      const sp = findFreeBombSpot();
+      if (sp){
+        p.x = sp.x; p.y = sp.y;
+        p.alive = true;
+        p.shield = 1;
+        p.invulnerableUntil = now + 1500;
+        p.placedBombs = 0;
+        p.dirs = new Set();
+      }
+    }
+  }
+
+  // Move players (1 step per tick)
+  for (const p of game.bomb.players.values()){
+    if (!p.alive) continue;
+    let dx = 0, dy = 0;
+    if (p.dirs.has('left')) dx -= 1;
+    if (p.dirs.has('right')) dx += 1;
+    if (p.dirs.has('up')) dy -= 1;
+    if (p.dirs.has('down')) dy += 1;
+    // Cap to 1 per axis (no multi-step)
+    if (dx !== 0 && dy !== 0){
+      if (canPass(p.x + dx, p.y, p) && canPass(p.x, p.y + dy, p)){
+        tryMoveBomb(p, dx, dy);
+      } else if (canPass(p.x + dx, p.y, p)){
+        tryMoveBomb(p, dx, 0);
+      } else if (canPass(p.x, p.y + dy, p)){
+        tryMoveBomb(p, 0, dy);
+      }
+    } else if (dx !== 0 || dy !== 0){
+      tryMoveBomb(p, dx, dy);
+    }
+
+    // Action (unified button)
+    if (p.actionPending){
+      p.actionPending = false;
+      handleBombAction(p);
+    }
+  }
+
+  // Update bombs (fuse, kicked motion, carried)
+  const explodeQueue = [];
+  for (const b of game.bomb.bombs.values()){
+    if (b.exploded) continue;
+    // Kicked motion: slide 1 per tick in kickedDir until blocked
+    if (b.kickedDir){
+      const d = dirDelta(b.kickedDir);
+      const nx = b.x + d.x, ny = b.y + d.y;
+      if (canBombMoveTo(nx, ny)){
+        b.x = nx; b.y = ny;
+      } else {
+        b.kickedDir = null;
+      }
+    }
+    // Thrown arc: hops 1 per tick; if lands blocked, bounces 1; if still blocked, falls back
+    if (b.thrown){
+      b.thrown.t--;
+      if (b.thrown.t <= 0){
+        // Resolve landing
+        const tx = b.thrown.tx, ty = b.thrown.ty;
+        if (canBombLandAt(tx, ty)){
+          b.x = tx; b.y = ty;
+        } else {
+          // Bounce 1 more
+          const d = dirDelta(b.thrown.dir);
+          const bx = tx + d.x, by = ty + d.y;
+          if (canBombLandAt(bx, by)){
+            b.x = bx; b.y = by;
+          } else {
+            // Fall back to player side
+            const fx = tx - d.x, fy = ty - d.y;
+            if (canBombLandAt(fx, fy)){ b.x = fx; b.y = fy; }
           }
         }
-        return false;
+        b.thrown = null;
       }
-      p.x = tx; p.y = ty;
-      pickupIfAny(tx, ty);
-      return true;
-    };
-
-    // Akkumulator-basert hastighet (jevnere enn Math.floor av speed)
-    // speed=1 → 1 cell/tick. speed=1.5 → 1 cell 50% av tiden, 2 celler 50%.
-    p.moveAccum = (p.moveAccum || 0) + (p.speed || 1);
-    let steps = Math.floor(p.moveAccum);
-    p.moveAccum -= steps;
-    steps = Math.min(2, Math.max(1, steps));
-    for (let s = 0; s < steps; s++) {
-      let moved = false;
-      if (dx !== 0 && dy !== 0) {
-        if (canPass(p.x + dx, p.y) && canPass(p.x, p.y + dy)) {
-          moved = tryMoveTo(p.x + dx, p.y + dy);
-        }
+    }
+    // Remote bombs stay
+    if (b.remote){
+      // Fuse stays at 999 unless owner detonated (then 0)
+      if (b.fuse === 0){
+        explodeQueue.push(b);
       }
-      if (!moved && dx !== 0) moved = tryMoveTo(p.x + dx, p.y);
-      if (!moved && dy !== 0) moved = tryMoveTo(p.x, p.y + dy);
-      if (!moved) break;
-      if (explCells.has(p.x + ',' + p.y)) { killPlayer(p, null); break; }
-    }
-  }
-
-  // === Følg-bomber: båret bombe følger bæreren ===
-  for (const p of b.players.values()) {
-    if (p.holdingBomb != null) {
-      const bomb = b.bombs.find(bb => bb.id === p.holdingBomb);
-      if (bomb) { bomb.x = p.x; bomb.y = p.y; }
-    }
-  }
-
-  // === Sliding bomber (kicked) ===
-  for (const bomb of b.bombs) {
-    if (!bomb.vx && !bomb.vy) continue;
-    const tx = bomb.x + bomb.vx;
-    const ty = bomb.y + bomb.vy;
-    const cellOk = tx > 0 && tx < W - 1 && ty > 0 && ty < BOMB_GRID.h - 1
-      && grid[idx(tx, ty)] === 0
-      && !b.bombs.some(bb => bb !== bomb && bb.x === tx && bb.y === ty)
-      && ![...b.players.values()].some(pl => pl.alive && pl.x === tx && pl.y === ty);
-    if (cellOk) {
-      bomb.x = tx; bomb.y = ty;
     } else {
-      // Stopp
-      bomb.vx = 0; bomb.vy = 0;
-    }
-  }
-
-  // Broadcast snapshot (walls komprimeres av perMessageDeflate)
-  io.volatile.emit('bomb:tick', bombSnapshot(true));
-
-  // End hvis bare 1 player alive og >1 spillere totalt (ikke i uendelig modus — spillere respawner)
-  const alive = [...b.players.values()].filter(p => p.alive);
-  if (!b.isInfinite && alive.length <= 1 && b.players.size > 1 && now < b.endAt - 5000) {
-    // Gi bonus hvis det er en lone survivor, end etter 3 sek
-    setTimeout(() => { if (game.phase === 'bomb') endBomberman(); }, 1500);
-    b.endAt = now + 1500; // forkort
-  }
-}
-
-// Kast bombe i spillerens facing-retning. 3 ruter default, men sprett 1 rute ekstra
-// hvis første landing er blokkert. Fall tilbake til nærmere cell hvis alt er blokkert.
-function throwBomb(bomb, player) {
-  const DIR = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-  const [fdx, fdy] = DIR[player.facing] || DIR.down;
-  const W = game.bomb.map.W;
-  const H = BOMB_GRID.h;
-  const mapIdx = game.bomb.map.idx;
-  const isClear = (x, y) => {
-    if (x <= 0 || x >= W - 1 || y <= 0 || y >= H - 1) return false;
-    if (game.bomb.map.grid[mapIdx(x, y)] !== 0) return false;
-    if (game.bomb.bombs.some(b => b !== bomb && b.x === x && b.y === y && !b.held)) return false;
-    if ([...game.bomb.players.values()].some(pl => pl.alive && pl.x === x && pl.y === y && pl.id !== player.id)) return false;
-    return true;
-  };
-  bomb.held = false;
-  bomb.vx = 0; bomb.vy = 0;
-  // Start-posisjon: spillerens posisjon (for hold) eller bombens posisjon
-  const baseX = player.x, baseY = player.y;
-  // Prøv 3 ruter frem
-  let tx = baseX + fdx * 3, ty = baseY + fdy * 3;
-  if (isClear(tx, ty)) { bomb.x = tx; bomb.y = ty; return; }
-  // Sprett én rute til
-  tx += fdx; ty += fdy;
-  if (isClear(tx, ty)) { bomb.x = tx; bomb.y = ty; return; }
-  // Fall tilbake til nærmere rute
-  for (let d = 3; d >= 1; d--) {
-    const cx = baseX + fdx * d, cy = baseY + fdy * d;
-    if (isClear(cx, cy)) { bomb.x = cx; bomb.y = cy; return; }
-  }
-  // Alt blokkert — bombe lander på spillerens fot
-  bomb.x = baseX; bomb.y = baseY;
-}
-
-function detonateBomb(bomb) {
-  const b = game.bomb;
-  const { grid, W, idx } = b.map;
-  const H = BOMB_GRID.h;
-  const now = Date.now();
-  const owner = b.players.get(bomb.ownerId);
-  if (owner) owner.bombsPlaced = Math.max(0, owner.bombsPlaced - 1);
-  // Hvis noen holdt bomben, frigjør deres hold
-  if (bomb.held) {
-    for (const pl of b.players.values()) {
-      if (pl.holdingBomb === bomb.id) pl.holdingBomb = null;
-    }
-    bomb.held = false;
-  }
-
-  // Origin
-  addExplosion(bomb.x, bomb.y, bomb.ownerId);
-  // 4 retninger
-  for (const [dx, dy] of [[0,-1],[0,1],[-1,0],[1,0]]) {
-    for (let r = 1; r <= bomb.range; r++) {
-      const nx = bomb.x + dx * r, ny = bomb.y + dy * r;
-      if (nx < 0 || nx >= W || ny < 0 || ny >= H) break;
-      const cell = grid[idx(nx, ny)];
-      if (cell === 1) break; // hard wall stopper
-      addExplosion(nx, ny, bomb.ownerId);
-      if (cell === 2) {
-        grid[idx(nx, ny)] = 0;
-        b.wallsVersion = (b.wallsVersion || 0) + 1;
-        // 50% sjanse for powerup, vektet fordeling
-        if (Math.random() < 0.5) {
-          const r = Math.random();
-          let type;
-          if (r < 0.22) type = 'bomb';        // 22% — +1 maks bomber
-          else if (r < 0.44) type = 'range';  // 22% — +1 rekkevidde
-          else if (r < 0.55) type = 'speed';  // 11% — raskere bevegelse
-          else if (r < 0.66) type = 'kick';   // 11% — spark bomber
-          else if (r < 0.76) type = 'punch';  // 10% — kast bomber
-          else if (r < 0.85) type = 'shield'; //  9% — 1 treff-beskyttelse
-          else if (r < 0.93) type = 'remote'; //  8% — manuell detonasjon
-          else type = 'gold';                  // 7% — +50 poeng
-          b.powerups.push({ x: nx, y: ny, type });
-        }
-        break; // soft wall stopper
+      b.fuse--;
+      b.flashing = b.fuse <= 2;
+      if (b.fuse <= 0){
+        explodeQueue.push(b);
       }
     }
   }
+
+  // Explode bombs (chain)
+  const explosions = [];
+  const killsThisTick = [];
+  while (explodeQueue.length){
+    const b = explodeQueue.shift();
+    if (b.exploded) continue;
+    b.exploded = true;
+    const cells = explodeCells(b);
+    explosions.push(...cells);
+    // Refund bomb to owner
+    const owner = game.bomb.players.get(b.owner);
+    if (owner && owner.placedBombs > 0) owner.placedBombs--;
+    // Kill/hit players
+    for (const [x,y] of cells){
+      for (const p of game.bomb.players.values()){
+        if (!p.alive) continue;
+        if (p.x === x && p.y === y){
+          if (p.invulnerableUntil && Date.now() < p.invulnerableUntil) continue;
+          if (p.shield > 0){
+            p.shield--;
+            p.invulnerableUntil = Date.now() + 1000;
+            continue;
+          }
+          // Kill
+          p.alive = false;
+          p.respawnAt = Date.now() + 5000;
+          killsThisTick.push({ killer: b.owner, victim: p.id, x: p.x, y: p.y, name: p.name });
+          const killerPlayer = game.players.get(b.owner);
+          if (killerPlayer && b.owner !== p.id){
+            killerPlayer.score += 100;
+          }
+          const killerBP = game.bomb.players.get(b.owner);
+          if (killerBP && b.owner !== p.id) killerBP.kills++;
+        }
+      }
+      // Break soft walls; maybe drop powerup
+      const key = x+':'+y;
+      if (game.bomb.softSet.has(key)){
+        game.bomb.softSet.delete(key);
+        game.bomb.soft = game.bomb.soft.filter(c => !(c[0]===x && c[1]===y));
+        if (Math.random() < 0.5){
+          const kind = rollPowerup();
+          if (kind){
+            const p = { x, y, kind };
+            game.bomb.powerups.push(p);
+            game.bomb.powerupsMap.set(key, p);
+          }
+        }
+      }
+      // Chain-detonate other bombs
+      for (const other of game.bomb.bombs.values()){
+        if (other.exploded) continue;
+        if (other.x === x && other.y === y){
+          if (other.remote){ other.fuse = 0; explodeQueue.push(other); }
+          else { other.fuse = 0; explodeQueue.push(other); }
+        }
+      }
+    }
+  }
+
+  // Pickup powerups (after movement)
+  for (const p of game.bomb.players.values()){
+    if (!p.alive) continue;
+    const key = p.x+':'+p.y;
+    const pu = game.bomb.powerupsMap.get(key);
+    if (pu){
+      applyPowerup(p, pu.kind);
+      game.bomb.powerupsMap.delete(key);
+      game.bomb.powerups = game.bomb.powerups.filter(x => x !== pu);
+    }
+  }
+
+  // Remove exploded bombs
+  for (const [id, b] of Array.from(game.bomb.bombs.entries())){
+    if (b.exploded) game.bomb.bombs.delete(id);
+  }
+
+  // Send updates
+  if (explosions.length){
+    io.emit('bomb:explosion', { cells: explosions });
+  }
+  for (const k of killsThisTick){
+    io.emit('bomb:kill', k);
+  }
+  io.emit('bomb:tick', buildBombState());
+
+  // Auto-end: only 1 alive and no respawn timer
+  const aliveList = Array.from(game.bomb.players.values()).filter(p => p.alive || p.respawnAt > now);
+  if (game.bomb.players.size > 1){
+    const reallyAlive = Array.from(game.bomb.players.values()).filter(p => p.alive);
+    if (reallyAlive.length <= 1 && game.bomb.endAt === 0){
+      // On ∞ mode, wait for respawn
+    }
+  }
 }
 
-function addExplosion(x, y, ownerId) {
-  const b = game.bomb;
-  if (b.explosions.some(e => e.x === x && e.y === y)) return;
-  b.explosions.push({ x, y, endsAt: Date.now() + BOMB_EXPLOSION_TTL, ownerId });
-  // Drep spillere som er her
-  for (const p of b.players.values()) {
-    if (p.alive && p.x === x && p.y === y) killPlayer(p, ownerId);
-  }
-  // Detonér andre bomber som er her (chain reaction)
-  const hit = b.bombs.find(bb => bb.x === x && bb.y === y);
-  if (hit) {
-    hit.explodesAt = Date.now(); // neste tick sprenger den
-  }
-  // Fjern powerup hvis truffet
-  b.powerups = b.powerups.filter(u => !(u.x === x && u.y === y));
-}
-
-function killPlayer(p, byOwnerId) {
-  if (!p.alive) return;
-  // Allerede usårbar (grace etter shield-absorb) — ignorer
-  if (p.invulnerableUntil && Date.now() < p.invulnerableUntil) return;
-  // Shield absorberer én eksplosjon + gir 1s usårbarhet
-  if ((p.shield || 0) > 0) {
-    p.shield -= 1;
-    p.invulnerableUntil = Date.now() + 1000;
+function handleBombAction(p){
+  // Carrying -> throw
+  if (p.carrying){
+    throwCarriedBomb(p);
     return;
   }
-  p.alive = false;
-  p.deadAt = Date.now();
-  // Slipp bæret bombe ved dødsfall (den blir liggende der spilleren stod)
-  if (p.holdingBomb != null) {
-    const heldBomb = game.bomb?.bombs?.find(b => b.id === p.holdingBomb);
-    if (heldBomb) { heldBomb.held = false; heldBomb.x = p.x; heldBomb.y = p.y; }
-    p.holdingBomb = null;
+  // Standing on own bomb + punch -> pick up
+  const standingBomb = bombAt(p.x, p.y);
+  if (standingBomb && standingBomb.owner === p.id && p.punch){
+    game.bomb.bombs.delete(standingBomb.id);
+    p.carrying = { id: standingBomb.id, range: standingBomb.range, remote: standingBomb.remote };
+    return;
   }
-  if (byOwnerId && byOwnerId !== p.id) {
-    const killer = game.bomb.players.get(byOwnerId);
-    if (killer) { killer.kills += 1; killer.score += 100; }
+  // Else place bomb
+  placeBomb(p);
+}
+
+function placeBomb(p){
+  if (p.placedBombs >= p.maxBombs) return;
+  if (bombAt(p.x, p.y)) return;
+  const b = {
+    id: game.bomb.bombIdSeq++,
+    x: p.x, y: p.y,
+    owner: p.id,
+    fuse: p.remote ? 999 : BOMB_FUSE_TICKS,
+    range: p.range,
+    kickedDir: null,
+    thrown: null,
+    remote: p.remote,
+    exploded: false,
+    flashing: false
+  };
+  game.bomb.bombs.set(b.id, b);
+  p.placedBombs++;
+}
+
+function throwCarriedBomb(p){
+  // Throw 3 cells in facing direction
+  const c = p.carrying;
+  p.carrying = null;
+  // Pick dir from p.dirs (first active); fallback to last direction faced
+  const dirs = Array.from(p.dirs);
+  const dir = dirs.length ? dirs[0] : (p.lastDir || 'down');
+  const d = dirDelta(dir);
+  const tx = p.x + d.x * 3;
+  const ty = p.y + d.y * 3;
+  const b = {
+    id: c.id,
+    x: p.x, y: p.y,
+    owner: p.id,
+    fuse: p.remote ? 999 : BOMB_FUSE_TICKS,
+    range: c.range,
+    kickedDir: null,
+    thrown: { tx, ty, t: 3, dir },
+    remote: c.remote,
+    exploded: false,
+    flashing: false
+  };
+  game.bomb.bombs.set(b.id, b);
+  p.placedBombs++;
+}
+
+function bombAt(x, y){
+  for (const b of game.bomb.bombs.values()){
+    if (!b.exploded && b.x === x && b.y === y) return b;
+  }
+  return null;
+}
+
+function canPass(x, y, p){
+  if (x < 0 || y < 0 || x >= BOMB_COLS || y >= BOMB_ROWS) return false;
+  const k = x+':'+y;
+  if (game.bomb.hardSet.has(k)) return false;
+  if (game.bomb.softSet.has(k)) return false;
+  // Bomb at cell: if my own bomb I'm standing on, can step off; but entering it:
+  const b = bombAt(x, y);
+  if (b){
+    if (p && p.kick){
+      // Kick it — the bomb slides in our direction
+      const dx = Math.sign(x - p.x);
+      const dy = Math.sign(y - p.y);
+      const dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
+      b.kickedDir = dir;
+    }
+    return false;
+  }
+  return true;
+}
+
+function canBombMoveTo(x, y){
+  if (x < 0 || y < 0 || x >= BOMB_COLS || y >= BOMB_ROWS) return false;
+  const k = x+':'+y;
+  if (game.bomb.hardSet.has(k)) return false;
+  if (game.bomb.softSet.has(k)) return false;
+  for (const b of game.bomb.bombs.values()){ if (!b.exploded && b.x === x && b.y === y) return false; }
+  for (const p of game.bomb.players.values()){
+    if (!p.alive) continue;
+    if (p.x === x && p.y === y) return false;
+  }
+  return true;
+}
+function canBombLandAt(x, y){
+  return canBombMoveTo(x, y);
+}
+
+function tryMoveBomb(p, dx, dy){
+  const nx = p.x + dx, ny = p.y + dy;
+  if (canPass(nx, ny, p)){
+    p.x = nx; p.y = ny;
+    const dir = dx > 0 ? 'right' : dx < 0 ? 'left' : dy > 0 ? 'down' : 'up';
+    p.lastDir = dir;
   }
 }
 
-function bombSnapshot(includeWalls = false) {
+function explodeCells(b){
+  const cells = [[b.x, b.y]];
+  const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+  for (const [dx, dy] of dirs){
+    for (let i=1; i <= b.range; i++){
+      const x = b.x + dx*i, y = b.y + dy*i;
+      const k = x+':'+y;
+      if (game.bomb.hardSet.has(k)) break;
+      cells.push([x, y]);
+      if (game.bomb.softSet.has(k)) break;
+    }
+  }
+  return cells;
+}
+
+function rollPowerup(){
+  const pool = ['bomb','bomb','fire','fire','kick','punch','remote','shield','gold'];
+  return pool[(Math.random()*pool.length)|0];
+}
+
+function applyPowerup(p, kind){
+  switch(kind){
+    case 'bomb': p.maxBombs = Math.min(8, p.maxBombs + 1); break;
+    case 'fire': p.range = Math.min(10, p.range + 1); break;
+    case 'kick': p.kick = true; break;
+    case 'punch': p.punch = true; break;
+    case 'remote': p.remote = true; break;
+    case 'shield': p.shield = Math.min(3, p.shield + 1); break;
+    case 'gold': {
+      const pl = game.players.get(p.id); if (pl) pl.score += 50;
+      break;
+    }
+  }
+}
+
+function findFreeBombSpot(){
+  for (let tries=0; tries<80; tries++){
+    const x = 1 + ((Math.random() * (BOMB_COLS-2)) | 0);
+    const y = 1 + ((Math.random() * (BOMB_ROWS-2)) | 0);
+    const k = x+':'+y;
+    if (game.bomb.hardSet.has(k)) continue;
+    if (game.bomb.softSet.has(k)) continue;
+    let ok = true;
+    for (const p of game.bomb.players.values()){
+      if (p.alive && p.x === x && p.y === y){ ok = false; break; }
+    }
+    if (ok) return { x, y };
+  }
+  return null;
+}
+
+function buildBombState(){
   if (!game.bomb) return null;
-  const b = game.bomb;
-  const now = Date.now();
   return {
-    grid: BOMB_GRID,
-    walls: includeWalls ? b.map.grid : undefined,
-    wallsVersion: b.wallsVersion || 0,
-    started: b.started,
-    startedAt: b.startedAt,
-    endAt: b.endAt,
-    isInfinite: b.isInfinite || false,
-    timeLeft: b.isInfinite ? null : Math.max(0, b.endAt - now),
-    countdownLeft: Math.max(0, b.startedAt - now),
-    players: [...b.players.values()].map(p => ({
-      id: p.id, name: p.name, emoji: p.emoji, color: p.color,
-      x: p.x, y: p.y, alive: p.alive, score: p.score, kills: p.kills,
-      bombsMax: p.bombsMax, range: p.range, shield: p.shield || 0,
-      speed: p.speed || 1, kick: !!p.kick, punch: !!p.punch, remote: !!p.remote,
-      facing: p.facing || 'down',
-      holdingBomb: p.holdingBomb || null,
-      respawnIn: !p.alive && p.deadAt ? Math.max(0, BOMB_RESPAWN_MS - (now - p.deadAt)) : 0,
+    players: Array.from(game.bomb.players.values()).map(p => ({
+      id: p.id, name: p.name, color: p.color,
+      x: p.x, y: p.y, alive: p.alive,
+      shield: p.shield, invulnerableUntil: p.invulnerableUntil,
+      kills: p.kills,
+      maxBombs: p.maxBombs, range: p.range,
+      kick: p.kick, punch: p.punch, remote: p.remote,
+      carrying: !!p.carrying
     })),
-    bombs: b.bombs.map(bb => ({ id: bb.id, x: bb.x, y: bb.y, ownerId: bb.ownerId, held: !!bb.held, tLeft: Math.max(0, bb.explodesAt - now) })),
-    explosions: b.explosions.map(e => ({ x: e.x, y: e.y, tLeft: Math.max(0, e.endsAt - now) })),
-    powerups: b.powerups,
+    bombs: Array.from(game.bomb.bombs.values()).map(b => ({
+      id: b.id, x: b.x, y: b.y, owner: b.owner, flashing: b.flashing, remote: b.remote
+    })),
+    powerups: game.bomb.powerups.slice(),
+    soft: game.bomb.soft,
+    endAt: game.bomb.endAt
   };
 }
 
-function endBomberman() {
-  bombCleanTimers();
-  if (!game.bomb) return;
-  for (const p of game.bomb.players.values()) {
-    // Bonus for siste overlevende
-    if (p.alive && [...game.bomb.players.values()].filter(x => x.alive).length === 1 && game.bomb.players.size > 1) {
-      p.score += 200;
-    }
-    const mp = game.players.get(p.id);
-    if (!mp) continue;
-    mp.score += p.score;
-    if (game.teamMode && mp.teamId != null) {
-      const team = game.teams.find(t => t.id === mp.teamId);
-      if (team) team.score += p.score;
-    }
-  }
-  // Persist score hvis ≥4 spillere
-  recordScores('bomb', [...game.bomb.players.values()].map(p => ({ name: p.name, score: p.score })));
-  game.phase = 'bomb-end';
-  broadcast();
-}
-
-
-// ---- Socket handlers ----
-io.on('connection', (socket) => {
-  // Send initial state to new socket (fikser hvit skjerm)
-  socket.emit('state', publicState());
-
-  socket.on('host:hello', (password) => {
-    // Sjekk passord
-    if (HOST_PASSWORD && password !== HOST_PASSWORD) {
-      socket.emit('host:denied', { reason: 'password' });
-      return;
-    }
-    // Forhindre at en tilfeldig bruker overtar host-rollen når det allerede er en
-    if (game.hostId && game.hostId !== socket.id) {
-      const existingSocket = io.sockets.sockets.get(game.hostId);
-      if (existingSocket && existingSocket.connected) {
-        socket.emit('host:denied', { reason: 'taken' });
-        return;
-      }
-    }
-    game.hostId = socket.id;
-    socket.emit('host:ok');
-    broadcast();
-  });
-
-  socket.on('player:join', (name, emoji) => {
-    try {
-      if (game.players.size >= MAX_PLAYERS) { socket.emit('join:error', 'Spillet er fullt'); return; }
-      const clean = String(name || '').trim().slice(0, SANITIZE_NAME_MAX);
-      if (!clean) { socket.emit('join:error', 'Skriv et navn'); return; }
-      const taken = [...game.players.values()].some(p => p.name.toLowerCase() === clean.toLowerCase());
-      if (taken) { socket.emit('join:error', 'Navnet er allerede i bruk'); return; }
-      let teamId = null;
-      if (game.teamMode && game.teams.length) {
-        const sizes = game.teams.map(t => ({ id: t.id, n: [...game.players.values()].filter(p => p.teamId === t.id).length }));
-        sizes.sort((a, b) => a.n - b.n);
-        teamId = sizes[0].id;
-      }
-      const cleanEmoji = typeof emoji === 'string' && emoji.length <= SANITIZE_EMOJI_MAX ? emoji : null;
-      game.players.set(socket.id, {
-        name: clean, emoji: cleanEmoji, teamId, score: 0, streak: 0, bestStreak: 0,
-        answered: false, lastDelta: 0, lastCorrect: null,
-        vote: null, scatterAnswers: null,
-        totalCorrect: 0, totalWrong: 0, totalSkipped: 0, fastestMs: null, firstCount: 0,
-      });
-      socket.emit('join:ok', { name: clean, teamId, emoji: cleanEmoji });
-      broadcast();
-    } catch (e) { console.error('[join error]', e); socket.emit('join:error', 'Noe gikk galt'); }
-  });
-
-  socket.on('player:answer', (choice) => {
-    if (game.phase !== 'question') return;
-    const p = game.players.get(socket.id);
-    if (!p || p.answered) return;
-    const ms = Date.now() - game.questionStartedAt;
-    if (ms > game.timeLimit) return;
-    game.answers.set(socket.id, { choice, ms });
-    game.answerOrder.push(socket.id);
-    p.answered = true;
-    broadcast();
-    if ([...game.players.values()].every(p => p.answered)) {
-      setTimeout(() => { if (game.phase === 'question') revealAnswer(); }, 300);
-    }
-  });
-
-  socket.on('player:react', (emoji) => {
-    if (!rateLimit(socket.id, 'react', 200)) return;
-    const allowed = ['🔥','❤️','😂','👏','💪','😱','🎉','🙌','💯','🤯'];
-    if (!allowed.includes(emoji)) return;
-    const p = game.players.get(socket.id);
-    if (!p) return;
-    io.emit('reaction', { emoji, from: p.name });
-  });
-
-  socket.on('player:vote', (targetId) => {
-    if (game.phase !== 'voting') return;
-    const p = game.players.get(socket.id);
-    if (!p) return;
-    if (!game.players.has(targetId)) return;
-    p.vote = targetId;
-    broadcast();
-    // Auto-end when everyone has voted
-    if ([...game.players.values()].every(p => p.vote != null)) {
-      setTimeout(() => { if (game.phase === 'voting') endVoting(); }, 500);
-    }
-  });
-
-  socket.on('player:scatter', (arr) => {
-    if (game.phase !== 'scatter-play') return;
-    const p = game.players.get(socket.id);
-    if (!p) return;
-    if (!Array.isArray(arr)) return;
-    const cleaned = arr.slice(0, game.scatterCategories.length).map(x => String(x || '').slice(0, 40));
-    game.scatterSubmissions.set(socket.id, cleaned);
-    p.scatterAnswers = cleaned;
-    p.answered = true;
-    broadcast();
-  });
-
-  socket.on('player:lie-submit', (data) => {
-    if (game.phase !== 'lie-collect') return;
-    if (!game.lieRound) return;
-    const p = game.players.get(socket.id);
-    if (!p) return;
-    const s1 = String(data?.s1 || '').trim().slice(0, 120);
-    const s2 = String(data?.s2 || '').trim().slice(0, 120);
-    const s3 = String(data?.s3 || '').trim().slice(0, 120);
-    const lieIdx = Number(data?.lieIdx);
-    if (!s1 || !s2 || !s3) return;
-    if (![0, 1, 2].includes(lieIdx)) return;
-    game.lieRound.submissions.set(socket.id, { s: [s1, s2, s3], lieIdx });
-    p.answered = true;
-    broadcast();
-  });
-
-  socket.on('player:lie-vote', (displayIdx) => {
-    if (game.phase !== 'lie-play') return;
-    if (!game.lieRound) return;
-    const n = Number(displayIdx);
-    if (![0, 1, 2].includes(n)) return;
-    if (socket.id === game.lieRound.currentPid) return; // kan ikke stemme på seg selv
-    const p = game.players.get(socket.id);
-    if (!p) return;
-    if (game.lieRound.votes.has(socket.id)) return; // kan ikke endre
-    game.lieRound.votes.set(socket.id, n);
-    p.answered = true;
-    broadcast();
-    // Auto-avslutt når alle (unntatt submitter) har stemt
-    const voters = [...game.players.keys()].filter(id => id !== game.lieRound.currentPid);
-    if (game.lieRound.votes.size >= voters.length) {
-      setTimeout(() => { if (game.phase === 'lie-play') endLieTurn(); }, 400);
-    }
-  });
-
-  // ---- Host controls ----
-  const isHost = () => socket.id === game.hostId;
-
-  socket.on('host:config', (cfg) => {
-    if (!isHost()) return;
-    if (typeof cfg.teamMode === 'boolean') {
-      if (cfg.teamMode) enableTeams(cfg.numTeams || 2);
-      else disableTeams();
-    }
-    if (typeof cfg.numTeams === 'number' && game.teamMode) {
-      enableTeams(cfg.numTeams);
-    }
-    if (typeof cfg.timeLimit === 'number') { game.timeLimit = Math.max(5000, Math.min(60000, cfg.timeLimit)); game.configTimeLimit = game.timeLimit; }
-    if (typeof cfg.questionCount === 'number') game.questionCount = Math.max(3, Math.min(25, cfg.questionCount));
-    if (typeof cfg.leaderboardEvery === 'number') game.leaderboardEvery = Math.max(0, Math.min(20, cfg.leaderboardEvery));
-    if (typeof cfg.snakeDuration === 'number') game.snakeDuration = cfg.snakeDuration === 0 ? 0 : Math.max(15000, Math.min(300000, cfg.snakeDuration));
-    if (typeof cfg.bombDuration === 'number') game.bombDuration = cfg.bombDuration === 0 ? 0 : Math.max(15000, Math.min(300000, cfg.bombDuration));
-    if (typeof cfg.scatterDuration === 'number') game.scatterDuration = Math.max(15000, Math.min(300000, cfg.scatterDuration));
-    if (typeof cfg.lieVoteDuration === 'number') game.lieVoteDuration = Math.max(10000, Math.min(120000, cfg.lieVoteDuration));
-    if (typeof cfg.lightningDuration === 'number') game.lightningDuration = Math.max(2000, Math.min(30000, cfg.lightningDuration));
-    broadcast();
-  });
-
-  socket.on('host:reshuffle-teams', () => {
-    if (!isHost() || !game.teamMode) return;
-    redistributePlayersToTeams();
-    broadcast();
-  });
-
-  socket.on('host:start-quiz', (categoryKey) => {
-    if (!isHost()) return;
-    if (!game.players.size) return;
-    playTutorialThen('quiz', () => startQuizGame(categoryKey, false));
-  });
-
-  socket.on('host:start-lightning', (categoryKey) => {
-    if (!isHost()) return;
-    if (!game.players.size) return;
-    playTutorialThen('lightning', () => startQuizGame(categoryKey, true));
-  });
-
-  socket.on('host:skip-tutorial', () => {
-    if (!isHost()) return;
-    skipTutorial();
-  });
-
-  socket.on('host:start-custom-quiz', (payload) => {
-    if (!isHost()) return;
-    if (!game.players.size) return;
-    const qs = Array.isArray(payload?.questions) ? payload.questions : [];
-    const valid = qs.filter(q =>
-      q && typeof q.q === 'string' && Array.isArray(q.a) && q.a.length === 4 &&
-      typeof q.c === 'number' && q.c >= 0 && q.c <= 3
-    ).map(q => ({
-      q: String(q.q).slice(0, 300),
-      a: q.a.map(x => String(x).slice(0, 120)),
-      c: q.c,
-      isEmoji: !!q.isEmoji,
-    }));
-    if (!valid.length) return;
-    game.mode = 'quiz';
-    game.lightning = false;
-    game.timeLimit = game.configTimeLimit;
-    game.category = 'custom:' + (payload.title || 'Egen quiz').slice(0, 40);
-    game.questions = valid.slice(0, 25);
-    game.qIndex = -1;
-    for (const p of game.players.values()) {
-      p.score = 0; p.streak = 0; p.bestStreak = 0; p.totalCorrect = 0;
-      p.totalWrong = 0; p.totalSkipped = 0; p.fastestMs = null; p.firstCount = 0;
-    }
-    for (const t of game.teams) t.score = 0;
-    nextQuestion();
-  });
-
-  socket.on('host:start-voting', () => {
-    if (!isHost() || !game.players.size) return;
-    playTutorialThen('voting', () => startVoting());
-  });
-
-  socket.on('host:add-voting-prompts', (prompts) => {
-    if (!isHost()) return;
-    if (!Array.isArray(prompts)) return;
-    const clean = prompts.filter(p => typeof p === 'string' && p.trim().length > 5).map(p => String(p).slice(0, 200));
-    customVotingPrompts.push(...clean);
-    refreshVotingPool();
-    socket.emit('voting-prompts-added', { count: clean.length, total: customVotingPrompts.length });
-  });
-
-  socket.on('host:next-voting', () => {
-    if (!isHost()) return;
-    startVoting();
-  });
-
-  socket.on('host:end-voting', () => {
-    if (!isHost()) return;
-    endVoting();
-  });
-
-  socket.on('host:start-scatter', () => {
-    if (!isHost() || !game.players.size) return;
-    playTutorialThen('scatter', () => startScatter());
-  });
-
-  socket.on('host:end-scatter', () => {
-    if (!isHost()) return;
-    if (game.phase === 'scatter-play') endScatter();
-  });
-
-  socket.on('host:icebreaker', () => {
-    if (!isHost() || !game.players.size) return;
-    drawIcebreaker();
-  });
-
-  socket.on('host:start-lie', () => {
-    if (!isHost()) return;
-    if (game.players.size < 2) return;
-    playTutorialThen('lie', () => startLieGame());
-  });
-
-  socket.on('host:start-lie-round', () => {
-    if (!isHost()) return;
-    if (game.phase !== 'lie-collect' || !game.lieRound) return;
-    if (game.lieRound.submissions.size < 2) return;
-    startLiePlayRound();
-  });
-
-  socket.on('host:skip-lie', () => {
-    if (!isHost()) return;
-    if (game.phase === 'lie-play') endLieTurn();
-    else if (game.phase === 'lie-reveal') nextLieTurn();
-  });
-
-  socket.on('host:end-lie-vote', () => {
-    if (!isHost() || game.phase !== 'lie-play') return;
-    endLieTurn();
-  });
-
-  socket.on('host:start-snake', () => {
-    if (!isHost() || !game.players.size) return;
-    playTutorialThen('snake', () => startSnake());
-  });
-
-  socket.on('host:end-snake', () => {
-    if (!isHost()) return;
-    if (game.phase === 'snake') endSnake();
-  });
-
-  socket.on('player:snake-dir', (dir) => {
-    if (game.phase !== 'snake' || !game.snake) return;
-    const s = game.snake.snakes.get(socket.id);
-    if (!s || !s.alive) return;
-    if (!['up','down','left','right'].includes(dir)) return;
-    // Ignore if opposite of current dir
-    if (OPPOSITE[s.dir] === dir) return;
-    s.nextDir = dir;
-  });
-
-  socket.on('host:start-bomb', () => {
-    if (!isHost() || !game.players.size) return;
-    playTutorialThen('bomb', () => startBomberman());
-  });
-
-  socket.on('host:end-bomb', () => {
-    if (!isHost()) return;
-    if (game.phase === 'bomb') endBomberman();
-  });
-
-  socket.on('player:bomb-move', (dir) => {
-    if (game.phase !== 'bomb' || !game.bomb) return;
-    const p = game.bomb.players.get(socket.id);
-    if (!p || !p.alive) return;
-    if (dir === null || dir === 'stop') {
-      p.nextDir = null;
-      p.dirs = { up: false, down: false, left: false, right: false };
-      return;
-    }
-    if (!['up','down','left','right'].includes(dir)) return;
-    p.nextDir = dir;
-    // Oversett enkelt-dir til dirs for konsistens
-    p.dirs = { up: dir === 'up', down: dir === 'down', left: dir === 'left', right: dir === 'right' };
-  });
-
-  socket.on('player:bomb-dirs', (d) => {
-    if (game.phase !== 'bomb' || !game.bomb) return;
-    const p = game.bomb.players.get(socket.id);
-    if (!p || !p.alive) return;
-    if (!d || typeof d !== 'object') return;
-    p.dirs = {
-      up: !!d.up, down: !!d.down,
-      left: !!d.left, right: !!d.right,
-    };
-    p.nextDir = null; // Ikke bruk legacy
-  });
-
-  // Unified bomb-handling:
-  //   Holding bombe → kaster (med bounce hvis første landing blokkert)
-  //   Står på egen bombe + har punch → plukker opp
-  //   Ellers → legger ned ny bombe
-  socket.on('player:bomb-drop', () => {
-    if (game.phase !== 'bomb' || !game.bomb) return;
-    const p = game.bomb.players.get(socket.id);
-    if (!p || !p.alive) return;
-
-    // 1) Holder en bombe → kast
-    if (p.holdingBomb != null) {
-      const bomb = game.bomb.bombs.find(b => b.id === p.holdingBomb);
-      if (bomb) throwBomb(bomb, p);
-      p.holdingBomb = null;
-      return;
-    }
-
-    // 2) Står på egen bombe + har punch → plukk opp (held-state)
-    if (p.punch) {
-      const bombHere = game.bomb.bombs.find(b => b.x === p.x && b.y === p.y && b.ownerId === p.id && !b.held);
-      if (bombHere) {
-        bombHere.held = true;
-        p.holdingBomb = bombHere.id;
-        return;
-      }
-    }
-
-    // 3) Legg ned ny bombe
-    if (p.bombsPlaced >= p.bombsMax) return;
-    if (game.bomb.bombs.some(bb => bb.x === p.x && bb.y === p.y && !bb.held)) return;
-    game.bomb.bombs.push({
-      id: ++game.bomb.bombCounter,
-      x: p.x, y: p.y,
-      vx: 0, vy: 0,
-      held: false,
-      ownerId: p.id,
-      explodesAt: p.remote ? Number.MAX_SAFE_INTEGER : Date.now() + BOMB_FUSE,
-      remote: !!p.remote,
-      range: p.range,
-    });
-    p.bombsPlaced += 1;
-  });
-
-  // Remote-detonere alle bomber spilleren har lagt ut
-  socket.on('player:bomb-detonate', () => {
-    if (game.phase !== 'bomb' || !game.bomb) return;
-    const p = game.bomb.players.get(socket.id);
-    if (!p || !p.alive || !p.remote) return;
-    const now = Date.now();
-    for (const bb of game.bomb.bombs) {
-      if (bb.ownerId === p.id && bb.remote && !bb.held) bb.explodesAt = now;
-    }
-  });
-
-  socket.on('host:wheel', () => {
-    if (!isHost() || !game.players.size) return;
-    const names = [...game.players.values()].map(p => p.name);
-    game.phase = 'wheel';
-    game.wheelResult = names[Math.floor(Math.random() * names.length)];
-    broadcast();
-  });
-
-  socket.on('host:reveal', () => { if (isHost()) revealAnswer(); });
-  socket.on('host:leaderboard', () => { if (isHost()) { game.phase = 'leaderboard'; broadcast(); } });
-  socket.on('host:next', () => { if (isHost()) nextQuestion(); });
-  socket.on('host:skip', () => {
-    if (!isHost() || game.phase !== 'question') return;
-    // Null out results — no one gets points, streaks reset for those who didn't answer
-    for (const p of game.players.values()) {
-      p.lastCorrect = null;
-      p.lastDelta = 0;
-      p.streak = 0;
-    }
-    game.phase = 'reveal';
-    broadcast();
-  });
-  socket.on('host:pause', () => {
-    if (!isHost() || game.phase !== 'question') return;
-    game.paused = true;
-    game.pauseRemainingMs = Math.max(0, game.timeLimit - (Date.now() - game.questionStartedAt));
-    broadcast();
-  });
-  socket.on('host:resume', () => {
-    if (!isHost() || !game.paused) return;
-    game.paused = false;
-    game.questionStartedAt = Date.now() - (game.timeLimit - game.pauseRemainingMs);
-    broadcast();
-  });
-  socket.on('host:reset', () => { if (isHost()) resetToLobby(); });
-  socket.on('host:rename-team', ({ id, name }) => {
-    if (!isHost() || !game.teamMode) return;
-    const team = game.teams.find(t => t.id === id);
-    if (!team) return;
-    const clean = String(name || '').trim().slice(0, 20);
-    if (clean) { team.name = clean; broadcast(); }
-  });
-
-  socket.on('host:kick', (playerId) => {
-    if (!isHost()) return;
-    game.players.delete(playerId);
-    io.to(playerId).emit('kicked');
-    broadcast();
-  });
-
-  socket.on('disconnect', () => {
-    try {
-      if (game.players.has(socket.id)) {
-        game.players.delete(socket.id);
-      }
-      if (game.answers && game.answers.has(socket.id)) game.answers.delete(socket.id);
-      if (Array.isArray(game.answerOrder)) game.answerOrder = game.answerOrder.filter(sid => sid !== socket.id);
-      if (game.snake && game.snake.snakes && game.snake.snakes.has(socket.id)) {
-        game.snake.snakes.delete(socket.id);
-      }
-      if (game.bomb && game.bomb.players && game.bomb.players.has(socket.id)) {
-        game.bomb.players.delete(socket.id);
-        game.bomb.bombs = game.bomb.bombs.filter(bb => bb.ownerId !== socket.id);
-      }
-      // Rydde rate-bucket
-      for (const key of rateBuckets.keys()) {
-        if (key.startsWith(socket.id + ':')) rateBuckets.delete(key);
-      }
-      broadcast();
-    } catch (e) { console.error('[disconnect cleanup]', e); }
-    if (socket.id === game.hostId) {
-      game.hostId = null;
-      resetToLobby();
-    }
-  });
-});
-
-// ---- Boot ----
-function getLocalIPs() {
-  const ifaces = os.networkInterfaces();
-  const ips = [];
-  for (const name of Object.keys(ifaces)) {
-    for (const i of ifaces[name]) {
-      if (i.family === 'IPv4' && !i.internal) ips.push(i.address);
-    }
-  }
-  return ips;
-}
-
-http.listen(PORT, async () => {
-  loadScores();
-  const ips = getLocalIPs();
-  const url = ips[0] ? `http://${ips[0]}:${PORT}` : `http://localhost:${PORT}`;
-  console.log('\n╔══════════════════════════════════════════════╗');
-  console.log('║         AVDELINGSSHOW — live server          ║');
-  console.log('╚══════════════════════════════════════════════╝\n');
-  console.log('  Vert-skjerm (åpne på PC/projektor):');
-  console.log(`    ${url}/host\n`);
-  console.log('  Spillere kobler seg på (telefon/laptop):');
-  ips.forEach(ip => console.log(`    http://${ip}:${PORT}`));
-  console.log('');
-  try {
-    const qr = await QRCode.toString(url, { type: 'terminal', small: true });
-    console.log(qr);
-  } catch {}
-  console.log(`  → Trykk Ctrl+C for å stoppe.\n`);
+// ==================== Start server ====================
+server.listen(PORT, () => {
+  console.log(`Avdelingsshow lytter på http://localhost:${PORT}`);
+  console.log(`Host-passord: ${HOST_PASSWORD}`);
 });

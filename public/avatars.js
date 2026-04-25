@@ -1,23 +1,36 @@
-// avatars.js — konsistente emoji-avatarer basert på navn
-export const AVATAR_POOL = [
-  '🦊','🐼','🐨','🐻','🦁','🐯','🐸','🐙','🦉','🦄',
-  '🐲','🦋','🐞','🐢','🦖','🦕','🦎','🐍','🦅','🦜',
-  '🐺','🦝','🐹','🐰','🦘','🦒','🐘','🦏','🐧','🐢',
-  '🐬','🦈','🐠','🦀','🦞','🐙','🦑','🪼','🐳','🦦',
-  '🌵','🌻','🌺','🌸','🍄','🌲','⭐','🌈','🔥','⚡',
+// public/avatars.js — deterministisk emoji + farge fra navn
+const EMOJIS = ['🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🐔','🐧','🐦','🦅','🦉','🦄','🐝','🦋','🐢','🦖','🦕','🐙','🦑','🦀','🦐','🐠','🐬','🦈','🐳','🦓','🦒','🦘','🦔','🦥','🦦','🐓','🐺','🐗','🐴','🐄','🐖','🐑','🦙','🐫','🐪','🦥','🦨','🦡'];
+
+const COLORS = [
+  '#ff5a6b','#ff9d4a','#ffcf4a','#f9de5b','#9ae053','#2fbf71','#3cc1d6','#5cc7ff',
+  '#7a9bff','#b074ff','#e56bff','#ff5ab0','#ff7fa6','#ffb07f','#7fe3c4','#7fc3ff'
 ];
 
-export function avatarFor(name) {
-  const s = String(name || '');
-  let h = 5381;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-  return AVATAR_POOL[Math.abs(h) % AVATAR_POOL.length];
+function hash(str){
+  let h = 2166136261;
+  for (let i=0;i<str.length;i++){
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
 }
 
-export function colorFor(name) {
-  const s = String(name || '');
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 33 + s.charCodeAt(i)) | 0;
-  const hue = Math.abs(h) % 360;
-  return `hsl(${hue}, 70%, 58%)`;
+export function avatarFor(name){
+  const h = hash(String(name||'?').toLowerCase());
+  return {
+    emoji: EMOJIS[h % EMOJIS.length],
+    color: COLORS[(h >>> 8) % COLORS.length]
+  };
 }
+
+export function colorFor(name){
+  return avatarFor(name).color;
+}
+
+// Grid av valg-emojier for login
+export const AVATAR_CHOICES = [
+  '🦊','🐻','🐼','🐨','🐯','🦁','🐮',
+  '🐷','🐸','🐵','🐔','🐧','🦄','🐝',
+  '🦋','🐢','🦖','🐙','🦈','🐳','🦓',
+  '🦒','🦘','🐔','🦉','🦅','🐗','🐺'
+];

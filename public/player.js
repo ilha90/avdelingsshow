@@ -1,1141 +1,695 @@
-// player.js — spiller-siden (mobil/laptop)
-import { avatarFor } from '/avatars.js';
-import * as bomb3d from '/bomb3d.js';
-import * as snake3d from '/snake3d.js';
-const socket = io({
-  transports: ['websocket', 'polling'],
-  upgrade: true,
-  rememberUpgrade: true,
-  reconnection: true,
-  reconnectionDelay: 500,
-  reconnectionDelayMax: 3000,
-});
-const screen = document.getElementById('screen');
-let me = null;
-let chosenEmoji = null;  // valgt avatar ved login
+// public/player.js — spiller-UI + kontroller
+import { AVATAR_CHOICES, colorFor } from './avatars.js';
+import { sfx, setMuted, isMuted, unlock as unlockAudio } from './sound.js';
+
+const socket = io({ transports: ['websocket','polling'] });
 let state = null;
-let lastPhase = null;
-let chosenThisQ = null;
-let votedThisRound = null;
-let scatterDraft = {};
-let wasKicked = false;
-let connected = true;
+let me = null; // { id, token, emoji, name, team, color }
+let snakeRenderer = null;
+let bombRenderer = null;
+let bombInit = null;
+let bombZoom = 1.2;
 
-function buzz(ms = 20) { if ('vibrate' in navigator) navigator.vibrate(ms); }
+const app = document.getElementById('app');
 
-function updateConnBadge() {
-  let b = document.getElementById('connBadge');
-  if (!b) {
-    b = document.createElement('div');
-    b.id = 'connBadge';
-    b.className = 'conn-badge';
-    document.body.appendChild(b);
-  }
-  if (connected) {
-    b.classList.add('hidden');
-  } else {
-    b.classList.remove('hidden');
-    b.textContent = '⚡ Kobler til…';
+// ====== Persist name/emoji ======
+const LS = {
+  name: 'avdelingsshow:name',
+  emoji: 'avdelingsshow:emoji',
+  token: 'avdelingsshow:token'
+};
+function getSaved(){
+  return {
+    name: localStorage.getItem(LS.name) || '',
+    emoji: localStorage.getItem(LS.emoji) || '🦊',
+    token: localStorage.getItem(LS.token) || ''
+  };
+}
+
+// ====== Login ======
+function showLogin(){
+  const s = getSaved();
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="login-title">Avdelingsshow</div>
+      <div style="color: var(--muted); font-size: 14px;">Velg navn og emoji</div>
+      <div class="avatar-grid" id="av-grid">
+        ${AVATAR_CHOICES.map(e => `<button class="avatar-choice ${e===s.emoji?'active':''}" data-e="${e}">${e}</button>`).join('')}
+      </div>
+      <input class="name-input" id="name-in" placeholder="Ditt navn" value="${escapeHtml(s.name)}" maxlength="20" />
+      <button class="btn-primary" id="join-btn">Bli med! 🎉</button>
+    </div>
+  `;
+  let picked = s.emoji;
+  app.querySelectorAll('.avatar-choice').forEach(b => {
+    b.addEventListener('click', () => {
+      app.querySelectorAll('.avatar-choice').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      picked = b.dataset.e;
+    });
+  });
+  const join = () => {
+    const name = app.querySelector('#name-in').value.trim().slice(0, 20);
+    if (!name){ sfx.wrong(); return; }
+    localStorage.setItem(LS.name, name);
+    localStorage.setItem(LS.emoji, picked);
+    socket.emit('player:hello', { name, emoji: picked, token: s.token || null });
+    sfx.join();
+  };
+  app.querySelector('#join-btn').addEventListener('click', join);
+  app.querySelector('#name-in').addEventListener('keydown', e => { if (e.key === 'Enter') join(); });
+  // Auto-rejoin if saved
+  if (s.name && s.token){
+    setTimeout(() => {
+      socket.emit('player:hello', { name: s.name, emoji: s.emoji, token: s.token });
+    }, 200);
   }
 }
-updateConnBadge();
 
-socket.on('connect', () => {
-  connected = true;
-  updateConnBadge();
-  // Gjenopprett tilstand hvis vi var innlogget
-  const saved = sessionStorage.getItem('player-name');
-  if (saved && !me) {
-    socket.emit('player:join', saved, chosenEmoji || undefined);
-  }
+socket.on('player:welcome', ({ id, token, team }) => {
+  me = { id, token, emoji: localStorage.getItem(LS.emoji) || '🦊', name: localStorage.getItem(LS.name) || '', team };
+  me.color = colorFor(me.name);
+  localStorage.setItem(LS.token, token);
 });
-socket.on('disconnect', () => { connected = false; updateConnBadge(); });
-socket.on('reconnect_attempt', () => { connected = false; updateConnBadge(); });
-
-// ===== Snake tick =====
-let snakeSnap = null;
-let playerSnakeNeedsInit = true;
-socket.on('snake:tick', s => {
-  snakeSnap = s;
-  if (state?.phase !== 'snake') return;
-  if (playerSnakeNeedsInit && s.grid) {
-    const canvas = document.getElementById('playerSnakeCanvas');
-    if (canvas) {
-      snake3d.init(canvas, s.grid.w, s.grid.h);
-      playerSnakeNeedsInit = false;
-      startPlayerSnakeRAF();
-    }
-  }
-  updateSnakePlayer();
-});
-
-// ===== Bomberman tick =====
-let bombSnap = null;
-let bombWallsCache = null;
-let playerBombNeedsInit = true;
-socket.on('bomb:tick', s => {
-  if (s.walls) bombWallsCache = s.walls;
-  else if (bombWallsCache) s.walls = bombWallsCache;
-  bombSnap = s;
-  if (state?.phase !== 'bomb') return;
-  // Lazy init av 3D-scene når første tick med grid ankommer
-  if (playerBombNeedsInit && s.grid && me) {
-    const canvas = document.getElementById('playerBombCanvas');
-    if (canvas) {
-      const myId = s.players.find(p => p.name === me)?.id || null;
-      bomb3d.init(canvas, s.grid.w, s.grid.h, {
-        cameraMode: 'overview',
-        followPlayerId: myId,
-      });
-      playerBombNeedsInit = false;
-      startPlayerBombRAF();
-    }
-  }
-  updateBombPlayer();
-});
-
-// Render login-skjerm umiddelbart
-render();
 
 socket.on('state', s => {
-  const prev = state;
   state = s;
-  if (prev && prev.phase !== s.phase) {
-    if (s.phase === 'question') { chosenThisQ = null; }
-    if (s.phase === 'voting') { votedThisRound = null; }
-    if (s.phase === 'scatter-play') { scatterDraft = {}; }
-    if (s.phase === 'lie-collect') { lieDraft = { s1: '', s2: '', s3: '', lieIdx: -1 }; lieSubmitted = false; }
-    if (s.phase === 'lie-play') { lieVoteCast = null; lastLieTurnId = null; }
-    if (s.phase === 'reveal' && me) {
-      const m = currentMe();
-      if (m?.lastCorrect === true) window.sfx?.correct();
-      else if (m?.lastCorrect === false) window.sfx?.wrong();
-    }
-    if (s.phase === 'lie-reveal' && me) {
-      const m = currentMe();
-      if (m?.lastCorrect === true) window.sfx?.correct();
-      else if (m?.lastCorrect === false) window.sfx?.wrong();
-    }
-    if (s.phase === 'end') window.sfx?.fanfare();
+  // If I'm not registered yet, show login
+  if (!me){ showLogin(); return; }
+  const pself = s.players.find(p => p.id === me.id);
+  if (!pself){
+    // If server lost me, re-emit hello
+    showLogin();
+    return;
   }
-  // Skip re-render hvis spiller er midt i lie-collect og ikke har sendt — ellers mister de input-focus
-  if (prev && prev.phase === s.phase && s.phase === 'lie-collect' && !lieSubmitted && me) {
-    const stillNotSubmitted = !(s.lieCollect?.submittedIds || []).includes(currentMe()?.id);
-    if (stillNotSubmitted) { lastPhase = s.phase; return; }
-  }
-  lastPhase = s.phase;
-  render();
+  me.name = pself.name; me.emoji = pself.emoji; me.team = pself.team; me.color = pself.color;
+  render(s);
 });
 
-socket.on('join:ok', ({ name }) => {
-  me = name;
-  sessionStorage.setItem('player-name', name);
-  window.sfx?.join();
-  buzz(30);
-  render();
-});
-socket.on('join:error', msg => { const err = document.getElementById('err'); if (err) err.textContent = msg; });
-socket.on('kicked', () => {
-  me = null;
-  wasKicked = true;
-  sessionStorage.removeItem('player-name');
-  render();
-});
+socket.on('error:msg', msg => { alert(msg); });
 
-// Reactions (get light feedback when others react)
-socket.on('reaction', ({ from, emoji }) => {
-  if (from === me) return;
-  // Subtle buzz when someone reacts
-  buzz(10);
-});
-
-window.react = (emoji) => {
-  socket.emit('player:react', emoji);
-  buzz(20);
-  // Little pop animation on player screen
+socket.on('disconnect', () => {
   const el = document.createElement('div');
-  el.className = 'self-react';
-  el.textContent = emoji;
+  el.className = 'toast';
+  el.textContent = 'Frakoblet... prøver igjen';
   document.body.appendChild(el);
-  setTimeout(() => el.remove(), 900);
-};
+  setTimeout(() => el.remove(), 3000);
+});
 
-function currentMe() {
-  if (!state || !me) return null;
-  return state.players.find(p => p.name === me);
-}
-function myTeam() {
-  const m = currentMe();
-  if (!m || !state.teamMode) return null;
-  return state.teams.find(t => t.id === m.teamId);
-}
+socket.on('bomb:init', d => { bombInit = d; });
 
-function render() {
-  try {
-  if (wasKicked) {
-    screen.innerHTML = `<div class="player-login"><h1>Du ble fjernet 👋</h1><p>Last siden på nytt for å bli med igjen.</p><button class="input-group" onclick="location.reload()" style="margin-top:20px; padding:14px 28px; background:var(--gold); color:#111; border:none; border-radius:12px; font-weight:700; cursor:pointer">Last på nytt</button></div>`;
-    return;
+socket.on('bomb:tick', d => {
+  if (bombRenderer){
+    bombRenderer.setPlayers(d.players);
+    bombRenderer.setBombs(d.bombs);
+    bombRenderer.setPowerups(d.powerups);
+    bombRenderer.updateSoft(d.soft);
+    updateBombHeader(d);
   }
-  if (!me || !currentMe()) return renderLogin();
-  if (!state) return renderWaiting('Kobler til…');
-  switch (state.phase) {
-    case 'lobby':        return renderLobbyWait();
-    case 'tutorial':     return renderTutorialWait();
-    case 'countdown':    return renderCountdown();
-    case 'question':     return renderQuestion();
-    case 'reveal':       return renderReveal();
-    case 'leaderboard':  return renderMiniLeaderboard();
-    case 'wheel':        return renderWheelWait();
-    case 'voting':       return renderVoting();
-    case 'vote-result':  return renderVoteResult();
-    case 'scatter-play': return renderScatterPlay();
-    case 'scatter-review': return renderScatterReview();
-    case 'icebreaker':   return renderIcebreaker();
-    case 'lie-collect':  return renderLieCollect();
-    case 'lie-play':     return renderLiePlay();
-    case 'lie-reveal':   return renderLieReveal();
-    case 'snake':        return renderSnakePlayer();
-    case 'snake-end':    return renderSnakeEndPlayer();
-    case 'bomb':         return renderBombPlayer();
-    case 'bomb-end':     return renderBombEndPlayer();
-    case 'end':          return renderEnd();
+});
+socket.on('bomb:explosion', ({ cells }) => {
+  if (bombRenderer) bombRenderer.explosion(cells);
+  sfx.boom();
+});
+socket.on('snake:tick', d => {
+  if (snakeRenderer){
+    snakeRenderer.setState(d);
+    updateSnakeHeader(d);
   }
-  } catch (e) { console.error('[player render]', e); }
-}
+});
 
-// ============ LOGIN ============
-function renderLogin() {
-  const pool = ['🦊','🐼','🐨','🦁','🐯','🐸','🦄','🐲','🐙','🦉','🐺','🐹','🦒','🐧','🦈','🐬','🌵','🌻','🍄','⭐','🔥','⚡','👾','🤖','👻','🎨','🎸','🎮'];
-  if (!chosenEmoji) chosenEmoji = pool[Math.floor(Math.random() * pool.length)];
-  screen.innerHTML = `
-    <div class="player-login">
-      <h1>Avdelingsshow</h1>
-      <p>Velg navn og avatar</p>
-      <div class="avatar-picker" id="avatarPicker">
-        ${pool.map(e => `<button class="av-opt ${e === chosenEmoji ? 'selected' : ''}" data-e="${e}">${e}</button>`).join('')}
-      </div>
-      <div class="input-group">
-        <input id="nameInp" placeholder="Ditt navn" maxlength="20" autocomplete="off" autofocus>
-        <button id="joinBtn">Bli med</button>
-        <div class="err" id="err"></div>
-      </div>
-    </div>`;
-  const input = document.getElementById('nameInp');
-  const btn = document.getElementById('joinBtn');
-  const go = () => { const v = input.value.trim(); if (v) socket.emit('player:join', v, chosenEmoji); };
-  btn.addEventListener('click', go);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-  document.getElementById('avatarPicker')?.querySelectorAll('.av-opt').forEach(b => {
-    b.addEventListener('click', () => {
-      chosenEmoji = b.dataset.e;
-      document.querySelectorAll('.av-opt').forEach(x => x.classList.remove('selected'));
-      b.classList.add('selected');
-    });
-  });
-}
+// Start
+showLogin();
 
-// ============ COUNTDOWN ============
-function renderCountdown() {
-  const endsAt = state.countdownEndsAt || Date.now() + 3000;
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div class="pq-meta">Gjør deg klar…${state.lightning ? ' ⚡ LYN' : ''}</div>
-      <div class="player-countdown" id="pcdNum">3</div>
-    </div>`;
-  const el = document.getElementById('pcdNum');
-  let lastN = -1;
-  function tick() {
-    const msLeft = endsAt - Date.now();
-    const n = Math.ceil(msLeft / 1000);
-    if (n <= 0) { el.textContent = 'GO!'; el.classList.add('go'); return; }
-    if (n !== lastN) {
-      lastN = n;
-      el.textContent = n;
-      el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');
-      buzz(15);
-    }
-    if (state.phase === 'countdown') requestAnimationFrame(tick);
+// ====== Phase render ======
+function render(s){
+  // Cleanup of 3D renderers when phase leaves
+  if (s.phase !== 'snake' && s.phase !== 'countdown' && snakeRenderer){
+    snakeRenderer.dispose(); snakeRenderer = null;
   }
-  tick();
+  if (s.phase !== 'bomb' && s.phase !== 'countdown' && bombRenderer){
+    bombRenderer.dispose(); bombRenderer = null;
+  }
+
+  switch(s.phase){
+    case 'lobby': showLobby(s); break;
+    case 'tutorial': showTutorial(s); break;
+    case 'countdown': showCountdown(s); break;
+    case 'question': showQuestion(s); break;
+    case 'reveal': showReveal(s); break;
+    case 'leaderboard': showLeaderboard(s); break;
+    case 'voting': showVoting(s); break;
+    case 'vote-result': showWaitScreen('Resultat vises...'); break;
+    case 'scatter-play': showScatterPlay(s); break;
+    case 'scatter-review': showWaitScreen('Gjennomgang pågår...'); break;
+    case 'icebreaker': showIcebreaker(s); break;
+    case 'wheel': showWheel(s); break;
+    case 'snake': showSnakeGame(s); break;
+    case 'bomb': showBombGame(s); break;
+    case 'lie-collect': showLieCollect(s); break;
+    case 'lie-play': showLiePlay(s); break;
+    case 'lie-reveal': showWaitScreen('Avsløring!'); break;
+    case 'end': showEnd(s); break;
+    default: showWaitScreen(s.phase);
+  }
 }
 
-// ============ HEADER ============
-function headerHtml() {
-  const m = currentMe();
-  const t = myTeam();
-  if (!m) return '';
-  const av = m.emoji || avatarFor(m.name);
-  return `<div class="player-me" ${t ? `style="border-color:${t.color}"` : ''}>
-    <div class="name">
-      <span class="avatar-lg">${av}</span>
-      ${t ? `<span class="team-pill" style="background:${t.color}">${t.emoji} ${esc(t.name)}</span>` : ''}
-      ${esc(m.name)}
+function showLobby(s){
+  const pself = s.players.find(p => p.id === me.id);
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 90px;">${pself?.emoji || me.emoji}</div>
+      <div class="lobby-msg">Du er med! 🎉</div>
+      <div class="name-big" style="color: ${pself?.color || me.color}">${escapeHtml(pself?.name || me.name)}</div>
+      ${pself?.team ? `<div class="team-badge" style="background: ${pself.team.color}33; color: ${pself.team.color}">${pself.team.emoji} ${escapeHtml(pself.team.name)}</div>` : ''}
+      <div style="color: var(--muted); margin-top: 20px;">${s.players.length} med. Venter på at host starter...</div>
     </div>
-    <div class="score">${m.score} p</div>
-  </div>`;
+    ${reactionBarHTML()}
+  `;
+  bindReactions();
 }
 
-function reactionBar() {
-  return `<div class="reaction-bar">
-    ${['🔥','❤️','😂','👏','💪','😱','🎉','🤯'].map(e => `<button class="react-btn" onclick="react('${e}')">${e}</button>`).join('')}
-  </div>`;
-}
-
-// ============ SNAKE ============
-function mySnake() {
-  if (!snakeSnap) return null;
-  // Match by name (server key er socketId som vi ikke vet selv)
-  return snakeSnap.snakes.find(s => s.name === me);
-}
-
-function renderSnakePlayer() {
-  const my = mySnake();
-  const color = my?.color || '#d4af37';
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state snake-player">
-      <div class="snake-player-top">
-        <div class="snake-player-info" style="color:${color}">
-          ${my?.emoji || '🐍'} <b>${my ? my.score + ' p' : '0 p'}</b>
-          ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 🪦 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
-          ${my && !my.alive && my.respawnIn === 0 ? `<span class="snake-dead"> · 🪦</span>` : ''}
-        </div>
-        ${snakeSnap && !snakeSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
-      </div>
-      <canvas id="playerSnakeCanvas" class="player-mini-canvas" width="400" height="250"></canvas>
-      <div class="snake-pad" id="snakePad">
-        <button class="pad-btn pad-up" data-dir="up">▲</button>
-        <div class="pad-row">
-          <button class="pad-btn pad-left" data-dir="left">◀</button>
-          <button class="pad-btn pad-right" data-dir="right">▶</button>
-        </div>
-        <button class="pad-btn pad-down" data-dir="down">▼</button>
-      </div>
-      <p class="snake-hint">Trykk eller sveip. Unngå vegger og andre slanger.</p>
-    </div>`;
-  // Wire up knappene + swipe
-  const pad = document.getElementById('snakePad');
-  pad.querySelectorAll('.pad-btn').forEach(b => {
-    b.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      sendSnakeDir(b.dataset.dir);
-    });
-    b.addEventListener('contextmenu', (e) => e.preventDefault());
-  });
-  // Swipe-gestures på hele skjermen
-  let touchStart = null;
-  const screenEl = screen;
-  const onStart = e => {
-    const t = e.touches ? e.touches[0] : e;
-    touchStart = { x: t.clientX, y: t.clientY };
-  };
-  const onMove = e => {
-    // Blokker scroll/zoom under spill
-    if (e.cancelable) e.preventDefault();
-  };
-  const onEnd = e => {
-    if (!touchStart) return;
-    const t = e.changedTouches ? e.changedTouches[0] : e;
-    const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
-    const absX = Math.abs(dx), absY = Math.abs(dy);
-    if (Math.max(absX, absY) < 30) { touchStart = null; return; }
-    if (absX > absY) sendSnakeDir(dx > 0 ? 'right' : 'left');
-    else sendSnakeDir(dy > 0 ? 'down' : 'up');
-    touchStart = null;
-  };
-  screenEl.addEventListener('touchstart', onStart, { passive: true });
-  screenEl.addEventListener('touchmove', onMove, { passive: false });
-  screenEl.addEventListener('touchend', onEnd, { passive: true });
-  // Keyboard (desktop)
-  window.onkeydown = (e) => {
-    if (state?.phase !== 'snake') return;
-    if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') sendSnakeDir('up');
-    else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') sendSnakeDir('down');
-    else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') sendSnakeDir('left');
-    else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') sendSnakeDir('right');
-  };
-  // Init Snake 3D
-  const snakeCanvas = document.getElementById('playerSnakeCanvas');
-  playerSnakeNeedsInit = true;
-  if (snakeCanvas && snakeSnap?.grid) {
-    snake3d.init(snakeCanvas, snakeSnap.grid.w, snakeSnap.grid.h);
-    snake3d.update(snakeSnap);
-    playerSnakeNeedsInit = false;
-  }
-  startPlayerSnakeRAF();
-}
-
-function sendSnakeDir(dir) {
-  socket.emit('player:snake-dir', dir);
-  buzz(10);
-  // Umiddelbar visuell feedback: highlight knappen
-  const pad = document.getElementById('snakePad');
-  if (pad) {
-    pad.querySelectorAll('.pad-btn').forEach(b => b.classList.remove('active-dir'));
-    pad.querySelector(`[data-dir="${dir}"]`)?.classList.add('active-dir');
-  }
-}
-
-function updateSnakePlayer() {
-  // Oppdater bare relevante tall uten full re-render
-  const my = mySnake();
-  const info = screen.querySelector('.snake-player-info');
-  if (info && my) {
-    info.innerHTML = `
-      ${my.emoji || '🐍'} <b>${my.score} p</b>
-      ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 🪦 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
-      ${!my.alive && my.respawnIn === 0 ? `<span class="snake-dead"> · 🪦</span>` : ''}`;
-    info.style.color = my.color;
-  }
-  drawSnakeMini();
-}
-
-function drawSnakeMini() {
-  if (!snakeSnap) return;
-  snake3d.update(snakeSnap);
-  snake3d.render();
-}
-
-let playerSnakeRAF = null;
-function startPlayerSnakeRAF() {
-  if (playerSnakeRAF) cancelAnimationFrame(playerSnakeRAF);
-  function tick() {
-    if (state?.phase !== 'snake') { playerSnakeRAF = null; return; }
-    if (snakeSnap) snake3d.render();
-    playerSnakeRAF = requestAnimationFrame(tick);
-  }
-  tick();
-}
-
-function renderSnakeEndPlayer() {
-  snake3d.dispose();
-  if (playerSnakeRAF) { cancelAnimationFrame(playerSnakeRAF); playerSnakeRAF = null; }
-  const my = mySnake();
-  const sorted = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
-  const rank = sorted.findIndex(s => s.name === me) + 1;
-  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '🐍';
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div style="font-size:64px; text-align:center">${medal}</div>
-      <h2 style="font-size:26px; text-align:center; margin:10px 0">Plass ${rank} av ${sorted.length}</h2>
-      <p style="color:var(--gold-2); font-size:22px; text-align:center">${my?.score || 0} poeng fra slangen</p>
-      <p style="color:var(--ink-2); text-align:center; margin-top:14px">Poengene ble lagt til hovedscoren din.</p>
+function showTutorial(s){
+  const icon = { quiz:'🧠', lightning:'⚡', voting:'🗳️', scatter:'📝', lie:'🤥', icebreaker:'💬', wheel:'🎡', snake:'🐍', bomb:'💣' }[s.tutorialGame] || '🎮';
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 120px;">${icon}</div>
+      <div style="font-size: 22px; text-align:center; padding: 0 20px; max-width: 500px; color: var(--text);">${escapeHtml(s.tutorialText)}</div>
+      <div style="color: var(--muted); margin-top: 14px;">Starter snart...</div>
     </div>
-    ${reactionBar()}`;
+  `;
 }
 
-// ============ BOMBERMAN ============
-function myBombPlayer() {
-  if (!bombSnap) return null;
-  return bombSnap.players.find(p => p.name === me);
-}
-
-function renderBombPlayer() {
-  const my = myBombPlayer();
-  const color = my?.color || '#d4af37';
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state snake-player">
-      <div class="snake-player-top">
-        <div class="snake-player-info" style="color:${color}">
-          ${my?.emoji || '💣'} <b>${my ? my.score + ' p' : '0 p'}</b>
-          ${my ? `<span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.speed > 1 ? ' · ⚡'+my.speed : ''}${my.kick ? ' · 👟' : ''}${my.punch ? ' · 🥊' : ''}${my.remote ? ' · 📡' : ''}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>` : ''}
-          ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
-        </div>
-        ${bombSnap && !bombSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
-      </div>
-      <div class="canvas-wrap">
-        <canvas id="playerBombCanvas" class="player-mini-canvas" width="400" height="240"></canvas>
-        <div class="zoom-ctrls">
-          <button id="zoomIn" class="zoom-btn" aria-label="Zoom inn">＋</button>
-          <button id="zoomOut" class="zoom-btn" aria-label="Zoom ut">−</button>
-        </div>
-      </div>
-      <div class="bomb-controls">
-        <div class="bomb-left-col">
-          <button id="bombDetonate" class="bomb-btn-extra" title="Detoner (krever 📡)">💥</button>
-          <button id="bombDrop" class="bomb-btn-big">💣</button>
-        </div>
-        <div id="bombJoystick" class="bomb-joystick" aria-label="Styrepinne">
-          <div class="joystick-ring"></div>
-          <div id="bombJoystickThumb" class="joystick-thumb"></div>
-        </div>
-      </div>
-      <p class="snake-hint">Venstre tommel = bombe, høyre tommel = styrepinne. Piltaster/WASD på laptop, mellomrom = bombe.</p>
-    </div>`;
-
-  const bombActiveDirs = new Set();
-  function emitBombDirs() {
-    socket.emit('player:bomb-dirs', {
-      up: bombActiveDirs.has('up'),
-      down: bombActiveDirs.has('down'),
-      left: bombActiveDirs.has('left'),
-      right: bombActiveDirs.has('right'),
-    });
-  }
-
-  // Bombe-knapp
-  const bombBtn = document.getElementById('bombDrop');
-  bombBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    socket.emit('player:bomb-drop');
-    buzz(40);
-    bombBtn.classList.add('pressed');
-    setTimeout(() => bombBtn.classList.remove('pressed'), 120);
-  });
-  bombBtn.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  // Detonate-knapp (fjerndetonering, kun når spiller har remote)
-  const detonateBtn = document.getElementById('bombDetonate');
-  detonateBtn?.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    socket.emit('player:bomb-detonate');
-    buzz(50);
-    detonateBtn.classList.add('pressed');
-    setTimeout(() => detonateBtn.classList.remove('pressed'), 120);
-  });
-  detonateBtn?.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  // Joystick
-  const joystick = document.getElementById('bombJoystick');
-  const thumb = document.getElementById('bombJoystickThumb');
-  const JOY_RADIUS = 60;   // maks draavstand i px (passer 170px joystick)
-  const JOY_DEADZONE = 0.22; // fraksjon av radius før en retning aktiveres
-  let joyPointerId = null;
-  let joyCenter = { x: 0, y: 0 };
-
-  function updateDirsFrom(dx, dy) {
-    const nx = Math.max(-1, Math.min(1, dx / JOY_RADIUS));
-    const ny = Math.max(-1, Math.min(1, dy / JOY_RADIUS));
-    const newSet = new Set();
-    if (nx > JOY_DEADZONE) newSet.add('right');
-    else if (nx < -JOY_DEADZONE) newSet.add('left');
-    if (ny > JOY_DEADZONE) newSet.add('down');
-    else if (ny < -JOY_DEADZONE) newSet.add('up');
-    // Bare emit hvis noe endret seg
-    let changed = newSet.size !== bombActiveDirs.size;
-    if (!changed) for (const d of newSet) if (!bombActiveDirs.has(d)) { changed = true; break; }
-    if (changed) {
-      bombActiveDirs.clear();
-      for (const d of newSet) bombActiveDirs.add(d);
-      emitBombDirs();
-      if (newSet.size > 0) buzz(8);
-    }
-  }
-
-  function handleJoyMove(e) {
-    let dx = e.clientX - joyCenter.x;
-    let dy = e.clientY - joyCenter.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > JOY_RADIUS) {
-      dx = (dx / dist) * JOY_RADIUS;
-      dy = (dy / dist) * JOY_RADIUS;
-    }
-    thumb.style.transform = `translate(${dx}px, ${dy}px)`;
-    updateDirsFrom(dx, dy);
-  }
-
-  function resetJoystick() {
-    joyPointerId = null;
-    thumb.style.transform = 'translate(0, 0)';
-    if (bombActiveDirs.size > 0) {
-      bombActiveDirs.clear();
-      emitBombDirs();
-    }
-  }
-
-  joystick.addEventListener('pointerdown', (e) => {
-    if (joyPointerId !== null) return;
-    e.preventDefault();
-    joyPointerId = e.pointerId;
-    try { joystick.setPointerCapture(e.pointerId); } catch {}
-    const rect = joystick.getBoundingClientRect();
-    joyCenter.x = rect.left + rect.width / 2;
-    joyCenter.y = rect.top + rect.height / 2;
-    handleJoyMove(e);
-  });
-  joystick.addEventListener('pointermove', (e) => {
-    if (e.pointerId !== joyPointerId) return;
-    e.preventDefault();
-    handleJoyMove(e);
-  });
-  const joyEnd = (e) => {
-    if (e.pointerId !== joyPointerId) return;
-    resetJoystick();
-  };
-  joystick.addEventListener('pointerup', joyEnd);
-  joystick.addEventListener('pointercancel', joyEnd);
-  joystick.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  // Keyboard — tracker også pressed keys for diagonal
-  const KEY_DIR = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-                    w: 'up', W: 'up', s: 'down', S: 'down', a: 'left', A: 'left', d: 'right', D: 'right' };
-  window.onkeydown = (e) => {
-    if (state?.phase !== 'bomb') return;
-    if (e.key === ' ' || e.key === 'Enter' || e.key === 'b' || e.key === 'B') {
-      e.preventDefault();
-      socket.emit('player:bomb-drop'); buzz(40);
-      return;
-    }
-    const d = KEY_DIR[e.key];
-    if (!d) return;
-    if (bombActiveDirs.has(d)) return; // unngå repeat-spam
-    bombActiveDirs.add(d);
-    emitBombDirs();
-  };
-  window.onkeyup = (e) => {
-    if (state?.phase !== 'bomb') return;
-    const d = KEY_DIR[e.key];
-    if (!d) return;
-    bombActiveDirs.delete(d);
-    emitBombDirs();
-  };
-  // Init 3D-scenen (følge-kamera på egen spiller)
-  const bombCanvas = document.getElementById('playerBombCanvas');
-  playerBombNeedsInit = true;
-  if (bombCanvas && bombSnap?.grid) {
-    const myId = bombSnap.players.find(p => p.name === me)?.id || null;
-    bomb3d.init(bombCanvas, bombSnap.grid.w, bombSnap.grid.h, {
-      cameraMode: 'overview',
-      followPlayerId: myId,
-    });
-    bomb3d.update(bombSnap);
-    playerBombNeedsInit = false;
-  }
-  // Hent lagret zoom og sett på bomb3d
-  const savedZoom = parseFloat(localStorage.getItem('bomb-zoom') || '1.6');
-  bomb3d.setZoom(savedZoom);
-  // Zoom-modus: <1.4 = følge spilleren, ellers oversikt
-  function applyZoomMode(z) {
-    const myId = bombSnap?.players?.find(p => p.name === me)?.id || null;
-    if (z <= 1.4 && myId) bomb3d.setCameraMode('follow', myId);
-    else bomb3d.setCameraMode('overview');
-  }
-  applyZoomMode(savedZoom);
-  const zIn = document.getElementById('zoomIn');
-  const zOut = document.getElementById('zoomOut');
-  function bumpZoom(delta) {
-    const cur = bomb3d.getZoom();
-    const next = Math.max(0.6, Math.min(2.2, cur + delta));
-    bomb3d.setZoom(next);
-    applyZoomMode(next);
-    localStorage.setItem('bomb-zoom', String(next));
-    buzz(10);
-  }
-  zIn?.addEventListener('pointerdown', (e) => { e.preventDefault(); bumpZoom(-0.3); });
-  zOut?.addEventListener('pointerdown', (e) => { e.preventDefault(); bumpZoom(+0.3); });
-  startPlayerBombRAF();
-}
-
-let playerBombRAF = null;
-function startPlayerBombRAF() {
-  if (playerBombRAF) cancelAnimationFrame(playerBombRAF);
-  function tick() {
-    if (state?.phase !== 'bomb') { playerBombRAF = null; return; }
-    if (bombSnap) bomb3d.render();
-    playerBombRAF = requestAnimationFrame(tick);
-  }
-  tick();
-}
-
-function sendBombMove(dir) {
-  socket.emit('player:bomb-move', dir);
-  if (dir && dir !== 'stop') buzz(10);
-  const pad = document.getElementById('bombPad');
-  if (pad) {
-    pad.querySelectorAll('.pad-btn[data-dir]').forEach(b => b.classList.remove('active-dir'));
-    if (dir && dir !== 'stop') pad.querySelector(`[data-dir="${dir}"]`)?.classList.add('active-dir');
-  }
-}
-
-function updateBombPlayer() {
-  const my = myBombPlayer();
-  const info = screen.querySelector('.snake-player-info');
-  if (info && my) {
-    info.innerHTML = `
-      ${my.emoji || '💣'} <b>${my.score} p</b>
-      <span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.speed > 1 ? ' · ⚡'+my.speed : ''}${my.kick ? ' · 👟' : ''}${my.punch ? ' · 🥊' : ''}${my.remote ? ' · 📡' : ''}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>
-      ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 💀 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}`;
-    info.style.color = my.color;
-  }
-  // Vis/skjul ekstra-knapper basert på aktuelle powerups
-  const dBtn = document.getElementById('bombDetonate');
-  if (dBtn) dBtn.classList.toggle('visible', !!my?.remote);
-  // Bombe-knappens ikon endres basert på kontekst
-  const bombBtnEl = document.getElementById('bombDrop');
-  if (bombBtnEl && my) {
-    if (my.holdingBomb) {
-      bombBtnEl.textContent = '🫳'; // Kaster når man trykker
-      bombBtnEl.title = 'Kast bombe';
-    } else {
-      const ownBombHere = bombSnap?.bombs?.some(b => b.x === my.x && b.y === my.y && b.ownerId === my.id && !b.held);
-      if (ownBombHere && my.punch) {
-        bombBtnEl.textContent = '🤲'; // Plukker opp
-        bombBtnEl.title = 'Plukk opp bomben';
-      } else {
-        bombBtnEl.textContent = '💣';
-        bombBtnEl.title = 'Legg bombe';
-      }
-    }
-  }
-  drawBombMini();
-}
-
-function drawBombMini() {
-  if (!bombSnap) return;
-  bomb3d.update(bombSnap);
-  bomb3d.render();
-}
-
-function renderBombEndPlayer() {
-  bomb3d.dispose();
-  if (playerBombRAF) { cancelAnimationFrame(playerBombRAF); playerBombRAF = null; }
-  const my = myBombPlayer();
-  const sorted = bombSnap ? [...bombSnap.players].sort((a, b) => b.score - a.score) : [];
-  const rank = sorted.findIndex(p => p.name === me) + 1;
-  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '💣';
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div style="font-size:64px; text-align:center">${medal}</div>
-      <h2 style="font-size:26px; text-align:center; margin:10px 0">Plass ${rank} av ${sorted.length}</h2>
-      <p style="color:var(--gold-2); font-size:22px; text-align:center">${my?.score || 0} poeng${my?.kills ? ' · ' + my.kills + ' kills' : ''}</p>
-      <p style="color:var(--ink-2); text-align:center; margin-top:14px">Poengene er lagt til hovedscoren din.</p>
+function showCountdown(s){
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="countdown-num" style="font-size: 160px">🎬</div>
+      <div style="font-size: 22px;">Starter nå...</div>
     </div>
-    ${reactionBar()}`;
+  `;
 }
 
-// ============ TUTORIAL ============
-const TUTORIAL_ICON_P = {
-  quiz: '🧠', lightning: '⚡', bomb: '💣', snake: '🐍',
-  scatter: '📝', lie: '🤥', voting: '🗳️',
-};
-function renderTutorialWait() {
-  const icon = TUTORIAL_ICON_P[state.tutorialGame] || '🎮';
-  const text = state.tutorialText || 'Gjør deg klar…';
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state tutorial-player">
-      <div class="tutorial-icon" style="font-size:96px; text-align:center; margin:20px 0">${icon}</div>
-      <div class="tutorial-text" style="font-size:18px; text-align:center; line-height:1.5; padding:0 20px">${esc(text)}</div>
-      <div class="snake-hint" style="margin-top:28px">Starter snart…</div>
-    </div>`;
-}
-
-// ============ LOBBY ============
-function renderLobbyWait() {
-  const t = myTeam();
-  screen.innerHTML = `
-    ${headerHtml()}
-    <div class="player-state waiting">
-      <h2>Du er med!</h2>
-      ${t ? `<p style="color:${t.color}; font-weight:700; font-size:20px; margin-bottom:16px">Du spiller for ${t.emoji} ${esc(t.name)}</p>` : ''}
-      <p>Venter på at verten starter.</p>
-      <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
-      <p style="margin-top: 24px">Spillere inne: <b>${state.players.length}</b></p>
-    </div>
-    ${reactionBar()}`;
-}
-
-// ============ QUESTION ============
-function renderQuestion() {
-  const m = currentMe();
-  if (!m) return;
-  if (m.answered || chosenThisQ !== null) {
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state waiting">
-        <h2>Svar registrert ✓</h2>
-        <p>Venter på resten…</p>
-        <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
-      </div>`;
-    return;
-  }
-  const q = state.question;
-  const isEmoji = q?.isEmoji;
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state player-question">
-      <div class="pq-meta">Spørsmål ${state.qIndex + 1} / ${state.total}</div>
-      ${isEmoji
-        ? `<div class="pq-emoji">${esc(q.text)}</div>`
-        : `<div class="pq-text">${esc(q.text)}</div>`}
-      <div class="pq-options">
-        ${(q?.options || []).map((o, i) => `
-          <button class="pq-opt b${i}" onclick="answer(${i})">
-            <span class="pq-letter">${'ABCD'[i]}</span>
-            <span class="pq-label">${esc(o)}</span>
-          </button>`).join('')}
-      </div>
-    </div>`;
-}
-window.answer = (i) => {
-  chosenThisQ = i;
-  socket.emit('player:answer', i);
-  buzz(30);
-  render();
-};
-
-// ============ REVEAL ============
-function renderReveal() {
-  const m = currentMe();
-  if (!m) return;
-  const ok = m.lastCorrect === true;
-  const nope = m.lastCorrect === false;
-  const cls = ok ? 'ok' : nope ? 'nope' : 'skip';
-  const big = ok ? '🎉 Riktig!' : nope ? '❌ Feil' : '💤 Ikke svart';
-  const sorted = [...state.players].sort((a, b) => b.score - a.score);
-  const rank = sorted.findIndex(p => p.name === m.name) + 1;
-  screen.innerHTML = `${headerHtml()}
-    <div class="feedback ${cls}">
-      <div class="big">${big}</div>
-      ${ok ? `<div class="delta">+${m.lastDelta} poeng</div>` : ''}
-      ${ok && m.streak >= 2 ? `<div style="color: var(--gold-2); font-weight: 700">🔥 ${m.streak} på rad!</div>` : ''}
-      <div class="rank">Plass ${rank} av ${state.players.length}</div>
-    </div>
-    ${reactionBar()}`;
-}
-
-// ============ LEADERBOARD MINI ============
-function renderMiniLeaderboard() {
-  const m = currentMe();
-  if (state.teamMode) {
-    const teams = [...state.teams].sort((a, b) => b.score - a.score);
-    const myT = myTeam();
-    const rank = myT ? teams.findIndex(t => t.id === myT.id) + 1 : 0;
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state">
-        <h2 style="font-size: 26px; margin-bottom: 8px">Lag-tavle</h2>
-        ${myT ? `<div class="rank" style="color:${myT.color}; font-size: 18px; margin-bottom: 20px">Ditt lag er på plass ${rank}</div>` : ''}
-        ${teams.map((t, i) => `
-          <div class="lb-row" style="grid-template-columns:40px 1fr auto; font-size:16px; border-left:4px solid ${t.color}">
-            <div class="lb-rank">${i + 1}</div>
-            <div>${t.emoji} ${esc(t.name)}${myT && t.id === myT.id ? ' 👈' : ''}</div>
-            <div>${t.score} p</div>
-          </div>`).join('')}
-      </div>`;
-  } else {
-    const sorted = [...state.players].sort((a, b) => b.score - a.score);
-    const rank = sorted.findIndex(p => p.name === m.name) + 1;
-    const top5 = sorted.slice(0, 5);
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state">
-        <h2 style="font-size: 26px; margin-bottom: 16px">Poengtavle</h2>
-        <div class="rank" style="color: var(--gold-2); font-size: 18px; margin-bottom: 20px">Du ligger på plass ${rank}</div>
-        ${top5.map((p, i) => `
-          <div class="lb-row" style="grid-template-columns: 40px 1fr auto; font-size: 16px">
-            <div class="lb-rank" style="font-size: 22px">${i + 1}</div>
-            <div>${esc(p.name)}${p.name === m.name ? ' 👤' : ''}</div>
-            <div>${p.score} p</div>
-          </div>`).join('')}
-      </div>`;
-  }
-}
-
-// ============ WHEEL (spiller ser resultat) ============
-function renderWheelWait() {
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state waiting">
-      <h2>🎡 Lykkehjulet snurrer</h2>
-      <p>Følg med på storskjermen…</p>
-      ${state.wheelResult ? `<div style="margin-top: 20px; font-size: 28px; font-weight: 700; color: ${state.wheelResult === me ? 'var(--gold-2)' : 'var(--ink)'}">${state.wheelResult === me ? '🎉 Det ble deg!' : esc(state.wheelResult)}</div>` : ''}
-    </div>
-    ${reactionBar()}`;
-}
-
-// ============ VOTING ============
-function renderVoting() {
-  const m = currentMe();
-  if (votedThisRound || m.voted) {
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state waiting">
-        <h2>Stemme registrert ✓</h2>
-        <p>Venter på resten…</p>
-        <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
-      </div>`;
-    return;
-  }
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div class="vote-prompt"><span class="vote-prefix">Hvem er mest sannsynlig til å…</span>${esc(state.votingPrompt)}</div>
-      <div class="vote-choices">
-        ${state.players.map(p => `<button class="vote-btn" onclick="castVote('${p.id}')">${esc(p.name)}</button>`).join('')}
-      </div>
-      <p style="color:var(--ink-2); font-size:13px; margin-top:12px">Anonymt — ingen ser hvem du stemte på.</p>
-    </div>`;
-}
-window.castVote = (id) => {
-  votedThisRound = id;
-  socket.emit('player:vote', id);
-  render();
-};
-
-function renderVoteResult() {
-  const res = state.votingResults || [];
-  const m = currentMe();
-  const myVotes = res.find(r => r.name === m.name)?.count || 0;
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div class="vote-prompt"><span class="vote-prefix">Hvem er mest sannsynlig til å…</span>${esc(state.votingPrompt)}</div>
-      ${res[0] ? `<div class="vote-winner-small">🏆 ${esc(res[0].name)} — ${res[0].count} ${res[0].count === 1 ? 'stemme' : 'stemmer'}</div>` : ''}
-      ${myVotes > 0 ? `<div style="color:var(--gold-2); font-size:16px; margin-top:10px">Du fikk ${myVotes} ${myVotes === 1 ? 'stemme' : 'stemmer'}</div>` : ''}
-    </div>
-    ${reactionBar()}`;
-}
-
-// ============ SCATTERGORIES ============
-function renderScatterPlay() {
-  const m = currentMe();
-  if (m.answered) {
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state waiting">
-        <h2>Sendt inn ✓</h2>
-        <p>Venter på de andre…</p>
-      </div>`;
-    return;
-  }
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state scatter-player">
-      <div class="scatter-letter-big">${state.scatterLetter}</div>
-      <p style="color:var(--ink-2); margin-bottom: 16px">Skriv ord som starter med ${state.scatterLetter}</p>
-      <div class="scatter-inputs">
-        ${state.scatterCategories.map((c, i) => `
-          <label class="scatter-input">
-            <span>${esc(c)}</span>
-            <input type="text" id="si${i}" maxlength="40" value="${esc(scatterDraft[i] || '')}" placeholder="${state.scatterLetter}…" oninput="scatterInput(${i}, this.value)">
-          </label>`).join('')}
-      </div>
-      <button class="btn btn-primary" style="width:100%; margin-top:16px" onclick="submitScatter()">Send inn</button>
-    </div>`;
-}
-window.scatterInput = (i, v) => { scatterDraft[i] = v; };
-window.submitScatter = () => {
-  const arr = state.scatterCategories.map((_, i) => scatterDraft[i] || '');
-  socket.emit('player:scatter', arr);
-};
-
-function renderScatterReview() {
-  const m = currentMe();
-  const myRow = state.scatterReview?.find(r => r.name === m.name);
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <h2 style="font-size:22px; margin-bottom:12px">Kategori-kamp</h2>
-      <p style="color:var(--gold-2); font-size:26px; font-weight:800; margin-bottom:16px">+${myRow?.delta || 0} poeng</p>
-      ${myRow ? state.scatterCategories.map((c, i) => `
-        <div class="scatter-review-row">
-          <span class="scat-cat">${esc(c)}</span>
-          <span class="scat-val">${esc((myRow.answers[i] || '').trim() || '—')}</span>
-        </div>`).join('') : ''}
-      <p style="color:var(--ink-2); font-size:14px; margin-top:16px">Se storskjermen for full oversikt.</p>
-    </div>`;
-}
-
-// ============ ICEBREAKER ============
-function renderIcebreaker() {
-  const m = currentMe();
-  const mine = state.icebreakerTarget === m.name;
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div class="icebreaker-label" style="font-size:16px">Bli-kjent-kort</div>
-      <div class="icebreaker-target" style="font-size:30px; ${mine ? 'color:var(--gold-2)' : ''}">${mine ? '🎤 Du er valgt!' : esc(state.icebreakerTarget)}</div>
-      <div class="icebreaker-prompt" style="font-size:22px; margin-top:20px">${esc(state.icebreakerPrompt)}</div>
-      ${mine ? '<p style="color:var(--ink-2); margin-top:20px">Del svaret ditt med gruppen 😊</p>' : '<p style="color:var(--ink-2); margin-top:20px">Hør på storskjermen.</p>'}
-    </div>
-    ${reactionBar()}`;
-}
-
-// ============ 2 SANNHETER, 1 LØGN ============
-let lieDraft = { s1: '', s2: '', s3: '', lieIdx: -1 };
-let lieSubmitted = false;
-let lieVoteCast = null;
-let lastLieTurnId = null;
-
-function renderLieCollect() {
-  const m = currentMe();
-  const lc = state.lieCollect || { submittedIds: [] };
-  const iSubmitted = lc.submittedIds.includes(m.id) || lieSubmitted;
-  if (iSubmitted) {
-    const waiting = state.players.length - lc.submittedIds.length;
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state waiting">
-        <h2>Sendt inn ✓</h2>
-        <p>${waiting > 0 ? `Venter på ${waiting} til…` : 'Alle er ferdige — starter snart!'}</p>
-        <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
-      </div>`;
-    return;
-  }
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state lie-input">
-      <div class="lie-input-title">🤥 2 sannheter og 1 løgn</div>
-      <div class="lie-input-sub">Skriv 3 ting om deg selv. Velg hvilken som er løgnen.</div>
-      <div class="lie-input-fields">
-        ${[0,1,2].map(i => `
-          <div class="lie-input-row ${lieDraft.lieIdx === i ? 'is-lie' : ''}">
-            <textarea id="lieInp${i}" rows="2" maxlength="120" placeholder="Påstand ${i+1}">${esc(['s1','s2','s3'][i] && lieDraft[['s1','s2','s3'][i]] || '')}</textarea>
-            <label class="lie-mark">
-              <input type="radio" name="lieMark" value="${i}" ${lieDraft.lieIdx === i ? 'checked' : ''}>
-              <span>Løgn</span>
-            </label>
-          </div>
-        `).join('')}
-      </div>
-      <button id="lieSendBtn" class="btn btn-primary btn-lg" style="width:100%; margin-top:14px" disabled>Send inn</button>
-      <p style="color:var(--ink-2); font-size:13px; margin-top:10px">De andre spillerne skal prøve å gjette hvilken som er løgnen din.</p>
-    </div>`;
-
-  const inputs = [0,1,2].map(i => document.getElementById('lieInp' + i));
-  const radios = document.querySelectorAll('input[name="lieMark"]');
-  const sendBtn = document.getElementById('lieSendBtn');
-
-  function refreshBtn() {
-    const allFilled = inputs.every(x => x.value.trim().length > 0);
-    const hasLie = lieDraft.lieIdx >= 0;
-    sendBtn.disabled = !(allFilled && hasLie);
-  }
-
-  inputs.forEach((inp, i) => {
-    inp.addEventListener('input', () => {
-      lieDraft[['s1','s2','s3'][i]] = inp.value;
-      refreshBtn();
-    });
-  });
-  radios.forEach(r => {
-    r.addEventListener('change', () => {
-      lieDraft.lieIdx = Number(r.value);
-      document.querySelectorAll('.lie-input-row').forEach((el, idx) => {
-        el.classList.toggle('is-lie', idx === lieDraft.lieIdx);
-      });
-      refreshBtn();
-    });
-  });
-  sendBtn.addEventListener('click', () => {
-    sendBtn.disabled = true;
-    sendBtn.textContent = 'Sender…';
-    socket.emit('player:lie-submit', {
-      s1: lieDraft.s1.trim(),
-      s2: lieDraft.s2.trim(),
-      s3: lieDraft.s3.trim(),
-      lieIdx: lieDraft.lieIdx,
-    });
-    lieSubmitted = true;
-    setTimeout(() => render(), 100);
-  });
-  refreshBtn();
-}
-
-function renderLiePlay() {
-  const m = currentMe();
-  const lp = state.liePlay;
-  if (!lp) return renderWaiting('Venter…');
-  // Reset vote når ny spiller kommer på tur
-  if (lastLieTurnId !== lp.currentId) {
-    lastLieTurnId = lp.currentId;
-    lieVoteCast = null;
-  }
-  const isMine = lp.currentId === m.id;
-  if (isMine) {
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state waiting">
-        <div style="font-size:60px">🎭</div>
-        <h2>Dine påstander vises nå</h2>
-        <p>De andre prøver å gjette løgnen din. Se på storskjermen.</p>
-        <div class="lie-mini-stmts">
-          ${lp.statements.map((s, i) => `<div class="lie-mini-stmt ${i === lp.statements.findIndex(x => x) ? '' : ''}">${i+1}. ${esc(s)}</div>`).join('')}
-        </div>
-      </div>`;
-    return;
-  }
-  if (lieVoteCast != null) {
-    const waiting = Math.max(0, state.players.length - 1 - lp.votedIds.length);
-    screen.innerHTML = `${headerHtml()}
-      <div class="player-state waiting">
-        <h2>Stemme registrert ✓</h2>
-        <p>Du tror nr. ${lieVoteCast + 1} er løgnen.</p>
-        <p style="color:var(--ink-2); margin-top:8px">${waiting > 0 ? `Venter på ${waiting} til…` : 'Alle har stemt!'}</p>
-        <div><span class="pulse-dot"></span><span class="pulse-dot"></span><span class="pulse-dot"></span></div>
-      </div>`;
-    return;
-  }
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state lie-vote">
-      <div class="lie-vote-head">
-        <span class="lie-vote-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</span>
-        <div>
-          <div class="lie-vote-label">Hvilken er løgnen?</div>
-          <div class="lie-vote-name">${esc(lp.currentName)}</div>
-        </div>
-      </div>
-      <div class="lie-vote-btns">
-        ${lp.statements.map((s, i) => `
-          <button class="lie-vote-btn" onclick="castLieVote(${i})">
-            <span class="lie-vote-num">${i + 1}</span>
-            <span class="lie-vote-text">${esc(s)}</span>
+function showQuestion(s){
+  if (!s.quiz || !s.quiz.question) return;
+  const answered = s.players.find(p => p.id === me.id)?.hasAnswered;
+  const q = s.quiz.question;
+  app.innerHTML = `
+    <div class="player-q-wrap">
+      <div style="color: var(--muted);">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning?'⚡':''}</div>
+      <div class="player-q-text">${q.isEmoji ? '<span style="font-size: 42px">'+escapeHtml(q.q)+'</span>' : escapeHtml(q.q)}</div>
+      <div class="player-answers">
+        ${q.a.map((a, i) => `
+          <button class="player-answer ${['a','b','c','d'][i]}" data-idx="${i}" ${answered ? 'disabled' : ''}>
+            <span class="letter">${['A','B','C','D'][i]}</span>
+            <span>${escapeHtml(a)}</span>
           </button>
         `).join('')}
       </div>
-    </div>`;
+      ${answered ? '<div style="text-align:center; color:var(--mint); font-weight:700;">Svar sendt ✓</div>' : ''}
+    </div>
+  `;
+  app.querySelectorAll('.player-answer').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.idx, 10);
+      socket.emit('player:answer', { idx });
+      sfx.pop();
+      app.querySelectorAll('.player-answer').forEach(b => b.disabled = true);
+      btn.style.outline = '4px solid var(--mint)';
+    });
+  });
 }
 
-window.castLieVote = (idx) => {
-  if (lieVoteCast != null) return;
-  lieVoteCast = idx;
-  socket.emit('player:lie-vote', idx);
-  buzz(30);
-  render();
-};
-
-function renderLieReveal() {
-  const m = currentMe();
-  const lp = state.liePlay;
-  if (!lp) return renderWaiting('Venter…');
-  const isMine = lp.currentId === m.id;
-  const lieIdx = lp.lieDisplayIdx;
-  const delta = m.lastDelta || 0;
-  const correct = m.lastCorrect;
-  let headline, sub;
-  if (isMine) {
-    headline = delta > 0 ? `+${delta} poeng 🎭` : 'Ingen lot seg lure 😅';
-    sub = delta > 0 ? `Du lurte ${delta / 50} spiller${delta / 50 === 1 ? '' : 'e'}!` : 'Prøv vanskeligere løgner neste gang.';
-  } else if (correct === true) {
-    headline = `+${delta} poeng ✓`;
-    sub = 'Du avslørte løgnen!';
-  } else if (correct === false) {
-    headline = 'Feil gjetning ✗';
-    sub = `Løgnen var nr. ${lieIdx + 1}.`;
-  } else {
-    headline = 'Runde ferdig';
-    sub = `Løgnen var nr. ${lieIdx + 1}.`;
+function showReveal(s){
+  const correct = s.quiz?.correctIdx;
+  const a = app.querySelectorAll('.player-answer');
+  if (correct != null){
+    a.forEach((el, i) => {
+      if (i === correct) el.style.outline = '4px solid var(--mint)';
+      else el.style.opacity = '0.3';
+    });
   }
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state lie-reveal">
-      <div class="lie-reveal-head">
-        <div class="lie-reveal-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</div>
-        <div class="lie-reveal-name">${esc(lp.currentName)}</div>
+  // Subtle feedback
+  const me_p = s.players.find(p => p.id === me.id);
+  if (me_p){
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed; top:14px; left:50%; transform:translateX(-50%); background: rgba(0,0,0,.6); padding: 8px 14px; border-radius: 999px; font-weight:700;';
+    div.textContent = 'Poeng: ' + me_p.score;
+    document.body.appendChild(div);
+    setTimeout(() => div.remove(), 2500);
+  }
+}
+
+function showLeaderboard(s){
+  const me_p = s.players.find(p => p.id === me.id);
+  const sorted = s.players.slice().sort((a,b) => b.score - a.score);
+  const myRank = sorted.findIndex(p => p.id === me.id) + 1;
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 64px;">🏆</div>
+      <div style="font-size: 24px; font-weight: 800;">Din plass: #${myRank}</div>
+      <div style="font-size: 40px; color: var(--mint); font-weight: 900;">${me_p?.score || 0} poeng</div>
+      <div style="color: var(--muted)">Se storskjerm for tavla</div>
+    </div>
+  `;
+}
+
+function showVoting(s){
+  app.innerHTML = `
+    <div class="player-q-wrap">
+      <div style="font-size: 14px; color:var(--muted)">Hvem er mest sannsynlig</div>
+      <div class="player-q-text">${escapeHtml(s.vote.prompt)}</div>
+      <div style="display:flex; flex-wrap:wrap; gap: 8px; flex:1; align-content:flex-start; overflow:auto;">
+        ${s.players.filter(p => p.id !== me.id).map(p => `
+          <button class="btn" data-id="${p.id}" style="flex: 1 0 46%; padding: 16px; display:flex; flex-direction:column; gap: 6px; align-items:center; color:${p.color};">
+            <span style="font-size: 38px">${p.emoji}</span>
+            <span style="font-weight:700">${escapeHtml(p.name)}</span>
+          </button>
+        `).join('')}
       </div>
-      <div class="lie-reveal-lie">Løgnen: <b>${esc(lp.statements[lieIdx] || '')}</b></div>
-      <h2 class="lie-reveal-headline ${correct === true || (isMine && delta > 0) ? 'ok' : (correct === false ? 'bad' : '')}">${headline}</h2>
-      <p class="lie-reveal-sub">${sub}</p>
     </div>
-    ${reactionBar()}`;
+  `;
+  app.querySelectorAll('button[data-id]').forEach(b => {
+    b.addEventListener('click', () => {
+      socket.emit('player:vote', { targetId: b.dataset.id });
+      sfx.pop();
+      app.querySelectorAll('button[data-id]').forEach(x => { x.disabled = true; x.style.opacity = '0.4'; });
+      b.style.opacity = '1'; b.style.outline = '3px solid var(--mint)';
+    });
+  });
 }
 
-// ============ END ============
-function renderEnd() {
-  const m = currentMe();
-  const sorted = [...state.players].sort((a, b) => b.score - a.score);
-  const rank = sorted.findIndex(p => p.name === m.name) + 1;
-  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : '🎯';
-  const t = myTeam();
-  const teamRank = t ? [...state.teams].sort((a,b) => b.score-a.score).findIndex(x => x.id === t.id) + 1 : 0;
-  screen.innerHTML = `${headerHtml()}
-    <div class="player-state">
-      <div style="font-size: 80px; text-align: center">${medal}</div>
-      <h2 style="font-size: 28px; margin: 10px 0; text-align:center">Plass ${rank} av ${state.players.length}</h2>
-      <p style="color: var(--gold-2); font-size: 22px; text-align:center">${m.score} poeng</p>
-      ${t ? `<p style="color:${t.color}; font-size:18px; margin-top:16px; text-align:center">Lag ${t.emoji} ${esc(t.name)} — plass ${teamRank} av ${state.teams.length}</p>` : ''}
-      <p style="margin-top: 30px; color: var(--ink-2); text-align:center">Takk for i kveld!</p>
+function showScatterPlay(s){
+  const entries = new Array(5).fill('');
+  app.innerHTML = `
+    <div class="player-q-wrap scatter-play">
+      <div style="text-align:center;">
+        <div style="color:var(--muted)">Bokstav</div>
+        <div style="font-size: 80px; font-weight:900; color: var(--mint); line-height: 1;">${escapeHtml(s.scatter.letter)}</div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:10px; flex: 1;">
+        ${s.scatter.categories.map((c, i) => `
+          <label style="display:flex; flex-direction:column; gap: 4px;">
+            <span style="font-size: 13px; color: var(--muted)">${escapeHtml(c)}</span>
+            <input type="text" data-i="${i}" maxlength="40" placeholder="Ord som starter med ${escapeHtml(s.scatter.letter)}..." />
+          </label>
+        `).join('')}
+      </div>
+      <button class="btn-primary" id="submit-sc">Send inn ✓</button>
     </div>
-    ${reactionBar()}`;
+  `;
+  app.querySelectorAll('input[data-i]').forEach(inp => {
+    inp.addEventListener('input', e => { entries[parseInt(inp.dataset.i,10)] = e.target.value; });
+  });
+  app.querySelector('#submit-sc').addEventListener('click', () => {
+    socket.emit('player:scatter', { entries });
+    sfx.correct();
+    showWaitScreen('Sendt! Venter på de andre...');
+  });
 }
 
-function renderWaiting(msg) {
-  screen.innerHTML = `<div class="player-state waiting"><h2>${msg}</h2></div>`;
+function showIcebreaker(s){
+  const t = s.icebreaker.target;
+  const isMe = t && t.id === me.id;
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 90px;">💬</div>
+      <div style="font-size: 22px; text-align:center; padding: 0 20px; max-width: 400px;">${escapeHtml(s.icebreaker.prompt)}</div>
+      ${t ? `<div style="font-size: 16px; color: ${t.color}; margin-top: 20px;">${isMe ? '✨ Du er valgt! Svar høyt!' : t.emoji + ' ' + escapeHtml(t.name) + ' svarer'}</div>` : ''}
+    </div>
+    ${reactionBarHTML()}
+  `;
+  bindReactions();
 }
 
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function showWheel(s){
+  const c = s.wheel?.chosen;
+  const isMe = c && c.id === me.id;
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 80px;">🎡</div>
+      ${c ? `<div style="font-size: 22px;">${isMe ? '✨ Du ble valgt! ✨' : c.emoji + ' ' + escapeHtml(c.name) + ' er valgt'}</div>` : '<div style="color:var(--muted)">Venter på at host snurrer...</div>'}
+    </div>
+    ${reactionBarHTML()}
+  `;
+  bindReactions();
+}
+
+function showLieCollect(s){
+  const submitted = s.players.find(p => p.id === me.id)?.hasSubmitted;
+  if (submitted){ showWaitScreen('Sendt! Venter på andre... ('+s.lie.submittedCount+'/'+s.lie.total+')'); return; }
+  const items = ['', '', ''];
+  let lieIdx = 0;
+  app.innerHTML = `
+    <div class="player-q-wrap">
+      <div style="color:var(--muted); font-size: 13px;">2 sannheter, 1 løgn</div>
+      <div style="font-size: 18px;">Skriv 3 påstander om deg selv og huk av hvilken som er LØGN.</div>
+      <div class="lie-form">
+        ${[0,1,2].map(i => `
+          <label>Påstand ${['A','B','C'][i]}</label>
+          <input type="text" data-i="${i}" maxlength="160" placeholder="Jeg har..." />
+          <label><input type="radio" name="lie" data-li="${i}" ${i===0?'checked':''}> Dette er løgn</label>
+        `).join('')}
+      </div>
+      <button class="btn-primary" id="submit-lie">Send inn ✓</button>
+    </div>
+  `;
+  app.querySelectorAll('input[data-i]').forEach(inp => {
+    inp.addEventListener('input', e => { items[parseInt(inp.dataset.i,10)] = e.target.value; });
+  });
+  app.querySelectorAll('input[name="lie"]').forEach(r => {
+    r.addEventListener('change', e => { if (r.checked) lieIdx = parseInt(r.dataset.li, 10); });
+  });
+  app.querySelector('#submit-lie').addEventListener('click', () => {
+    if (items.some(x => !x.trim())){ sfx.wrong(); alert('Fyll ut alle 3'); return; }
+    socket.emit('player:lie-submit', { items, lieIdx });
+    sfx.correct();
+    showWaitScreen('Sendt!');
+  });
+}
+
+function showLiePlay(s){
+  const c = s.lie.current; if (!c) return;
+  const isMine = c.pid === me.id;
+  app.innerHTML = `
+    <div class="player-q-wrap">
+      <div style="font-size: 14px; color: var(--muted);">Hvem lyver?</div>
+      <div style="font-size: 30px; color: ${c.color}; font-weight: 900;">${c.emoji} ${escapeHtml(c.name)}</div>
+      <div class="lie-list">
+        ${c.items.map((it,i) => `<div class="lie-claim" data-i="${i}" ${isMine?'style="opacity:.5; pointer-events:none;"':''}>${['A','B','C'][i]}. ${escapeHtml(it)}</div>`).join('')}
+      </div>
+      ${isMine ? '<div style="text-align:center; color:var(--muted)">Dette er dine påstander — du kan ikke stemme.</div>' : ''}
+    </div>
+  `;
+  app.querySelectorAll('.lie-claim').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.i, 10);
+      socket.emit('player:lie-vote', { idx });
+      app.querySelectorAll('.lie-claim').forEach(x => x.classList.remove('selected'));
+      el.classList.add('selected');
+      sfx.pop();
+    });
+  });
+}
+
+function showEnd(s){
+  const me_p = s.players.find(p => p.id === me.id);
+  const sorted = s.players.slice().sort((a,b) => b.score - a.score);
+  const myRank = sorted.findIndex(p => p.id === me.id) + 1;
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 80px;">🎉</div>
+      <div style="font-size: 28px; font-weight: 900;">Runde over!</div>
+      <div style="font-size: 22px;">Din plass: <b>#${myRank}</b></div>
+      <div style="font-size: 40px; color: var(--mint); font-weight: 900;">${me_p?.score || 0} poeng</div>
+    </div>
+    ${reactionBarHTML()}
+  `;
+  bindReactions();
+}
+
+function showWaitScreen(msg){
+  app.innerHTML = `
+    <div class="login-screen">
+      <div style="font-size: 60px;">⏳</div>
+      <div style="font-size: 18px; color: var(--muted); text-align:center; padding: 0 20px;">${escapeHtml(msg)}</div>
+    </div>
+    ${reactionBarHTML()}
+  `;
+  bindReactions();
+}
+
+// ====== Snake game view ======
+function showSnakeGame(s){
+  app.innerHTML = `
+    <div class="player-game-wrap">
+      <canvas id="snake-canvas"></canvas>
+      <div class="player-header">
+        <div><b id="snake-score-me">0</b> poeng</div>
+        <div id="snake-timer"></div>
+      </div>
+      <div class="arrow-pad">
+        <button class="u" data-d="up">▲</button>
+        <button class="l" data-d="left">◀</button>
+        <button class="r" data-d="right">▶</button>
+        <button class="d" data-d="down">▼</button>
+      </div>
+    </div>
+  `;
+  import('./snake3d.js').then(m => {
+    snakeRenderer = new m.SnakeRenderer(document.getElementById('snake-canvas'));
+  });
+  bindSnakeControls();
+}
+
+function bindSnakeControls(){
+  // Keyboard
+  const keys = new Set();
+  const keyDir = e => {
+    const k = e.key.toLowerCase();
+    if (['arrowup','w'].includes(k)) return 'up';
+    if (['arrowdown','s'].includes(k)) return 'down';
+    if (['arrowleft','a'].includes(k)) return 'left';
+    if (['arrowright','d'].includes(k)) return 'right';
+    return null;
+  };
+  const onDown = e => {
+    const d = keyDir(e); if (!d) return;
+    if (keys.has(d)) return;
+    keys.add(d);
+    socket.emit('player:snake-dir', { dir: d });
+  };
+  const onUp = e => {
+    const d = keyDir(e); if (!d) return;
+    keys.delete(d);
+  };
+  window.addEventListener('keydown', onDown);
+  window.addEventListener('keyup', onUp);
+
+  // Arrow pad
+  app.querySelectorAll('.arrow-pad button').forEach(b => {
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      socket.emit('player:snake-dir', { dir: b.dataset.d });
+      sfx.tick();
+    });
+  });
+
+  // Swipe on screen
+  let tStart = null;
+  const wrap = document.querySelector('.player-game-wrap');
+  wrap.addEventListener('pointerdown', e => { tStart = { x: e.clientX, y: e.clientY, t: Date.now() }; });
+  wrap.addEventListener('pointerup', e => {
+    if (!tStart) return;
+    const dx = e.clientX - tStart.x, dy = e.clientY - tStart.y;
+    const mag = Math.hypot(dx, dy);
+    tStart = null;
+    if (mag < 30) return;
+    if (Math.abs(dx) > Math.abs(dy)){
+      socket.emit('player:snake-dir', { dir: dx > 0 ? 'right' : 'left' });
+    } else {
+      socket.emit('player:snake-dir', { dir: dy > 0 ? 'down' : 'up' });
+    }
+  });
+}
+
+function updateSnakeHeader(d){
+  const me_s = (d.score||[]).find(x => x.id === me.id);
+  const el = document.getElementById('snake-score-me');
+  if (el) el.textContent = me_s?.score || 0;
+  const t = document.getElementById('snake-timer');
+  if (t){
+    if (d.endAt){
+      const left = Math.max(0, Math.round((d.endAt - Date.now())/1000));
+      t.textContent = left + 's';
+    } else { t.textContent = '∞'; }
+  }
+}
+
+// ====== Bomb game view ======
+function showBombGame(s){
+  app.innerHTML = `
+    <div class="player-game-wrap">
+      <canvas id="bomb-canvas"></canvas>
+      <div class="player-header">
+        <div><b id="bomb-score-me">0</b> · 💣×<span id="bc-bombs">1</span> · 🔥<span id="bc-fire">2</span> <span id="bc-icons"></span></div>
+        <div id="bomb-timer"></div>
+      </div>
+      <div class="zoom-btns">
+        <button id="zoom-in">+</button>
+        <button id="zoom-out">−</button>
+      </div>
+      <div class="joystick-wrap" id="joy">
+        <div class="joystick-base">
+          <div class="joystick-thumb" id="joy-thumb"></div>
+        </div>
+      </div>
+      <button class="bomb-btn" id="bomb-btn">💣</button>
+      <button class="remote-btn hidden" id="remote-btn">💥</button>
+    </div>
+  `;
+  import('./bomb3d.js').then(m => {
+    const c = document.getElementById('bomb-canvas');
+    bombRenderer = new m.BombRenderer(c, { follow: bombZoom < 1.4, followId: me.id });
+    if (bombInit){
+      bombRenderer.setWalls(bombInit.hard, bombInit.soft);
+    }
+  });
+  bindBombControls();
+}
+
+function bindBombControls(){
+  const dirs = new Set();
+  const sendDirs = () => socket.emit('player:bomb-move', { dirs: [...dirs] });
+
+  // Keyboard
+  const keyDir = e => {
+    const k = e.key.toLowerCase();
+    if (['arrowup','w'].includes(k)) return 'up';
+    if (['arrowdown','s'].includes(k)) return 'down';
+    if (['arrowleft','a'].includes(k)) return 'left';
+    if (['arrowright','d'].includes(k)) return 'right';
+    return null;
+  };
+  const onDown = e => {
+    if (e.key === ' ' || e.key.toLowerCase() === 'b'){
+      e.preventDefault();
+      socket.emit('player:bomb-action');
+      sfx.buttonDown();
+      return;
+    }
+    if (e.key.toLowerCase() === 'x'){
+      socket.emit('player:bomb-detonate');
+      return;
+    }
+    const d = keyDir(e); if (!d) return;
+    if (dirs.has(d)) return;
+    dirs.add(d); sendDirs();
+  };
+  const onUp = e => {
+    const d = keyDir(e); if (!d) return;
+    dirs.delete(d); sendDirs();
+  };
+  window.addEventListener('keydown', onDown);
+  window.addEventListener('keyup', onUp);
+
+  // Joystick
+  const joy = document.getElementById('joy');
+  const thumb = document.getElementById('joy-thumb');
+  let pid = null;
+  const baseRect = () => joy.getBoundingClientRect();
+  joy.addEventListener('pointerdown', e => {
+    pid = e.pointerId;
+    joy.setPointerCapture(pid);
+    onJoy(e);
+  });
+  joy.addEventListener('pointermove', e => { if (e.pointerId === pid) onJoy(e); });
+  joy.addEventListener('pointerup', e => { if (e.pointerId === pid){ pid = null; resetJoy(); } });
+  joy.addEventListener('pointercancel', e => { if (e.pointerId === pid){ pid = null; resetJoy(); } });
+
+  function onJoy(e){
+    const r = baseRect();
+    const cx = r.left + r.width/2;
+    const cy = r.top + r.height/2;
+    let dx = e.clientX - cx, dy = e.clientY - cy;
+    const max = r.width/2 - 20;
+    const mag = Math.hypot(dx, dy);
+    if (mag > max){ dx *= max/mag; dy *= max/mag; }
+    thumb.style.left = (r.width/2 + dx) + 'px';
+    thumb.style.top = (r.height/2 + dy) + 'px';
+    thumb.style.transform = 'translate(-50%, -50%)';
+    // Dead zone 22%
+    const dead = max * 0.22;
+    dirs.clear();
+    if (Math.hypot(dx, dy) > dead){
+      if (Math.abs(dx) > dead) dirs.add(dx > 0 ? 'right' : 'left');
+      if (Math.abs(dy) > dead) dirs.add(dy > 0 ? 'down' : 'up');
+    }
+    sendDirs();
+  }
+  function resetJoy(){
+    thumb.style.left = '50%'; thumb.style.top = '50%';
+    dirs.clear(); sendDirs();
+  }
+
+  // Bomb button
+  document.getElementById('bomb-btn').addEventListener('pointerdown', e => {
+    e.preventDefault();
+    socket.emit('player:bomb-action');
+    sfx.buttonDown();
+  });
+  document.getElementById('remote-btn').addEventListener('pointerdown', e => {
+    e.preventDefault();
+    socket.emit('player:bomb-detonate');
+    sfx.buttonDown();
+  });
+
+  // Zoom
+  document.getElementById('zoom-in').addEventListener('click', () => {
+    bombZoom = Math.max(0.8, bombZoom - 0.2);
+    applyZoom();
+  });
+  document.getElementById('zoom-out').addEventListener('click', () => {
+    bombZoom = Math.min(2.0, bombZoom + 0.2);
+    applyZoom();
+  });
+  function applyZoom(){
+    if (!bombRenderer) return;
+    bombRenderer.setFollow(bombZoom < 1.4, me.id);
+  }
+}
+
+function updateBombHeader(d){
+  const mine = d.players.find(p => p.id === me.id);
+  if (!mine) return;
+  const me_p = state.players.find(p => p.id === me.id);
+  const el = document.getElementById('bomb-score-me');
+  if (el) el.textContent = me_p?.score || 0;
+  const bombs = document.getElementById('bc-bombs'); if (bombs) bombs.textContent = mine.maxBombs;
+  const fire = document.getElementById('bc-fire'); if (fire) fire.textContent = mine.range;
+  const icons = document.getElementById('bc-icons');
+  if (icons){
+    icons.textContent = '';
+    if (mine.kick) icons.textContent += ' 👟';
+    if (mine.punch) icons.textContent += ' 🥊';
+    if (mine.remote) icons.textContent += ' 📡';
+    if (mine.shield > 0) icons.textContent += ' 🛡️' + (mine.shield > 1 ? ('×'+mine.shield) : '');
+  }
+  const btn = document.getElementById('bomb-btn');
+  if (btn){
+    if (mine.carrying){ btn.textContent = '🫳'; }
+    else {
+      // If standing on own bomb + punch -> 🤲
+      const onOwn = d.bombs.find(b => b.x === mine.x && b.y === mine.y && b.owner === me.id);
+      btn.textContent = onOwn && mine.punch ? '🤲' : '💣';
+    }
+  }
+  const remoteBtn = document.getElementById('remote-btn');
+  if (remoteBtn){
+    remoteBtn.classList.toggle('hidden', !mine.remote);
+  }
+  const t = document.getElementById('bomb-timer');
+  if (t){
+    if (d.endAt){
+      const left = Math.max(0, Math.round((d.endAt - Date.now())/1000));
+      t.textContent = left + 's';
+    } else { t.textContent = '∞'; }
+  }
+}
+
+// ====== Reaction bar ======
+function reactionBarHTML(){
+  const emojis = ['😂','👏','🔥','🎉','💯','❤️'];
+  return `<div class="reaction-bar">${emojis.map(e => `<button data-emoji="${e}">${e}</button>`).join('')}</div>`;
+}
+function bindReactions(){
+  app.querySelectorAll('.reaction-bar button').forEach(b => {
+    b.addEventListener('click', () => {
+      socket.emit('player:reaction', b.dataset.emoji);
+      sfx.pop();
+    });
+  });
+}
+
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' })[ch]);
 }

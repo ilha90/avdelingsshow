@@ -1,65 +1,101 @@
 <!DOCTYPE html>
 <html lang="no">
 <head>
-  <meta charset="UTF-8">
-  <title>Avdelingsshow — Vert</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link rel="stylesheet" href="/style.css">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Avdelingsshow — Host</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="icon" type="image/svg+xml" href="/favicon.ico" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
-  <canvas id="confetti"></canvas>
-  <div id="floaters"></div>
-  <!-- Animert programleder (vises når TTS snakker) -->
-  <div id="mascot" class="mascot">
-    <div class="mascot-body">
-      <div class="mascot-face">
-        <div class="mascot-eye left"></div>
-        <div class="mascot-eye right"></div>
-        <div class="mascot-mouth"></div>
-      </div>
-      <div class="mascot-mic">🎤</div>
-    </div>
-    <div class="mascot-bubble" id="mascotBubble"></div>
+
+<!-- Password gate -->
+<div id="pw-gate" class="pw-gate">
+  <div class="pw-card">
+    <h2>🔐 Host-innlogging</h2>
+    <input id="pw-input" type="password" placeholder="Passord" autocomplete="off" />
+    <button class="btn-primary" id="pw-submit">Logg inn</button>
+    <div id="pw-error" style="color:var(--bad); font-size:13px;"></div>
   </div>
-  <div id="app">
-    <div class="host-top">
-      <div class="brand">
-        <span class="dot"></span>
-        <div>
-          <small>Live</small>
-          <h1>Avdelingsshow</h1>
-        </div>
-      </div>
-      <div class="top-right">
-        <button id="selfPlayBtn" class="icon-btn" title="Bli med selv som spiller">🙋</button>
-        <button id="helpBtn" class="icon-btn" title="Tastatursnarveier (?)">?</button>
-        <button id="fullscreenBtn" class="icon-btn" title="Fullskjerm">⛶</button>
-        <button id="soundToggle" class="icon-btn" title="Lyd av/på">🔊</button>
-        <div class="phase-tag" id="phaseTag">Lobby</div>
-      </div>
-    </div>
-    <div class="host-main" id="main"></div>
-    <div class="host-controls" id="controls"></div>
+</div>
+
+<div class="brand"><span class="dot"></span><span class="shine">Live Avdelingsshow</span></div>
+<div class="topbar-right">
+  <div id="phase-tag" class="phase-tag">lobby</div>
+  <button class="icon-btn" id="btn-help" title="Hjelp">?</button>
+  <button class="icon-btn" id="btn-fs" title="Fullskjerm">⛶</button>
+  <button class="icon-btn" id="btn-mute" title="Lyd av/på">🔊</button>
+</div>
+
+<!-- Mascot -->
+<div id="mascot" class="mascot" style="left: 60px; bottom: 60px;">
+  <div class="antenna"></div>
+  <div class="mascot-body">
+    <div class="mascot-eye left"></div>
+    <div class="mascot-eye right"></div>
+    <div class="mascot-mouth"></div>
   </div>
-  <!-- Sidepanel for host som også vil spille (iframe, isolert) -->
-  <div id="selfPanel" class="self-panel">
-    <div class="self-panel-bar">
-      <span class="self-panel-title">🙋 Meg som spiller</span>
-      <button id="selfPanelClose" title="Lukk">✕</button>
+  <div class="mic">🎤</div>
+  <div class="bubble" id="mascot-bubble">Hei!</div>
+</div>
+
+<!-- Main host view -->
+<main id="host-main" class="host-main hidden">
+  <!-- Left: QR + lobby config -->
+  <aside class="panel">
+    <div class="qr-box">
+      <img id="qr-img" alt="QR" src="/qr" />
+      <div class="url-chip" id="url-chip">...</div>
     </div>
-    <iframe id="selfPanelFrame" title="Du som spiller"></iframe>
-  </div>
-  <script src="/socket.io/socket.io.js"></script>
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@0.161.0/examples/jsm/"
-    }
-  }
-  </script>
-  <script type="module" src="/sound.js"></script>
-  <script type="module" src="/confetti.js"></script>
-  <script type="module" src="/host.js"></script>
+    <h3>Innstillinger</h3>
+    <label>Lag-modus <select id="cfg-teams"><option value="0">Av</option><option value="1">På</option></select></label>
+    <label>Antall spørsmål <select id="cfg-qcount"><option>5</option><option>8</option><option selected>10</option><option>12</option><option>15</option><option>20</option></select></label>
+    <label>Tid per spørsmål (s) <select id="cfg-qtime"><option>10</option><option>15</option><option selected>20</option><option>30</option></select></label>
+    <label>Tavle hver N <select id="cfg-lbevery"><option value="0">Av</option><option value="3" selected>3</option><option value="5">5</option><option value="10">10</option></select></label>
+    <label>Lyn-runde tid (s) <select id="cfg-lighttime"><option>3</option><option selected>5</option><option>8</option><option>12</option><option>15</option></select></label>
+    <label>Scatter-tid (s) <select id="cfg-scattertime"><option>30</option><option selected>60</option><option>90</option><option>120</option><option>180</option></select></label>
+    <label>Lie-stemmetid (s) <select id="cfg-lietime"><option>15</option><option selected>30</option><option>60</option><option>90</option></select></label>
+    <label>Snake-varighet (s) <select id="cfg-snaketime"><option>30</option><option>60</option><option selected>90</option><option>120</option><option>180</option><option>240</option><option value="0">∞</option></select></label>
+    <label>Bomb-varighet (s) <select id="cfg-bombtime"><option>30</option><option>60</option><option>90</option><option selected>120</option><option>180</option><option>240</option><option>300</option><option value="0">∞</option></select></label>
+  </aside>
+
+  <!-- Center: state-driven -->
+  <section id="center" class="panel">
+    <h3>Handlinger</h3>
+    <button class="btn-primary" id="btn-menu">🎮 Velg spill</button>
+    <button class="btn" id="btn-leaderboard">🏆 Topplisten</button>
+    <button class="btn danger" id="btn-reset">Tilbake til lobby</button>
+    <div class="ai-box">
+      <h3>✨ AI-quiz</h3>
+      <label>API-key <input id="ai-key" type="password" placeholder="sk-..." /></label>
+      <label>Tema <input id="ai-topic" type="text" placeholder="f.eks. norsk fotball" /></label>
+      <label>Antall <select id="ai-count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></label>
+      <button class="btn gold" id="ai-gen">Generer</button>
+      <small id="ai-status"></small>
+    </div>
+    <div id="center-msg" style="color:var(--muted); font-size:13px;">Åpne menyen for å starte et spill.</div>
+  </section>
+
+  <!-- Right: players -->
+  <aside class="panel">
+    <h3>Spillere (<span id="p-count">0</span>)</h3>
+    <div id="players" class="players"></div>
+  </aside>
+</main>
+
+<!-- Game overlays are injected by host.js -->
+<div id="overlays"></div>
+
+<script type="module" src="/host.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+
 </body>
 </html>

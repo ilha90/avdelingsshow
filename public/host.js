@@ -1,1580 +1,889 @@
-// host.js — vert-siden (storskjerm)
-import { getAiConfig, saveAiConfig, generateQuestions, generateVotingPrompts } from '/ai.js';
-import { avatarFor, colorFor } from '/avatars.js';
-import * as bomb3d from '/bomb3d.js';
-import * as snake3d from '/snake3d.js';
-const socket = io({ transports: ['websocket', 'polling'], upgrade: true, rememberUpgrade: true });
+// public/host.js — host UI + rendering + socket handlers
+import { QUIZ_CATEGORIES } from './data.js';
+import { avatarFor, colorFor } from './avatars.js';
+import { sfx, setMuted, isMuted, unlock as unlockAudio } from './sound.js';
+import * as confetti from './confetti.js';
+import * as ai from './ai.js';
 
-// ==== Passord på host ====
-function hostHello() {
-  const pw = sessionStorage.getItem('host-pw') || '';
-  socket.emit('host:hello', pw);
-}
-socket.on('host:ok', () => { /* OK, continue */ });
-socket.on('host:denied', ({ reason } = {}) => {
-  if (reason === 'taken') {
-    alert('En annen vert er allerede koblet til. Åpne siden på nytt etter at de har lukket fanen sin.');
-    return;
-  }
-  promptHostPassword();
-});
-
-function promptHostPassword() {
-  const overlay = document.createElement('div');
-  overlay.id = 'hostPwOverlay';
-  overlay.className = 'game-menu-overlay open';
-  overlay.style.zIndex = '100000';
-  overlay.innerHTML = `
-    <div class="game-menu" style="max-width:440px; text-align:center" onclick="event.stopPropagation()">
-      <h2 style="font-size:32px">🔒 Host-passord</h2>
-      <p class="menu-sub">Kun verten kan kjøre showet</p>
-      <input id="hostPwInp" type="password" placeholder="Passord" autocomplete="off"
-        style="width:100%; padding:16px 20px; border-radius:12px; border:2px solid var(--card-b);
-        background:var(--card); color:var(--ink); font-size:18px; font-family:inherit; text-align:center; margin-bottom:14px">
-      <div id="hostPwErr" style="color:var(--red); font-size:14px; min-height:18px; margin-bottom:10px"></div>
-      <button class="btn btn-primary btn-lg" id="hostPwBtn" style="width:100%">Logg inn</button>
-    </div>`;
-  document.body.appendChild(overlay);
-  const inp = document.getElementById('hostPwInp');
-  const btn = document.getElementById('hostPwBtn');
-  const err = document.getElementById('hostPwErr');
-  setTimeout(() => inp.focus(), 50);
-  const go = () => {
-    const v = inp.value.trim();
-    if (!v) { err.textContent = 'Skriv inn passord'; return; }
-    sessionStorage.setItem('host-pw', v);
-    err.textContent = '';
-    btn.textContent = 'Sjekker…';
-    btn.disabled = true;
-    // Lytt én gang på resultat
-    const onOk = () => { socket.off('host:denied', onDenied); overlay.remove(); };
-    const onDenied = ({ reason } = {}) => {
-      socket.off('host:ok', onOk);
-      if (reason === 'taken') { overlay.remove(); alert('En annen vert er allerede tilkoblet.'); return; }
-      err.textContent = 'Feil passord';
-      sessionStorage.removeItem('host-pw');
-      btn.textContent = 'Logg inn'; btn.disabled = false; inp.value = ''; inp.focus();
-    };
-    socket.once('host:ok', onOk);
-    socket.once('host:denied', onDenied);
-    socket.emit('host:hello', v);
-  };
-  btn.addEventListener('click', go);
-  inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-}
-
-hostHello();
-const main = document.getElementById('main');
-const controls = document.getElementById('controls');
-const phaseTag = document.getElementById('phaseTag');
-const floaters = document.getElementById('floaters');
-
+// ====== State ======
+const socket = io({ transports: ['websocket', 'polling'] });
 let state = null;
-let connectUrl = '';
-let timerRAF = null;
-let lastPhase = null;
-let lastQIndex = -99;
-let tickAccum = 0;
-let wheelRevealTimeout = null;
+let phasePrev = null;
+let snakeRenderer = null;
+let bombRenderer = null;
+let bombInit = null;
 
-const PHASE_LABELS = {
-  lobby: 'Lobby', tutorial: 'Forklaring', countdown: 'Klar…', question: 'Spørsmål', reveal: 'Fasit',
-  leaderboard: 'Poengtavle', wheel: 'Lykkehjul',
-  voting: 'Avstemning', 'vote-result': 'Avstemning – resultat',
-  'scatter-play': 'Kategori-kamp', 'scatter-review': 'Gjennomgang',
-  icebreaker: 'Bli-kjent', snake: 'Slange-kamp', 'snake-end': 'Slange – resultat',
-  bomb: 'Bomberman', 'bomb-end': 'Bomberman – resultat',
-  'lie-collect': '2 sannheter, 1 løgn – innsending', 'lie-play': '2 sannheter, 1 løgn', 'lie-reveal': 'Løgn – fasit',
-  end: 'Ferdig',
-};
+// ====== Password gate ======
+const pwGate = document.getElementById('pw-gate');
+const pwInput = document.getElementById('pw-input');
+const pwSubmit = document.getElementById('pw-submit');
+const pwError = document.getElementById('pw-error');
+const hostMain = document.getElementById('host-main');
 
-fetch('/connect-url')
-  .then(r => r.json())
-  .then(j => { connectUrl = j.url; if (state) render(); })
-  .catch(() => { connectUrl = window.location.origin; if (state) render(); });
+function tryLogin(pw){
+  pwError.textContent = '';
+  socket.emit('host:hello', { password: pw });
+}
 
-// Fullscreen button
-document.getElementById('fullscreenBtn')?.addEventListener('click', () => {
-  if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
-  else document.exitFullscreen();
+pwSubmit.addEventListener('click', () => tryLogin(pwInput.value));
+pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(pwInput.value); });
+
+// Auto-try saved
+const saved = sessionStorage.getItem('host:pw');
+if (saved){ setTimeout(() => tryLogin(saved), 100); }
+
+socket.on('host:ok', () => {
+  sessionStorage.setItem('host:pw', pwInput.value || saved || '');
+  pwGate.classList.add('hidden');
+  hostMain.classList.remove('hidden');
+  initHostUI();
 });
-document.getElementById('helpBtn')?.addEventListener('click', () => openHelpModal());
+socket.on('host:denied', () => {
+  pwError.textContent = 'Feil passord';
+  sessionStorage.removeItem('host:pw');
+});
 
-// ===== "Bli med selv" sidepanel =====
-const selfPanel = document.getElementById('selfPanel');
-const selfPanelFrame = document.getElementById('selfPanelFrame');
-const selfPlayBtn = document.getElementById('selfPlayBtn');
-function toggleSelfPanel(forceOpen) {
-  const willOpen = forceOpen != null ? forceOpen : !selfPanel.classList.contains('open');
-  if (willOpen) {
-    if (!selfPanelFrame.src) selfPanelFrame.src = '/';
-    selfPanel.classList.add('open');
-    document.body.classList.add('self-panel-open');
-    selfPlayBtn.classList.add('active');
-  } else {
-    selfPanel.classList.remove('open');
-    document.body.classList.remove('self-panel-open');
-    selfPlayBtn.classList.remove('active');
+// ====== Topbar ======
+document.getElementById('btn-help').addEventListener('click', () => {
+  toast('Skann QR-koden med telefonen. Deltakere skriver navn og blir med. Velg spill når alle er inne.');
+});
+document.getElementById('btn-fs').addEventListener('click', () => {
+  if (!document.fullscreenElement){ document.documentElement.requestFullscreen?.(); }
+  else { document.exitFullscreen?.(); }
+});
+const btnMute = document.getElementById('btn-mute');
+btnMute.addEventListener('click', () => {
+  const m = !isMuted();
+  setMuted(m);
+  btnMute.textContent = m ? '🔇' : '🔊';
+});
+
+// ====== Host UI init ======
+function initHostUI(){
+  // Config controls
+  const bindCfg = (id, key, numeric = true) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', () => {
+      const val = numeric ? parseInt(el.value, 10) : el.value;
+      socket.emit('host:config', { [key]: val });
+    });
+  };
+  bindCfg('cfg-teams', 'teams');
+  bindCfg('cfg-qcount', 'qcount');
+  bindCfg('cfg-qtime', 'qtime');
+  bindCfg('cfg-lbevery', 'lbevery');
+  bindCfg('cfg-lighttime', 'lighttime');
+  bindCfg('cfg-scattertime', 'scattertime');
+  bindCfg('cfg-lietime', 'lietime');
+  bindCfg('cfg-snaketime', 'snaketime');
+  bindCfg('cfg-bombtime', 'bombtime');
+
+  document.getElementById('btn-menu').addEventListener('click', openMenu);
+  document.getElementById('btn-leaderboard').addEventListener('click', openLeaderboard);
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    if (confirm('Tilbake til lobby og nullstille alle poeng?')) socket.emit('host:reset');
+  });
+
+  // AI
+  const aiKey = document.getElementById('ai-key');
+  aiKey.value = ai.getKey();
+  aiKey.addEventListener('change', () => ai.setKey(aiKey.value));
+  document.getElementById('ai-gen').addEventListener('click', aiGenerate);
+
+  // Connect URL
+  fetch('/connect-url').then(r => r.json()).then(j => {
+    document.getElementById('url-chip').textContent = j.url;
+  });
+
+  // Mascot wander
+  setInterval(wanderMascot, 7000);
+}
+
+async function aiGenerate(){
+  const status = document.getElementById('ai-status');
+  const topic = document.getElementById('ai-topic').value.trim();
+  const count = parseInt(document.getElementById('ai-count').value, 10);
+  if (!topic){ status.textContent = 'Angi et tema først'; return; }
+  if (!ai.getKey()){ status.textContent = 'Sett en API-key først'; return; }
+  status.textContent = 'Genererer...';
+  try {
+    const qs = await ai.generateQuestions({ topic, count });
+    if (!qs.length){ status.textContent = 'Fikk ingen spørsmål'; return; }
+    socket.emit('host:ai-questions', qs);
+    status.textContent = `La til ${qs.length} spørsmål! Start en quiz med kategori "Egne".`;
+    sfx.correct();
+  } catch(e){
+    status.textContent = 'Feil: ' + e.message;
   }
 }
-selfPlayBtn?.addEventListener('click', () => toggleSelfPanel());
-document.getElementById('selfPanelClose')?.addEventListener('click', () => toggleSelfPanel(false));
 
-// ===== Animert programleder (mascot) =====
-const mascotEl = document.getElementById('mascot');
-const mascotBubbleEl = document.getElementById('mascotBubble');
-let mascotFadeTimer = null;
-
-function showMascotBubble(text) {
-  if (!mascotEl || !text) return;
-  mascotEl.classList.add('speaking');
-  if (mascotBubbleEl) {
-    mascotBubbleEl.textContent = text.length > 160 ? text.slice(0, 157) + '…' : text;
-    mascotBubbleEl.classList.add('visible');
+// ====== Socket state ======
+socket.on('state', s => {
+  const prevPhase = phasePrev;
+  phasePrev = state?.phase;
+  state = s;
+  render(s, prevPhase);
+});
+socket.on('quiz:reveal', ({ correctIdx, results }) => {
+  for (const r of results){
+    if (r.trophies && r.trophies.length){
+      mascotSpeak(r.trophies.map(t => t.kind==='first' ? '⚡ ' + r.name + ' først ute!' : '🔥 ' + r.name + ' ' + t.n + ' på rad!').join(' '));
+    }
   }
-  if (mascotFadeTimer) clearTimeout(mascotFadeTimer);
-  const estMs = Math.max(2200, Math.min(8000, text.length * 80));
-  mascotFadeTimer = setTimeout(() => {
-    mascotEl.classList.remove('speaking');
-    mascotBubbleEl?.classList.remove('visible');
-  }, estMs);
+});
+socket.on('reaction', ({ emoji }) => {
+  floatReaction(emoji);
+});
+socket.on('bomb:init', data => {
+  bombInit = data;
+});
+socket.on('bomb:explosion', ({ cells }) => {
+  if (bombRenderer) bombRenderer.explosion(cells);
+  sfx.boom();
+});
+socket.on('bomb:kill', ({ victim, x, y, name }) => {
+  if (bombRenderer) bombRenderer.killCamAt(x, y, 2500);
+  showKillBanner(name);
+});
+socket.on('bomb:tick', data => {
+  if (bombRenderer){
+    bombRenderer.setPlayers(data.players);
+    bombRenderer.setBombs(data.bombs);
+    bombRenderer.setPowerups(data.powerups);
+    bombRenderer.updateSoft(data.soft);
+  }
+  renderGameHud(data, 'bomb');
+});
+socket.on('snake:tick', data => {
+  if (snakeRenderer){
+    snakeRenderer.setState(data);
+  }
+  renderGameHud(data, 'snake');
+});
+
+// ====== Phase dispatch ======
+function render(s, prevPhase){
+  updatePhaseTag(s.phase);
+  renderPlayers(s);
+  updateLobbyConfig(s);
+
+  const center = document.getElementById('center-msg');
+  if (center){
+    const labels = {
+      lobby: 'Venter på spillere. Åpne menyen for å starte et spill.',
+      tutorial: 'Viser tutorial...',
+      countdown: 'Starter om...',
+      question: 'Spørsmål pågår.',
+      reveal: 'Viser svar...',
+      leaderboard: 'Viser tavle...',
+      voting: 'Stemmer...',
+      'vote-result': 'Resultat!',
+      'scatter-play': 'Kategori-kamp pågår.',
+      'scatter-review': 'Gjennomgang.',
+      icebreaker: 'Bli-kjent-kort.',
+      wheel: 'Lykkehjulet.',
+      snake: 'Slange-kamp pågår.',
+      'snake-end': 'Slange-kamp slutt.',
+      bomb: 'Bomberman pågår.',
+      'bomb-end': 'Bomberman slutt.',
+      'lie-collect': 'Spillere sender inn påstander...',
+      'lie-play': 'Gjetter løgnen.',
+      'lie-reveal': 'Avsløring!',
+      end: 'Sluttskjerm.'
+    };
+    center.textContent = labels[s.phase] || s.phase;
+  }
+
+  // Kontrollknapper i center
+  renderCenterControls(s);
+
+  // Overlay clearing based on phase
+  const overlays = document.getElementById('overlays');
+  if (prevPhase !== s.phase){
+    // Specific cleanup
+    if (s.phase !== 'snake' && snakeRenderer){ snakeRenderer.dispose(); snakeRenderer = null; overlays.innerHTML=''; }
+    if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; }
+    overlays.innerHTML = '';
+  }
+
+  // Render overlay per phase
+  switch(s.phase){
+    case 'tutorial': renderTutorial(s); break;
+    case 'countdown': renderCountdown(s); break;
+    case 'question': renderQuestion(s); break;
+    case 'reveal': renderReveal(s); break;
+    case 'leaderboard': renderLeaderboard(s); break;
+    case 'voting': renderVoting(s); break;
+    case 'vote-result': renderVoteResult(s); break;
+    case 'scatter-play': renderScatterPlay(s); break;
+    case 'scatter-review': renderScatterReview(s); break;
+    case 'icebreaker': renderIcebreaker(s); break;
+    case 'wheel': renderWheel(s); break;
+    case 'snake': renderSnakeGame(s); break;
+    case 'bomb': renderBombGame(s); break;
+    case 'lie-collect': renderLieCollect(s); break;
+    case 'lie-play': renderLiePlay(s); break;
+    case 'lie-reveal': renderLieReveal(s); break;
+    case 'end': renderEnd(s); break;
+  }
 }
 
-function hostSpeak(text) {
-  if (!text) return;
-  showMascotBubble(text);
+function updatePhaseTag(phase){
+  const el = document.getElementById('phase-tag');
+  if (el.textContent !== phase){
+    el.textContent = phase;
+    el.classList.remove('flash');
+    void el.offsetWidth;
+    el.classList.add('flash');
+  }
 }
-
-// Mascot rusler rundt i viewport — forhåndsvalgte hjørnesoner, ikke sentrum
-function wanderMascot() {
-  if (!mascotEl) return;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const W = 140, H = 180;
-  // Soner: nede-venstre, nede-høyre, oppe-venstre, oppe-høyre (unngå sentrum)
-  const zones = [
-    { xMin: 20, xMax: Math.min(260, vw * 0.25), yMin: vh - H - 30, yMax: vh - H - 10 },
-    { xMin: Math.max(vw - 260, vw * 0.75 - 140), xMax: vw - W - 20, yMin: vh - H - 30, yMax: vh - H - 10 },
-    { xMin: 20, xMax: Math.min(200, vw * 0.2), yMin: 90, yMax: 180 },
-    { xMin: Math.max(vw - 220, vw * 0.8 - 140), xMax: vw - W - 20, yMin: 90, yMax: 180 },
-  ];
-  const z = zones[Math.floor(Math.random() * zones.length)];
-  const x = z.xMin + Math.random() * Math.max(10, z.xMax - z.xMin);
-  const y = z.yMin + Math.random() * Math.max(10, z.yMax - z.yMin);
-  const duration = 5 + Math.random() * 4; // 5-9s — rolig tempo
-  mascotEl.style.transition = `transform ${duration}s cubic-bezier(.45,0,.25,1)`;
-  mascotEl.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0)`;
-  setTimeout(wanderMascot, (duration + 2 + Math.random() * 3) * 1000);
-}
-// Startposisjon (nede-venstre) og begynn å vandre
-if (mascotEl) {
-  const startY = window.innerHeight - 200;
-  mascotEl.style.transform = `translate3d(30px, ${startY}px, 0)`;
-  setTimeout(wanderMascot, 2000);
-  // Hold mascoten innenfor viewport ved resize
-  window.addEventListener('resize', () => {
-    // Bare oppdater hvis den er langt utenfor
+function renderPlayers(s){
+  document.getElementById('p-count').textContent = s.players.length;
+  const list = document.getElementById('players');
+  list.innerHTML = '';
+  s.players.slice().sort((a,b) => b.score - a.score).forEach((p, i) => {
+    const el = document.createElement('div');
+    el.className = 'player-chip';
+    el.style.animationDelay = (i * 40) + 'ms';
+    const av = { emoji: p.emoji, color: p.color };
+    el.innerHTML = `
+      <span class="emoji">${p.emoji}</span>
+      <span class="name">${escapeHtml(p.name)}${p.team ? ' <span style="color:'+p.team.color+'">•</span> <small style="color:'+p.team.color+'">'+escapeHtml(p.team.name)+'</small>' : ''}</span>
+      <span class="score">${p.score}</span>
+    `;
+    if (p.team){ el.style.color = p.team.color; el.classList.add('team-bg'); }
+    list.appendChild(el);
   });
 }
 
-// ===== Live emoji reactions (flytende bobler) =====
-socket.on('reaction', ({ emoji, from }) => spawnFloater(emoji, from));
+function updateLobbyConfig(s){
+  const setVal = (id, v) => { const e = document.getElementById(id); if (e) e.value = String(v); };
+  setVal('cfg-teams', s.config.teams ? '1' : '0');
+  setVal('cfg-qcount', s.config.qcount);
+  setVal('cfg-qtime', s.config.qtime);
+  setVal('cfg-lbevery', s.config.lbevery);
+  setVal('cfg-lighttime', s.config.lighttime);
+  setVal('cfg-scattertime', s.config.scattertime);
+  setVal('cfg-lietime', s.config.lietime);
+  setVal('cfg-snaketime', s.config.snaketime);
+  setVal('cfg-bombtime', s.config.bombtime);
+}
 
-function spawnFloater(emoji, from) {
+function renderCenterControls(s){
+  const center = document.getElementById('center');
+  // Remove old contextual buttons
+  [...center.querySelectorAll('.ctx-btn')].forEach(e => e.remove());
+
+  const add = (label, handler, cls='btn') => {
+    const b = document.createElement('button');
+    b.className = cls + ' ctx-btn';
+    b.textContent = label;
+    b.addEventListener('click', handler);
+    center.appendChild(b);
+    return b;
+  };
+  switch(s.phase){
+    case 'tutorial':
+      add('Hopp over →', () => socket.emit('host:skip-tutorial'));
+      break;
+    case 'voting':
+    case 'vote-result':
+      add('Neste runde', () => socket.emit('host:next-vote'), 'btn gold');
+      add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      break;
+    case 'scatter-play':
+      add('Avslutt runde nå', () => socket.emit('host:scatter-end'));
+      break;
+    case 'scatter-review':
+      add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      break;
+    case 'icebreaker':
+      add('Neste kort', () => socket.emit('host:next-icebreaker'), 'btn gold');
+      add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      break;
+    case 'wheel':
+      add('Snurr hjulet', () => socket.emit('host:spin-wheel'), 'btn-primary');
+      add('Avslutt', () => socket.emit('host:reset'), 'btn danger');
+      break;
+    case 'snake':
+      add('Avslutt runde', () => socket.emit('host:end-snake'), 'btn danger');
+      break;
+    case 'bomb':
+      add('Avslutt runde', () => socket.emit('host:end-bomb'), 'btn danger');
+      break;
+    case 'lie-collect':
+      add('Start runde (hopp inn)', () => socket.emit('host:lie-next'), 'btn gold');
+      break;
+    case 'lie-play':
+      add('Avslør nå', () => socket.emit('host:lie-next'), 'btn gold');
+      break;
+    case 'lie-reveal':
+      add('Neste spiller', () => socket.emit('host:lie-next'), 'btn gold');
+      break;
+  }
+}
+
+// ====== Menu modal ======
+const menuState = { tickIdx: { quiz: 0, lightning: 0, scatter: 0, lie: 0, snake: 0, bomb: 0 } };
+const TIME_OPTIONS = {
+  quiz: [10, 15, 20, 30],
+  lightning: [3, 5, 8, 12, 15],
+  scatter: [30, 60, 90, 120, 180],
+  lie: [15, 30, 60, 90],
+  snake: [30, 60, 90, 120, 180, 240, 0],
+  bomb: [30, 60, 90, 120, 180, 240, 300, 0]
+};
+
+function openMenu(){
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal">
+      <h2>🎮 Velg spill</h2>
+      <div class="section-title">Quiz</div>
+      <div class="game-grid" id="grid-quiz"></div>
+      <div class="section-title">Lyn-runde</div>
+      <div class="game-grid" id="grid-lightning"></div>
+      <div class="section-title">Sosiale spill</div>
+      <div class="game-grid" id="grid-social"></div>
+      <div style="text-align:center; margin-top: 20px;">
+        <button class="btn" id="menu-close">Lukk</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#menu-close').addEventListener('click', () => wrap.remove());
+  wrap.addEventListener('click', e => { if (e.target === wrap) wrap.remove(); });
+
+  const gQ = wrap.querySelector('#grid-quiz');
+  const gL = wrap.querySelector('#grid-lightning');
+  const gS = wrap.querySelector('#grid-social');
+
+  const mkCard = (icon, title, desc, onClick, chipText, onChip) => {
+    const c = document.createElement('div');
+    c.className = 'game-card';
+    c.innerHTML = `<span class="icon">${icon}</span><h4>${title}</h4><p>${desc}</p>`;
+    c.addEventListener('click', onClick);
+    if (chipText){
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      chip.textContent = chipText;
+      chip.addEventListener('click', e => { e.stopPropagation(); onChip(chip); });
+      c.appendChild(chip);
+    }
+    return c;
+  };
+
+  // Quiz categories
+  const cats = Object.entries(QUIZ_CATEGORIES);
+  let i = 0;
+  for (const [key, cat] of cats){
+    const card = mkCard(cat.emoji, cat.label, `${cat.questions.length} spørsmål`,
+      () => { wrap.remove(); socket.emit('host:start-quiz', { category: key }); },
+      state.config.qtime + 's',
+      (chip) => {
+        const opts = TIME_OPTIONS.quiz;
+        menuState.tickIdx.quiz = (menuState.tickIdx.quiz + 1) % opts.length;
+        const v = opts[menuState.tickIdx.quiz];
+        chip.textContent = v + 's';
+        socket.emit('host:config', { qtime: v });
+      }
+    );
+    card.style.animationDelay = (i*40) + 'ms'; i++;
+    gQ.appendChild(card);
+  }
+  // Random
+  gQ.appendChild(mkCard('🎲', 'Tilfeldig miks', 'Alle kategorier blandet', () => {
+    wrap.remove(); socket.emit('host:start-quiz', { category: null });
+  }));
+  if (state.customQuestionsCount > 0){
+    gQ.appendChild(mkCard('✨', 'Egne (AI)', state.customQuestionsCount + ' spørsmål', () => {
+      wrap.remove(); socket.emit('host:start-quiz', { category: 'custom' });
+    }));
+  }
+
+  // Lightning
+  i = 0;
+  for (const [key, cat] of cats){
+    const card = mkCard(cat.emoji, cat.label, `${state.config.lighttime}s, dobbel poeng`,
+      () => { wrap.remove(); socket.emit('host:start-lightning', { category: key }); },
+      state.config.lighttime + 's',
+      (chip) => {
+        const opts = TIME_OPTIONS.lightning;
+        menuState.tickIdx.lightning = (menuState.tickIdx.lightning + 1) % opts.length;
+        const v = opts[menuState.tickIdx.lightning];
+        chip.textContent = v + 's';
+        socket.emit('host:config', { lighttime: v });
+      }
+    );
+    card.style.animationDelay = (i*40) + 'ms'; i++;
+    gL.appendChild(card);
+  }
+
+  // Social
+  const social = [
+    ['🗳️', 'Hvem er mest sannsynlig', 'Anonym avstemning', () => socket.emit('host:start-voting'), null, null],
+    ['📝', 'Kategori-kamp', '5 kategorier, unike ord = fler poeng', () => socket.emit('host:start-scatter'), state.config.scattertime+'s', (chip) => { const opts=TIME_OPTIONS.scatter; menuState.tickIdx.scatter=(menuState.tickIdx.scatter+1)%opts.length; const v=opts[menuState.tickIdx.scatter]; chip.textContent=v+'s'; socket.emit('host:config',{scattertime:v}); }],
+    ['🤥', '2 sannheter, 1 løgn', 'Spillere lurer hverandre', () => socket.emit('host:start-lie'), state.config.lietime+'s', (chip) => { const opts=TIME_OPTIONS.lie; menuState.tickIdx.lie=(menuState.tickIdx.lie+1)%opts.length; const v=opts[menuState.tickIdx.lie]; chip.textContent=v+'s'; socket.emit('host:config',{lietime:v}); }],
+    ['💬', 'Bli-kjent-kort', 'Samtalestartere', () => socket.emit('host:start-icebreaker'), null, null],
+    ['🎡', 'Lykkehjulet', 'Tilfeldig spiller', () => socket.emit('host:start-wheel'), null, null],
+    ['🐍', 'Slange-kamp', '3D Snake multiplayer', () => socket.emit('host:start-snake'), (state.config.snaketime===0?'∞':state.config.snaketime+'s'), (chip) => { const opts=TIME_OPTIONS.snake; menuState.tickIdx.snake=(menuState.tickIdx.snake+1)%opts.length; const v=opts[menuState.tickIdx.snake]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{snaketime:v}); }],
+    ['💣', 'Bomberman', '3D bombe-kamp', () => socket.emit('host:start-bomb'), (state.config.bombtime===0?'∞':state.config.bombtime+'s'), (chip) => { const opts=TIME_OPTIONS.bomb; menuState.tickIdx.bomb=(menuState.tickIdx.bomb+1)%opts.length; const v=opts[menuState.tickIdx.bomb]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{bombtime:v}); }],
+  ];
+  i = 0;
+  for (const [ic, ti, de, fn, chipText, onChip] of social){
+    const card = mkCard(ic, ti, de, () => { wrap.remove(); fn(); }, chipText, onChip);
+    card.style.animationDelay = (i*40) + 'ms'; i++;
+    gS.appendChild(card);
+  }
+}
+
+function openLeaderboard(){
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal">
+      <h2>🏆 Topplisten</h2>
+      <div>
+        <select id="lb-game">
+          <option value="all">Alle spill</option>
+          <option value="quiz">Quiz</option>
+          <option value="lightning">Lyn-runde</option>
+          <option value="scatter">Kategori-kamp</option>
+          <option value="lie">2 sannheter 1 løgn</option>
+          <option value="snake">Slange-kamp</option>
+          <option value="bomb">Bomberman</option>
+        </select>
+      </div>
+      <div id="lb-list" class="lb-list" style="margin-top: 18px;"></div>
+      <div style="text-align:center; margin-top: 18px;"><button class="btn" id="lb-close">Lukk</button></div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#lb-close').addEventListener('click', () => wrap.remove());
+  wrap.addEventListener('click', e => { if (e.target === wrap) wrap.remove(); });
+  const sel = wrap.querySelector('#lb-game');
+  const list = wrap.querySelector('#lb-list');
+  const load = () => {
+    fetch('/scores?game=' + sel.value).then(r => r.json()).then(arr => {
+      list.innerHTML = '';
+      arr.slice(0, 50).forEach((r, i) => {
+        const el = document.createElement('div');
+        el.className = 'lb-row'; el.style.animationDelay = (i*30)+'ms';
+        el.innerHTML = `<div class="rank">#${i+1}</div><div>${escapeHtml(r.name)}</div><div>${r.score}</div>`;
+        list.appendChild(el);
+      });
+      if (!arr.length) list.innerHTML = '<div style="color:var(--muted); padding: 20px; text-align:center;">Ingen scores ennå</div>';
+    });
+  };
+  sel.addEventListener('change', load);
+  load();
+}
+
+// ====== Rendering per phase ======
+function renderTutorial(s){
+  const o = document.getElementById('overlays');
+  if (!o.querySelector('.tutorial-screen')){
+    o.innerHTML = `
+      <div class="tutorial-screen">
+        <div class="tutorial-icon">${tutorialIconFor(s.tutorialGame)}</div>
+        <div class="tutorial-text">${escapeHtml(s.tutorialText)}</div>
+        <div class="tutorial-progress"><div></div></div>
+      </div>
+    `;
+    const bar = o.querySelector('.tutorial-progress > div');
+    bar.style.transition = 'width 5.3s linear';
+    setTimeout(() => { bar.style.width = '100%'; }, 50);
+    mascotSpeak(s.tutorialText, 5500);
+    // Skip on Enter/Space
+    const onKey = e => {
+      if (e.key === 'Enter' || e.key === ' '){
+        socket.emit('host:skip-tutorial');
+        window.removeEventListener('keydown', onKey);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+  }
+}
+
+function tutorialIconFor(g){
+  return { quiz:'🧠', lightning:'⚡', voting:'🗳️', scatter:'📝', lie:'🤥', icebreaker:'💬', wheel:'🎡', snake:'🐍', bomb:'💣' }[g] || '🎉';
+}
+
+function renderCountdown(s){
+  const o = document.getElementById('overlays');
+  if (!o.querySelector('.countdown-screen')){
+    o.innerHTML = `<div class="countdown-screen"><div class="countdown-num">3</div></div>`;
+    const n = o.querySelector('.countdown-num');
+    sfx.countdown();
+    let v = 3;
+    const tick = () => {
+      v--;
+      if (v <= 0){ n.textContent = 'GO!'; sfx.go(); return; }
+      n.textContent = String(v);
+      sfx.countdown();
+      n.style.animation = 'none'; void n.offsetWidth; n.style.animation = '';
+      setTimeout(tick, 1000);
+    };
+    setTimeout(tick, 1000);
+  }
+}
+
+function renderQuestion(s){
+  if (!s.quiz || !s.quiz.question) return;
+  const o = document.getElementById('overlays');
+  const q = s.quiz.question;
+  const progressLeft = Math.max(0, (s.quiz.deadline - Date.now())/1000);
+  const total = s.quiz.isLightning ? s.config.lighttime : s.config.qtime;
+  if (!o.querySelector('.quiz-wrap')){
+    o.innerHTML = `
+      <div class="quiz-wrap">
+        <div style="color:var(--muted)">Spørsmål ${s.quiz.index+1} / ${s.quiz.total} ${s.quiz.isLightning ? '⚡' : ''}</div>
+        ${q.isEmoji ? `<div class="quiz-emoji">${escapeHtml(q.q)}</div>` : `<div class="quiz-question">${escapeHtml(q.q)}</div>`}
+        <div class="quiz-answers">
+          ${q.a.map((ans, i) => `
+            <div class="quiz-answer ${['a','b','c','d'][i]}" data-idx="${i}" style="animation-delay: ${i*60}ms">
+              <span class="letter">${['A','B','C','D'][i]}</span>
+              <span>${escapeHtml(ans)}</span>
+            </div>
+          `).join('')}
+        </div>
+        <div class="timer-bar"><div style="width: 100%"></div></div>
+        <div class="answer-count"><span id="aq-count">0</span> / ${s.players.length} har svart</div>
+      </div>
+    `;
+    const bar = o.querySelector('.timer-bar > div');
+    const startLeft = progressLeft;
+    bar.style.transition = `width ${startLeft}s linear`;
+    setTimeout(() => { bar.style.width = '0%'; }, 50);
+    sfx.tick();
+  }
+  const c = o.querySelector('#aq-count');
+  if (c) c.textContent = s.quiz.answersCount;
+}
+
+function renderReveal(s){
+  if (!s.quiz) return;
+  const o = document.getElementById('overlays');
+  const q = s.quiz.question; if (!q) return;
+  const correct = s.quiz.correctIdx;
+  const answers = o.querySelectorAll('.quiz-answer');
+  answers.forEach((el, i) => {
+    if (i === correct){ el.classList.add('correct'); }
+    else { el.classList.add('wrong'); }
+  });
+  sfx.reveal();
+  confetti.burst({ x: window.innerWidth/2, y: window.innerHeight/2 - 100, count: 60 });
+}
+
+function renderLeaderboard(s){
+  const o = document.getElementById('overlays');
+  const sorted = s.players.slice().sort((a,b) => b.score - a.score);
+  o.innerHTML = `
+    <div class="lb-wrap">
+      <h1 style="font-size: 42px; background: linear-gradient(135deg, var(--mint), var(--gold)); -webkit-background-clip: text; color:transparent;">🏆 Tavle</h1>
+      <div class="lb-list">
+        ${sorted.slice(0, 15).map((p, i) => `
+          <div class="lb-row" style="animation-delay: ${i*60}ms">
+            <div class="rank">#${i+1}</div>
+            <div>${p.emoji} ${escapeHtml(p.name)}</div>
+            <div>${p.score}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderVoting(s){
+  const o = document.getElementById('overlays');
+  if (!o.querySelector('.voting-wrap')){
+    o.innerHTML = `
+      <div class="voting-wrap big-center">
+        <div style="color:var(--muted)">Hvem er mest sannsynlig</div>
+        <div class="prompt">${escapeHtml(s.vote.prompt)}</div>
+        <div style="color:var(--muted); margin-top: 20px;">${s.vote.votesCount} / ${s.players.length} har stemt</div>
+      </div>
+    `;
+    mascotSpeak(s.vote.prompt, 4000);
+  } else {
+    const c = o.querySelector('.voting-wrap div[style*="--muted"]:last-child');
+    if (c) c.textContent = s.vote.votesCount + ' / ' + s.players.length + ' har stemt';
+  }
+}
+
+function renderVoteResult(s){
+  const o = document.getElementById('overlays');
+  const res = s.vote.results || [];
+  const max = Math.max(1, ...res.map(r => r.votes));
+  o.innerHTML = `
+    <div class="big-center">
+      <div style="color:var(--muted)">${escapeHtml(s.vote.prompt)}</div>
+      <div class="voting-grid" style="grid-template-columns: 1fr; max-width: 700px;">
+        ${res.slice(0, 10).map((r, i) => `
+          <div class="vote-result-bar">
+            <div class="fill" style="width: ${(r.votes/max*100)}%"></div>
+            <span style="font-size: 22px">${r.emoji}</span>
+            <span style="font-weight:700">${escapeHtml(r.name)}</span>
+            <span style="margin-left:auto; color: var(--mint); font-weight:700">${r.votes}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  confetti.burst({ count: 80 });
+  sfx.bigWin();
+}
+
+function renderScatterPlay(s){
+  const o = document.getElementById('overlays');
+  if (!o.querySelector('.scatter-wrap')){
+    o.innerHTML = `
+      <div class="big-center scatter-wrap">
+        <div style="color:var(--muted)">Bokstav:</div>
+        <div style="font-size: 180px; font-weight: 900; background: linear-gradient(135deg, var(--mint), var(--gold)); -webkit-background-clip:text; color:transparent; line-height: 1">${escapeHtml(s.scatter.letter)}</div>
+        <div style="display:flex; gap: 20px; flex-wrap: wrap; justify-content:center; margin-top: 20px; max-width: 1100px;">
+          ${s.scatter.categories.map(c => `<div style="padding: 12px 20px; background: rgba(255,255,255,.06); border-radius: 14px; font-size: 22px; font-weight:700;">${escapeHtml(c)}</div>`).join('')}
+        </div>
+        <div class="timer-bar" style="margin-top: 30px; max-width: 600px;"><div></div></div>
+        <div style="color:var(--muted)">Innsendt: <span id="sp-count">${s.scatter.submittedCount}</span> / ${s.players.length}</div>
+      </div>
+    `;
+    const bar = o.querySelector('.timer-bar > div');
+    const rem = Math.max(0, (s.scatter.deadline - Date.now())/1000);
+    bar.style.transition = `width ${rem}s linear`;
+    bar.style.width = '100%';
+    setTimeout(() => { bar.style.width = '0%'; }, 50);
+  } else {
+    const c = document.getElementById('sp-count');
+    if (c) c.textContent = s.scatter.submittedCount;
+  }
+}
+
+function renderScatterReview(s){
+  const o = document.getElementById('overlays');
+  const cats = s.scatter.categories;
+  const review = s.scatter.review || [];
+  o.innerHTML = `
+    <div class="big-center">
+      <div style="font-size: 32px; font-weight: 800;">Bokstav <span style="color: var(--mint)">${escapeHtml(s.scatter.letter)}</span> — gjennomgang</div>
+      <div class="scatter-review">
+        ${cats.map((c, i) => `
+          <div class="scatter-card">
+            <h5>${escapeHtml(c)}</h5>
+            ${(review[i]||[]).map(e => `<div class="scatter-entry ${e.points===100?'unique':'shared'}"><span>${escapeHtml(e.name)}: <b>${escapeHtml(e.word)}</b></span><span>+${e.points}</span></div>`).join('') || '<div style="color:var(--muted); padding: 10px">Ingen gyldige svar</div>'}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  confetti.burst({ count: 60 });
+  sfx.reveal();
+}
+
+function renderIcebreaker(s){
+  const o = document.getElementById('overlays');
+  const t = s.icebreaker.target;
+  o.innerHTML = `
+    <div class="big-center">
+      <div style="font-size: 80px;">💬</div>
+      <div class="prompt">${escapeHtml(s.icebreaker.prompt)}</div>
+      ${t ? `<div style="margin-top: 30px; font-size: 24px;">Svar fra: <span style="font-size: 50px; margin-left: 10px; color: ${t.color}">${t.emoji}</span> <b>${escapeHtml(t.name)}</b></div>` : ''}
+    </div>
+  `;
+  mascotSpeak(s.icebreaker.prompt, 6000);
+}
+
+function renderWheel(s){
+  const o = document.getElementById('overlays');
+  const chosen = s.wheel.chosen;
+  if (!o.querySelector('.wheel-wrap')){
+    o.innerHTML = `
+      <div class="wheel-wrap">
+        <div style="font-size: 28px; font-weight: 800;">🎡 Lykkehjulet</div>
+        <div class="wheel"><div class="wheel-center" id="wc">?</div></div>
+        <div id="wh-name" style="font-size: 38px; font-weight: 900; margin-top: 20px;">${chosen ? (chosen.emoji + ' ' + escapeHtml(chosen.name)) : ''}</div>
+      </div>
+    `;
+  }
+  if (chosen){
+    const el = o.querySelector('.wheel');
+    if (el){
+      el.style.transform = `rotate(${720 + Math.random()*360}deg)`;
+      sfx.whoosh();
+      setTimeout(() => {
+        sfx.bigWin();
+        confetti.burst({ count: 80 });
+        const nm = o.querySelector('#wh-name');
+        if (nm) nm.textContent = chosen.emoji + ' ' + chosen.name;
+      }, 3000);
+    }
+  }
+}
+
+function renderSnakeGame(s){
+  const o = document.getElementById('overlays');
+  if (!snakeRenderer){
+    o.innerHTML = `<canvas class="fullbleed-canvas" id="snake-canvas"></canvas>
+      <div class="game-hud-top"><div>🐍 Slange-kamp</div><div id="snake-timer"></div></div>
+      <div class="game-hud-right" id="snake-score"><h4>Poeng</h4><div id="snake-score-list"></div></div>`;
+    import('./snake3d.js').then(m => {
+      snakeRenderer = new m.SnakeRenderer(document.getElementById('snake-canvas'));
+    });
+  }
+}
+function renderBombGame(s){
+  const o = document.getElementById('overlays');
+  if (!bombRenderer){
+    o.innerHTML = `<canvas class="fullbleed-canvas" id="bomb-canvas"></canvas>
+      <div class="game-hud-top"><div>💣 Bomberman</div><div id="bomb-timer"></div></div>
+      <div class="game-hud-right" id="bomb-score"><h4>Poeng</h4><div id="bomb-score-list"></div></div>`;
+    import('./bomb3d.js').then(m => {
+      bombRenderer = new m.BombRenderer(document.getElementById('bomb-canvas'), { follow: false });
+      if (bombInit){
+        const hardCells = bombInit.hard;
+        const softCells = bombInit.soft;
+        bombRenderer.setWalls(hardCells, softCells);
+      }
+    });
+  }
+}
+
+function renderGameHud(data, type){
+  const timerEl = document.getElementById(type + '-timer');
+  if (timerEl && data.endAt){
+    const left = Math.max(0, Math.round((data.endAt - Date.now())/1000));
+    timerEl.textContent = left + 's';
+  } else if (timerEl){
+    timerEl.textContent = '∞';
+  }
+  const listEl = document.getElementById(type + '-score-list');
+  if (listEl){
+    const scoreData = type === 'snake' ? (data.score || []) : data.players.map(p => ({ name: p.name, score: (state.players.find(sp => sp.id===p.id)||{}).score||0, alive: p.alive, kills: p.kills }));
+    scoreData.sort((a,b) => (b.score||0) - (a.score||0));
+    listEl.innerHTML = scoreData.slice(0, 12).map(p => `<div style="display:flex; justify-content:space-between; padding: 4px 0; ${p.alive===false?'opacity:.4':''}"><span>${escapeHtml(p.name)}${p.kills?' <small>💀'+p.kills+'</small>':''}</span><span>${p.score||0}</span></div>`).join('');
+  }
+}
+
+function renderLieCollect(s){
+  const o = document.getElementById('overlays');
+  o.innerHTML = `
+    <div class="big-center">
+      <div style="font-size: 80px;">🤥</div>
+      <div class="prompt">2 sannheter, 1 løgn</div>
+      <div style="color:var(--muted); font-size: 22px;">Spillerne skriver inn 3 påstander på telefonen.</div>
+      <div style="font-size: 48px; font-weight: 900; color: var(--mint); margin-top: 20px;">${s.lie.submittedCount} / ${s.lie.total}</div>
+    </div>
+  `;
+}
+function renderLiePlay(s){
+  const o = document.getElementById('overlays');
+  const c = s.lie.current; if (!c) return;
+  if (!o.querySelector('.lie-wrap')){
+    o.innerHTML = `
+      <div class="lie-wrap">
+        <div style="font-size: 22px; color: var(--muted);">Hvem snakker sant om</div>
+        <div style="font-size: 40px; font-weight: 900; color: ${c.color};">${c.emoji} ${escapeHtml(c.name)}</div>
+        <div class="lie-list">
+          ${c.items.map((it,i) => `<div class="lie-claim" data-i="${i}">${['A','B','C'][i]}. ${escapeHtml(it)}</div>`).join('')}
+        </div>
+        <div style="color:var(--muted); margin-top: 20px;">${s.lie.votesCount} har stemt</div>
+      </div>
+    `;
+  }
+}
+function renderLieReveal(s){
+  const o = document.getElementById('overlays');
+  const c = s.lie.current; if (!c || c.lieIdx==null) return;
+  o.innerHTML = `
+    <div class="lie-wrap">
+      <div style="font-size: 22px; color: var(--muted);">Avsløring for</div>
+      <div style="font-size: 40px; font-weight: 900; color: ${c.color};">${c.emoji} ${escapeHtml(c.name)}</div>
+      <div class="lie-list">
+        ${c.items.map((it,i) => `<div class="lie-claim ${i===c.lieIdx?'lie':'truth'}">${['A','B','C'][i]}. ${i===c.lieIdx?'🤥 LØGN: ':'✔︎ '}${escapeHtml(it)}</div>`).join('')}
+      </div>
+    </div>
+  `;
+  confetti.burst({ count: 60 });
+  sfx.reveal();
+}
+
+function renderEnd(s){
+  const o = document.getElementById('overlays');
+  const podium = s.players.slice().sort((a,b) => b.score - a.score).slice(0, 3);
+  o.innerHTML = `
+    <div class="end-screen">
+      <h1>🎉 Runde over 🎉</h1>
+      <div class="podium">
+        ${podium[1] ? `<div class="podium-spot"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
+        ${podium[0] ? `<div class="podium-spot"><div class="avatar">${podium[0].emoji}</div><div class="name">${escapeHtml(podium[0].name)}</div><div class="score">${podium[0].score}</div><div class="podium-bar gold">🥇</div></div>` : ''}
+        ${podium[2] ? `<div class="podium-spot"><div class="avatar">${podium[2].emoji}</div><div class="name">${escapeHtml(podium[2].name)}</div><div class="score">${podium[2].score}</div><div class="podium-bar bronze">🥉</div></div>` : ''}
+      </div>
+      <div class="round-stats">
+        <div>Spillere: <b>${s.players.length}</b></div>
+        <div>Total poeng: <b>${s.players.reduce((n,p)=>n+p.score,0)}</b></div>
+      </div>
+      <button class="btn-primary" id="end-btn" style="margin-top: 20px">Tilbake til lobby</button>
+    </div>
+  `;
+  confetti.shower(200);
+  sfx.bigWin();
+  document.getElementById('end-btn').addEventListener('click', () => socket.emit('host:reset'));
+}
+
+// ====== Mascot ======
+const mascot = document.getElementById('mascot');
+const mascotBubble = document.getElementById('mascot-bubble');
+function wanderMascot(){
+  const zones = [
+    { left: '40px', bottom: '40px' }, { right: '40px', bottom: '40px' },
+    { left: '40px', top: '120px' }, { right: '40px', top: '120px' }
+  ];
+  const z = zones[(Math.random()*zones.length)|0];
+  mascot.style.left = z.left || 'auto';
+  mascot.style.right = z.right || 'auto';
+  mascot.style.top = z.top || 'auto';
+  mascot.style.bottom = z.bottom || 'auto';
+}
+let speakTimer = null;
+function mascotSpeak(text, ms = 4000){
+  mascotBubble.textContent = text;
+  mascot.classList.add('speaking');
+  clearTimeout(speakTimer);
+  speakTimer = setTimeout(() => mascot.classList.remove('speaking'), ms);
+}
+
+function showKillBanner(name){
   const el = document.createElement('div');
-  el.className = 'floater';
-  const x = 20 + Math.random() * (window.innerWidth - 80);
-  el.style.left = x + 'px';
-  el.style.bottom = '80px';
-  el.innerHTML = `<div class="floater-emoji">${emoji}</div><div class="floater-name">${esc(from || '')}</div>`;
-  // Random drift
-  el.style.setProperty('--drift', ((Math.random() - 0.5) * 200).toFixed(0) + 'px');
-  floaters.appendChild(el);
+  el.className = 'kill-banner';
+  el.innerHTML = `💀 ${escapeHtml(name)} ble sprengt 💣`;
+  document.body.appendChild(el);
   setTimeout(() => el.remove(), 4000);
 }
 
-// ===== Trofé-annonseringer (via mascoten) =====
-socket.on('trophies', (list) => {
-  // Mascoten feirer en kort stund når trofeer dukker opp
-  if (mascotEl && list.length > 0) {
-    mascotEl.classList.add('celebrating');
-    setTimeout(() => mascotEl.classList.remove('celebrating'), 2000);
-  }
-  list.forEach((t, i) => setTimeout(() => {
-    let msg = '';
-    if (t.type === 'first' && t.name) msg = `${t.name} var først ute! ⚡`;
-    else if (t.type === 'streak' && t.name) msg = `${t.name} — ${t.label} 🔥`;
-    else if (t.type === 'perfect') msg = 'Alle svarte riktig! 💯';
-    else if (t.name) msg = `${t.emoji || '🏆'} ${t.name} — ${t.label}`;
-    else msg = `${t.emoji || '🏆'} ${t.label}`;
-    hostSpeak(msg);
-    spawnTrophyEmoji(t.emoji || '🏆');
-    window.sfx?.fanfare?.();
-  }, i * 1800 + 300));
-});
-
-// Trofé-emoji fyres fra mascotens posisjon og flyter oppover
-function spawnTrophyEmoji(emoji) {
-  if (!mascotEl) return;
-  const rect = mascotEl.getBoundingClientRect();
+function floatReaction(emoji){
   const el = document.createElement('div');
-  el.className = 'trophy-emoji-float';
+  el.className = 'reaction-float';
   el.textContent = emoji;
-  el.style.left = (rect.left + rect.width / 2) + 'px';
-  el.style.top = (rect.top + 20) + 'px';
+  el.style.left = (20 + Math.random() * (window.innerWidth - 80)) + 'px';
+  el.style.bottom = '40px';
   document.body.appendChild(el);
-  setTimeout(() => el.classList.add('fly'), 30);
-  setTimeout(() => el.remove(), 2800);
+  setTimeout(() => el.remove(), 3000);
+  sfx.pop();
 }
 
-socket.on('state', s => {
-  const prev = state;
-  state = s;
-  triggerPhaseEffects(prev, s);
-  // Unngå re-render når bare "answered count" endres under quiz
-  const sameQuestion = prev && prev.phase === s.phase && s.phase === 'question'
-    && prev.qIndex === s.qIndex && prev.paused === s.paused;
-  const sameVoting = prev && prev.phase === s.phase && s.phase === 'voting';
-  const sameScatter = prev && prev.phase === s.phase && s.phase === 'scatter-play';
-  if (sameQuestion || sameVoting || sameScatter) {
-    // Soft update — oppdater bare counters
-    softUpdateCounts();
-    lastPhase = s.phase;
-    return;
-  }
-  // Aktiver fase-fade kun ved FAKTISK fase-endring
-  if (prev && prev.phase !== s.phase) {
-    main.classList.remove('phase-changing');
-    void main.offsetWidth;
-    main.classList.add('phase-changing');
-  }
-  lastPhase = s.phase;
-  lastQIndex = s.qIndex;
-  const ae = document.activeElement;
-  const preservedId = ae && ['aiTopic','aiKey','aiEndpoint','aiModel'].includes(ae.id) ? ae.id : null;
-  const preservedValue = preservedId ? ae.value : null;
-  const preservedSelStart = preservedId && 'selectionStart' in ae ? ae.selectionStart : null;
-  const preservedSelEnd = preservedId && 'selectionEnd' in ae ? ae.selectionEnd : null;
-  render();
-  if (preservedId) {
-    const el = document.getElementById(preservedId);
-    if (el) {
-      el.value = preservedValue;
-      el.focus();
-      if (preservedSelStart != null) try { el.setSelectionRange(preservedSelStart, preservedSelEnd); } catch {}
-    }
-  }
-});
-
-function softUpdateCounts() {
-  if (!state) return;
-  const answered = state.players.filter(p => p.answered || p.voted).length;
-  const total = state.players.length;
-  // Quiz-counter
-  const qMeta = document.querySelector('.q-meta div:last-child');
-  if (qMeta && state.phase === 'question') {
-    qMeta.textContent = `${answered} / ${total} svar inne ${state.paused ? '· ⏸ Pause' : ''}`;
-  }
-  // Voting-counter
-  const vStatus = document.querySelector('.voting-status');
-  if (vStatus && state.phase === 'voting') {
-    vStatus.textContent = `${answered} / ${total} har stemt`;
-  }
-  const vBar = document.querySelector('.voting-bar');
-  if (vBar && state.phase === 'voting') {
-    vBar.style.width = ((answered / Math.max(1, total)) * 100) + '%';
-  }
-  // Scatter-counter
-  const sStatus = document.querySelector('.scatter-status');
-  if (sStatus && state.phase === 'scatter-play') {
-    sStatus.textContent = `${answered} / ${total} ferdig`;
-  }
-}
-
-function triggerPhaseEffects(prev, s) {
-  if (!prev) return;
-  if (prev.phase !== s.phase) {
-    if (s.phase === 'wheel') { window.sfx?.spin(); stopSpeaking(); }
-    if (s.phase === 'end') { stopSpeaking(); window.sfx?.fanfare(); window.confetti?.burst(); setTimeout(() => window.confetti?.burst(), 600); setTimeout(() => window.confetti?.burst(), 1400); window.sfx?.applause(); }
-    if (s.phase === 'vote-result') { window.sfx?.reveal(); stopSpeaking(); }
-    if (s.phase === 'scatter-review') { window.sfx?.reveal(); stopSpeaking(); }
-    if (s.phase === 'lie-reveal') { window.sfx?.reveal(); stopSpeaking(); }
-    if (s.phase === 'reveal') stopSpeaking(); // lyd spilles i renderReveal basert på riktig/feil
-  }
-  // TTS: les opp spørsmål (kun)
-  if (s.phase === 'question' && prev.phase !== 'question' && s.question && s.question.text) {
-    if (!s.question.isEmoji) hostSpeak(s.question.text);
-  }
-  // Maskoten leser tutorial når den starter
-  if (s.phase === 'tutorial' && prev.phase !== 'tutorial' && s.tutorialText) {
-    hostSpeak(s.tutorialText);
-  }
-  // Player joined sound
-  if (prev.players.length < s.players.length) window.sfx?.join();
-}
-
-function render() {
-  try {
-  if (!state) return;
-  const newPhaseLabel = PHASE_LABELS[state.phase] || state.phase;
-  if (phaseTag.textContent !== newPhaseLabel) {
-    phaseTag.textContent = newPhaseLabel;
-    phaseTag.classList.add('changed');
-    setTimeout(() => phaseTag.classList.remove('changed'), 400);
-  }
-  if (timerRAF) { cancelAnimationFrame(timerRAF); timerRAF = null; }
-  if (wheelRevealTimeout) { clearTimeout(wheelRevealTimeout); wheelRevealTimeout = null; }
-
-  switch (state.phase) {
-    case 'lobby': renderLobby(); break;
-    case 'tutorial': renderTutorial(); break;
-    case 'countdown': renderCountdown(); break;
-    case 'question': renderQuestion(); break;
-    case 'reveal': renderReveal(); break;
-    case 'leaderboard': renderLeaderboard(); break;
-    case 'wheel': renderWheel(); break;
-    case 'voting': renderVoting(); break;
-    case 'vote-result': renderVoteResult(); break;
-    case 'scatter-play': renderScatterPlay(); break;
-    case 'scatter-review': renderScatterReview(); break;
-    case 'icebreaker': renderIcebreaker(); break;
-    case 'snake': renderSnake(); break;
-    case 'snake-end': renderSnakeEnd(); break;
-    case 'bomb': renderBomb(); break;
-    case 'bomb-end': renderBombEnd(); break;
-    case 'lie-collect': renderLieCollect(); break;
-    case 'lie-play': renderLiePlay(); break;
-    case 'lie-reveal': renderLieReveal(); break;
-    case 'end': renderEnd(); break;
-  }
-  renderControls();
-  } catch (e) { console.error('[host render error]', e); }
-}
-
-// ============ TUTORIAL ============
-const TUTORIAL_ICON = {
-  quiz: '🧠', lightning: '⚡', bomb: '💣', snake: '🐍',
-  scatter: '📝', lie: '🤥', voting: '🗳️',
-};
-function renderTutorial() {
-  const icon = TUTORIAL_ICON[state.tutorialGame] || '🎮';
-  const text = state.tutorialText || '';
-  main.innerHTML = `
-    <div class="tutorial-screen">
-      <div class="tutorial-icon">${icon}</div>
-      <div class="tutorial-text">${esc(text)}</div>
-      <div class="tutorial-hint">Programlederen forklarer… Hopp over med Enter eller knappen under.</div>
-      <div class="tutorial-progress"><div id="tutorialBar" class="tutorial-progress-fill"></div></div>
-    </div>`;
-  // Animer progress-baren basert på tutorialEndsAt
-  const bar = document.getElementById('tutorialBar');
-  const startTime = Date.now();
-  const duration = Math.max(100, (state.tutorialEndsAt || Date.now() + 5500) - Date.now());
-  function tick() {
-    if (!bar || state?.phase !== 'tutorial') return;
-    const elapsed = Date.now() - startTime;
-    const pct = Math.min(100, (elapsed / duration) * 100);
-    bar.style.width = pct + '%';
-    if (state?.phase === 'tutorial') requestAnimationFrame(tick);
-  }
-  tick();
-}
-
-// ============ COUNTDOWN ============
-function renderCountdown() {
-  const endsAt = state.countdownEndsAt || Date.now() + 3000;
-  main.innerHTML = `
-    <div class="countdown-screen">
-      <div class="countdown-meta">Spørsmål ${state.qIndex + 1} / ${state.total}${state.lightning ? ' ⚡ LYN-RUNDE' : ''}</div>
-      <div class="countdown-num" id="cdNum">3</div>
-    </div>`;
-  const el = document.getElementById('cdNum');
-  function tick() {
-    const msLeft = endsAt - Date.now();
-    const n = Math.ceil(msLeft / 1000);
-    if (n <= 0) { el.textContent = 'GO!'; el.className = 'countdown-num go'; return; }
-    if (el.textContent !== String(n)) {
-      el.textContent = n;
-      el.classList.remove('pulse');
-      void el.offsetWidth;
-      el.classList.add('pulse');
-      window.sfx?.countdown();
-    }
-    if (state.phase === 'countdown') requestAnimationFrame(tick);
-  }
-  tick();
-}
-
-// ============ LOBBY ============
-function renderLobby() {
-  const p = state.players;
-  const teams = state.teams || [];
-  main.innerHTML = `
-    <div class="lobby">
-      <div class="lobby-left">
-        <h2>Velkommen til showet</h2>
-        <p class="lead">Skann koden eller åpne lenken på telefonen din.</p>
-        <div class="join-box">
-          <img src="/qr" alt="QR">
-          <div class="join-info">
-            <b>Bli med på</b>
-            <div class="url">${connectUrl.replace('http://', '')}</div>
-            <span>Skriv et navn og du er inne.</span>
-          </div>
-        </div>
-        <div class="lobby-config">
-          <div class="cfg-row">
-            <label>
-              <input type="checkbox" id="cfgTeam" ${state.teamMode ? 'checked' : ''}>
-              Lag-modus
-            </label>
-            <select id="cfgNumTeams" ${!state.teamMode ? 'disabled' : ''}>
-              ${[2,3,4,5,6].map(n => `<option value="${n}" ${teams.length === n ? 'selected' : ''}>${n} lag</option>`).join('')}
-            </select>
-            ${state.teamMode ? `<button class="btn btn-ghost btn-sm" onclick="reshuffle()">🔀 Miks lag</button>` : ''}
-          </div>
-          <div class="cfg-row">
-            <label>Spørsmål: <select id="cfgQCount">
-              ${[5,8,10,12,15,20].map(n => `<option value="${n}" ${n === state.questionCount ? 'selected' : ''}>${n}</option>`).join('')}
-            </select></label>
-            <label>Tid: <select id="cfgTime">
-              ${[10000,15000,20000,30000].map(n => `<option value="${n}" ${n === state.timeLimit ? 'selected' : ''}>${n/1000} sek</option>`).join('')}
-            </select></label>
-            <label>📊 Tavle: <select id="cfgLBEvery">
-              <option value="0" ${state.leaderboardEvery === 0 ? 'selected' : ''}>Bare på slutten</option>
-              <option value="3" ${state.leaderboardEvery === 3 ? 'selected' : ''}>Hver 3.</option>
-              <option value="5" ${state.leaderboardEvery === 5 ? 'selected' : ''}>Hver 5.</option>
-              <option value="10" ${state.leaderboardEvery === 10 ? 'selected' : ''}>Hver 10.</option>
-            </select></label>
-          </div>
-        </div>
-        ${renderAiBox()}
-      </div>
-      <div class="lobby-right">
-        <h3>Spillere <span class="count">${p.length}</span>
-          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="openLeaderboardModal()" title="Se historisk topplist">🏆 Topplist</button>
-        </h3>
-        ${p.length === 0
-          ? '<div class="empty-hint">Venter på at noen skal bli med…</div>'
-          : (state.teamMode
-              ? teams.map(t => {
-                  const members = p.filter(x => x.teamId === t.id);
-                  return `<div class="team-block" style="--team-color:${t.color}">
-                    <div class="team-header"><span class="team-emoji">${t.emoji}</span>
-                      <b class="team-name-ed" data-tid="${t.id}" title="Klikk for å endre navn">${esc(t.name)}</b>
-                      <span class="team-count">${members.length}</span></div>
-                    <div class="team-players">${members.map(x => `<span class="team-chip" title="Klikk for å fjerne" data-pid="${x.id}" data-pname="${esc(x.name)}"><span class="avatar-sm">${x.emoji || avatarFor(x.name)}</span> ${esc(x.name)}</span>`).join('') || '<span class="empty-hint-sm">–</span>'}</div>
-                  </div>`;
-                }).join('')
-              : `<div class="players-grid">${p.map(x => `<div class="player-chip" title="Klikk for å fjerne" data-pid="${x.id}" data-pname="${esc(x.name)}"><span class="avatar">${x.emoji || avatarFor(x.name)}</span> ${esc(x.name)}</div>`).join('')}</div>`)
-        }
-      </div>
-    </div>`;
-  // Wire config
-  const team = document.getElementById('cfgTeam');
-  const num = document.getElementById('cfgNumTeams');
-  const qc = document.getElementById('cfgQCount');
-  const tm = document.getElementById('cfgTime');
-  team?.addEventListener('change', () => socket.emit('host:config', { teamMode: team.checked, numTeams: +num.value }));
-  num?.addEventListener('change', () => socket.emit('host:config', { numTeams: +num.value }));
-  qc?.addEventListener('change', () => socket.emit('host:config', { questionCount: +qc.value }));
-  tm?.addEventListener('change', () => socket.emit('host:config', { timeLimit: +tm.value }));
-  const lb = document.getElementById('cfgLBEvery');
-  lb?.addEventListener('change', () => socket.emit('host:config', { leaderboardEvery: +lb.value }));
-
-  // Kick-spiller: klikk på player-chip
-  document.querySelectorAll('.player-chip[data-pid], .team-chip[data-pid]').forEach(el => {
-    el.addEventListener('click', () => {
-      const pid = el.dataset.pid;
-      const pname = el.dataset.pname;
-      if (confirm(`Fjern ${pname} fra spillet?`)) socket.emit('host:kick', pid);
-    });
-  });
-  // Rename team: klikk på team-name
-  document.querySelectorAll('.team-name-ed').forEach(el => {
-    el.addEventListener('click', () => {
-      const id = +el.dataset.tid;
-      const cur = el.textContent;
-      const n = prompt('Nytt navn for laget:', cur);
-      if (n && n.trim() && n.trim() !== cur) socket.emit('host:rename-team', { id, name: n.trim() });
-    });
-  });
-}
-
-window.reshuffle = () => socket.emit('host:reshuffle-teams');
-
-// ============ AI GENERATOR ============
-let aiState = {
-  status: 'idle',      // idle | working | ready | error | voting-ready
-  mode: 'quiz',        // quiz | voting
-  message: '',
-  questions: null,
-  title: '',
-  votingPrompts: null,
-  showSettings: false,
-};
-
-function renderAiBox() {
-  const cfg = getAiConfig();
-  const hasKey = !!cfg.apiKey;
-  return `
-    <div class="ai-box">
-      <div class="ai-head">
-        <div class="ai-title">🪄 Egendefinert med AI</div>
-        <button class="ai-gear" onclick="toggleAiSettings()" title="Innstillinger">⚙️</button>
-      </div>
-      ${aiState.showSettings ? `
-        <div class="ai-settings">
-          <label>API-URL<input type="text" id="aiEndpoint" value="${esc(cfg.endpoint)}" placeholder="https://api.openai.com/v1/chat/completions"></label>
-          <label>Modell<input type="text" id="aiModel" value="${esc(cfg.model)}" placeholder="gpt-4o-mini"></label>
-          <label>API-nøkkel<input type="password" id="aiKey" value="${esc(cfg.apiKey)}" placeholder="sk-..." autocomplete="off"></label>
-          <button class="btn btn-ghost btn-sm" onclick="saveAi()">💾 Lagre</button>
-          <p class="ai-note">Nøkkelen lagres kun i nettleseren din. Serveren ser den aldri.</p>
-        </div>` : ''}
-      ${!hasKey && !aiState.showSettings ? `
-        <p class="ai-note">Legg inn API-nøkkel under ⚙️ for å generere.</p>` : ''}
-      <div class="ai-row">
-        <input type="text" id="aiTopic" placeholder="Tema – f.eks. Premier League, gutta på hytta, IT-avdelingen..." ${aiState.status === 'working' ? 'disabled' : ''}>
-        <select id="aiCount" ${aiState.status === 'working' ? 'disabled' : ''}>
-          ${[5,8,10,12,15].map(n => `<option value="${n}" ${n === 10 ? 'selected' : ''}>${n} stk</option>`).join('')}
-        </select>
-        <select id="aiMode" ${aiState.status === 'working' ? 'disabled' : ''}>
-          <option value="quiz">📝 Quiz</option>
-          <option value="emoji">🎭 Emoji</option>
-          <option value="voting">🗳️ Hvem er mest sannsynlig</option>
-        </select>
-        <button class="btn btn-primary btn-sm" onclick="generateAi()" ${aiState.status === 'working' || !hasKey ? 'disabled' : ''}>
-          ${aiState.status === 'working' ? '⏳' : '✨ Generer'}
-        </button>
-      </div>
-      ${aiState.status === 'ready' && aiState.questions ? `
-        <div class="ai-ready">
-          ✅ <b>${aiState.questions.length} spørsmål klare</b> — "${esc(aiState.title)}"
-          <button class="btn btn-primary btn-sm" onclick="startCustomQuiz()">▶ Start nå</button>
-          <button class="btn btn-ghost btn-sm" onclick="previewCustom()">👁 Forhåndsvis</button>
-          <button class="btn btn-ghost btn-sm" onclick="resetAi()">✕</button>
-        </div>` : ''}
-      ${aiState.status === 'voting-ready' && aiState.votingPrompts ? `
-        <div class="ai-ready">
-          ✅ <b>${aiState.votingPrompts.length} nye "mest sannsynlig"-spørsmål</b> lagt i poolen
-          <button class="btn btn-primary btn-sm" onclick="act('host:start-voting')">🗳️ Start runde</button>
-          <button class="btn btn-ghost btn-sm" onclick="previewVoting()">👁 Se liste</button>
-          <button class="btn btn-ghost btn-sm" onclick="resetAi()">✕</button>
-        </div>` : ''}
-      ${aiState.status === 'error' ? `<div class="ai-error">⚠️ ${esc(aiState.message)}</div>` : ''}
-    </div>`;
-}
-
-window.toggleAiSettings = () => { aiState.showSettings = !aiState.showSettings; render(); };
-window.saveAi = () => {
-  const endpoint = document.getElementById('aiEndpoint').value.trim();
-  const model = document.getElementById('aiModel').value.trim();
-  const apiKey = document.getElementById('aiKey').value.trim();
-  saveAiConfig({ endpoint, model, apiKey });
-  aiState.showSettings = false;
-  render();
-};
-window.generateAi = async () => {
-  const topic = document.getElementById('aiTopic').value.trim();
-  const count = +document.getElementById('aiCount').value;
-  const mode = document.getElementById('aiMode').value;
-  if (!topic) { aiState.status = 'error'; aiState.message = 'Skriv et tema først'; render(); return; }
-  aiState.status = 'working';
-  aiState.message = '';
-  aiState.mode = mode;
-  render();
-  try {
-    if (mode === 'voting') {
-      const prompts = await generateVotingPrompts({ topic, count });
-      aiState.votingPrompts = prompts;
-      aiState.status = 'voting-ready';
-      socket.emit('host:add-voting-prompts', prompts);
-      render();
-    } else {
-      const result = await generateQuestions({ topic, count, tone: mode });
-      aiState.questions = result.questions;
-      aiState.title = result.title;
-      aiState.status = 'ready';
-      render();
-    }
-  } catch (e) {
-    aiState.status = 'error';
-    aiState.message = e.message || 'Generering feilet';
-    render();
-  }
-};
-window.startCustomQuiz = () => {
-  if (!aiState.questions?.length) return;
-  socket.emit('host:start-custom-quiz', { questions: aiState.questions, title: aiState.title });
-  aiState = { status: 'idle', mode: 'quiz', message: '', questions: null, title: '', votingPrompts: null, showSettings: false };
-};
-window.previewCustom = () => {
-  if (!aiState.questions) return;
-  const txt = aiState.questions.map((q, i) =>
-    `${i + 1}. ${q.q}\n` + q.a.map((a, j) => `   ${'ABCD'[j]}${j === q.c ? ' ✓' : ' '} ${a}`).join('\n')
-  ).join('\n\n');
-  alert(txt);
-};
-window.previewVoting = () => {
-  if (!aiState.votingPrompts) return;
-  alert(aiState.votingPrompts.map((p, i) => (i+1)+'. '+p).join('\n\n'));
-};
-window.resetAi = () => { aiState = { status: 'idle', mode: 'quiz', message: '', questions: null, title: '', votingPrompts: null, showSettings: false }; render(); };
-
-// ============ QUESTION ============
-function renderQuestion() {
-  const q = state.question;
-  const isEmoji = q.isEmoji;
-  const answered = state.players.filter(p => p.answered).length;
-  main.innerHTML = `
-    <div class="q-screen">
-      <div class="q-meta">
-        <div>Spørsmål ${state.qIndex + 1} / ${state.total}</div>
-        <div>${answered} / ${state.players.length} svar inne ${state.paused ? '· ⏸ Pause' : ''}</div>
-      </div>
-      ${isEmoji ? `<div class="q-emoji">${q.text}</div>` : `<div class="q-text">${esc(q.text)}</div>`}
-      <div class="timer"><div class="timer-bar" id="tbar"></div></div>
-      <div class="options">
-        ${q.options.map((o, i) => `<div class="option option-${i}"><div class="marker">${'ABCD'[i]}</div>${esc(o)}</div>`).join('')}
-      </div>
-    </div>`;
-  animateTimer(q.startedAt, q.timeLimit);
-}
-
-function renderReveal() {
-  const q = state.question;
-  main.innerHTML = `
-    <div class="q-screen">
-      <div class="q-meta"><div>Spørsmål ${state.qIndex + 1} / ${state.total}</div><div>Fasit</div></div>
-      ${q.isEmoji ? `<div class="q-emoji">${q.text}</div>` : `<div class="q-text">${esc(q.text)}</div>`}
-      <div class="options">
-        ${q.options.map((o, i) => `<div class="option option-${i} ${i === q.correct ? 'correct' : 'dimmed'}"><div class="marker">${'ABCD'[i]}</div>${esc(o)}</div>`).join('')}
-      </div>
-      <div class="answered-row">
-        <div>✅ ${state.players.filter(p => p.lastCorrect).length} riktig</div>
-        <div>❌ ${state.players.filter(p => p.lastCorrect === false).length} feil</div>
-        <div>💤 ${state.players.filter(p => p.lastCorrect === null).length} uten svar</div>
-      </div>
-    </div>`;
-  if (state.players.filter(p => p.lastCorrect).length > 0) {
-    window.confetti?.spawn(40, window.innerWidth / 2, window.innerHeight * 0.4);
-    window.sfx?.correct();
-  } else {
-    window.sfx?.wrong();
-  }
-}
-
-// ============ LEADERBOARD ============
-function renderLeaderboard() {
-  if (state.teamMode) {
-    const teams = [...state.teams].sort((a, b) => b.score - a.score);
-    main.innerHTML = `
-      <div class="leaderboard">
-        <h2>Lag-tavle</h2>
-        ${teams.map((t, i) => {
-          const members = state.players.filter(p => p.teamId === t.id);
-          const avg = members.length ? Math.round(t.score / members.length) : 0;
-          return `<div class="lb-row team-row" style="animation-delay:${i*80}ms; border-color:${t.color}">
-            <div class="lb-rank">${i+1}</div>
-            <div><span class="team-emoji">${t.emoji}</span> ${esc(t.name)} <span class="team-members-s">· ${members.length} spillere</span></div>
-            <div class="lb-delta">snitt ${avg}</div>
-            <div>${t.score} p</div>
-          </div>`;
-        }).join('')}
-      </div>`;
-  } else {
-    const sorted = [...state.players].sort((a, b) => b.score - a.score);
-    main.innerHTML = `
-      <div class="leaderboard">
-        <h2>Poengtavle</h2>
-        ${sorted.slice(0, 10).map((p, i) => `
-          <div class="lb-row" style="animation-delay: ${i * 80}ms">
-            <div class="lb-rank">${i + 1}</div>
-            <div><span class="avatar">${avatarFor(p.name)}</span> ${esc(p.name)}</div>
-            <div class="lb-delta ${p.lastDelta ? '' : 'neg'}">${p.lastDelta ? '+' + p.lastDelta : '±0'}</div>
-            <div>${p.score} p</div>
-          </div>`).join('')}
-      </div>`;
-  }
-}
-
-// ============ WHEEL ============
-function renderWheel() {
-  const names = state.players.map(p => p.name);
-  const n = names.length;
-  if (!n) { main.innerHTML = '<div class="empty-hint">Ingen spillere på hjulet.</div>'; return; }
-  const slice = 360 / n;
-  const colors = ['#e54b4b', '#3a86ff', '#ffbe0b', '#29c46a', '#d4af37', '#a855f7', '#14b8a6', '#f97316'];
-  const chosenIdx = state.wheelResult ? names.indexOf(state.wheelResult) : -1;
-  const targetAngle = chosenIdx >= 0 ? -(chosenIdx * slice + slice / 2) : 0;
-  const wheelAngle = 360 * 5 + targetAngle;
-  const radius = 250, cx = 260, cy = 260;
-  const segments = names.map((name, i) => {
-    const a1 = (i * slice - 90) * Math.PI / 180;
-    const a2 = ((i + 1) * slice - 90) * Math.PI / 180;
-    const x1 = cx + radius * Math.cos(a1), y1 = cy + radius * Math.sin(a1);
-    const x2 = cx + radius * Math.cos(a2), y2 = cy + radius * Math.sin(a2);
-    const large = slice > 180 ? 1 : 0;
-    const d = `M${cx},${cy} L${x1},${y1} A${radius},${radius} 0 ${large} 1 ${x2},${y2} Z`;
-    const mid = ((i + 0.5) * slice - 90) * Math.PI / 180;
-    const tx = cx + radius * 0.65 * Math.cos(mid), ty = cy + radius * 0.65 * Math.sin(mid);
-    const rot = (i + 0.5) * slice;
-    return `<path d="${d}" fill="${colors[i % colors.length]}" stroke="#0b0d1a" stroke-width="3"/>
-      <text x="${tx}" y="${ty}" transform="rotate(${rot} ${tx} ${ty})" text-anchor="middle" fill="#fff" font-weight="700" font-size="${Math.max(12, Math.min(24, 420 / n))}">${esc(name.slice(0, 14))}</text>`;
-  }).join('');
-  main.innerHTML = `
-    <div class="wheel-wrap">
-      <h2>Lykkehjulet snurrer…</h2>
-      <div class="wheel">
-        <div class="needle"></div>
-        <svg id="wheelSvg" width="520" height="520" viewBox="0 0 520 520" style="transform: rotate(0deg)">
-          ${segments}
-          <circle cx="${cx}" cy="${cy}" r="30" fill="#0b0d1a" stroke="#d4af37" stroke-width="4"/>
-        </svg>
-      </div>
-      <div id="wheelReveal" style="min-height: 80px"></div>
-    </div>`;
-  requestAnimationFrame(() => {
-    const svg = document.getElementById('wheelSvg');
-    if (svg) svg.style.transform = `rotate(${wheelAngle}deg)`;
-  });
-  if (state.wheelResult) {
-    wheelRevealTimeout = setTimeout(() => {
-      const r = document.getElementById('wheelReveal');
-      if (r) r.innerHTML = `<div class="wheel-result">🎉 ${esc(state.wheelResult)} 🎉</div>`;
-      window.confetti?.burst();
-      window.sfx?.fanfare();
-    }, 4600);
-  }
-}
-
-// ============ VOTING ============
-function renderVoting() {
-  const answered = state.players.filter(p => p.voted).length;
-  main.innerHTML = `
-    <div class="voting-screen">
-      <div class="voting-label">Hvem er mest sannsynlig…</div>
-      <div class="voting-prompt">${esc(state.votingPrompt)}</div>
-      <div class="voting-progress">
-        <div class="voting-bar" style="width:${(answered / Math.max(1, state.players.length)) * 100}%"></div>
-      </div>
-      <div class="voting-status">${answered} / ${state.players.length} har stemt</div>
-      <div class="voting-grid">
-        ${state.players.map(p => `<div class="vote-chip ${p.voted ? 'voted' : ''}">${esc(p.name)}${p.voted ? ' ✓' : ''}</div>`).join('')}
-      </div>
-    </div>`;
-}
-
-function renderVoteResult() {
-  const results = state.votingResults || [];
-  const top = results[0];
-  main.innerHTML = `
-    <div class="voting-screen">
-      <div class="voting-label">Hvem er mest sannsynlig…</div>
-      <div class="voting-prompt">${esc(state.votingPrompt)}</div>
-      ${top ? `<div class="vote-winner">🏆 ${esc(top.name)} <span class="vote-count">(${top.count} ${top.count === 1 ? 'stemme' : 'stemmer'})</span></div>` : ''}
-      <div class="vote-results">
-        ${results.slice(0, 8).map((r, i) => {
-          const pct = top ? (r.count / top.count) * 100 : 0;
-          return `<div class="vote-row">
-            <div class="vote-name">${esc(r.name)}</div>
-            <div class="vote-bar-wrap"><div class="vote-bar" style="width:${pct}%; animation-delay:${i*100}ms"></div></div>
-            <div class="vote-num">${r.count}</div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>`;
-  if (top) { window.confetti?.burst(); window.sfx?.applause(); }
-}
-
-// ============ SCATTERGORIES ============
-function renderScatterPlay() {
-  const answered = state.players.filter(p => p.answered).length;
-  main.innerHTML = `
-    <div class="scatter-screen">
-      <div class="scatter-letter">${state.scatterLetter}</div>
-      <div class="scatter-subtitle">Skriv ord som starter med <b>${state.scatterLetter}</b> i hver kategori</div>
-      <div class="scatter-cats">
-        ${state.scatterCategories.map(c => `<div class="scatter-cat">${esc(c)}</div>`).join('')}
-      </div>
-      <div class="timer"><div class="timer-bar" id="tbar"></div></div>
-      <div class="scatter-status">${answered} / ${state.players.length} ferdig</div>
-    </div>`;
-  animateTimer(state.scatterStartedAt || Date.now(), state.scatterTimeLimit || 60000);
-}
-
-function renderScatterReview() {
-  const review = state.scatterReview || [];
-  const cats = state.scatterCategories;
-  main.innerHTML = `
-    <div class="scatter-review">
-      <h2>Kategori-kamp — Bokstav ${state.scatterLetter}</h2>
-      <table class="scatter-table">
-        <thead>
-          <tr><th>Spiller</th>${cats.map(c => `<th>${esc(c)}</th>`).join('')}<th>+</th></tr>
-        </thead>
-        <tbody>
-          ${review.map(r => `<tr>
-            <td><b>${esc(r.name)}</b></td>
-            ${(r.answers || []).map((a, i) => {
-              const word = (a || '').trim();
-              const startsRight = word && word[0].toLowerCase() === state.scatterLetter.toLowerCase();
-              return `<td class="${word ? (startsRight ? 'ok' : 'bad') : 'empty'}">${esc(word) || '—'}</td>`;
-            }).join('')}
-            <td class="scatter-delta">+${r.delta}</td>
-          </tr>`).join('')}
-        </tbody>
-      </table>
-    </div>`;
-}
-
-// ============ ICEBREAKER ============
-function renderIcebreaker() {
-  main.innerHTML = `
-    <div class="icebreaker-screen">
-      <div class="icebreaker-label">Bli-kjent-kort</div>
-      <div class="icebreaker-target">${esc(state.icebreakerTarget)}</div>
-      <div class="icebreaker-prompt">${esc(state.icebreakerPrompt)}</div>
-      <div class="icebreaker-hint">Gi mikken til ${esc(state.icebreakerTarget)} 🎤</div>
-    </div>`;
-}
-
-// ============ 2 SANNHETER, 1 LØGN ============
-function renderLieCollect() {
-  const lc = state.lieCollect || { submittedIds: [], totalPlayers: 0 };
-  const total = state.players.length;
-  const submitted = new Set(lc.submittedIds);
-  const submittedCount = submitted.size;
-  main.innerHTML = `
-    <div class="lie-screen lie-collect-screen">
-      <div class="lie-title">🤥 2 sannheter og 1 løgn</div>
-      <div class="lie-sub">Alle spillere skriver inn <b>3 påstander om seg selv</b> — 2 sanne, 1 løgn — på telefonen sin.</div>
-      <div class="lie-progress">
-        <div class="lie-progress-num">${submittedCount} / ${total}</div>
-        <div class="lie-progress-label">spillere er ferdig</div>
-        <div class="lie-progress-bar"><div class="lie-progress-fill" style="width:${total ? (submittedCount / total * 100) : 0}%"></div></div>
-      </div>
-      <div class="lie-submitters">
-        ${state.players.map(p => `
-          <div class="lie-sub-chip ${submitted.has(p.id) ? 'ready' : ''}">
-            <span class="avatar-sm">${p.emoji || avatarFor(p.name)}</span>
-            <span class="lie-sub-name">${esc(p.name)}</span>
-            <span class="lie-sub-status">${submitted.has(p.id) ? '✓' : '…'}</span>
-          </div>
-        `).join('')}
-      </div>
-      ${submittedCount >= 2 ? `<div class="lie-hint">Klar til å starte når du vil — trykk "Start runde" nedenfor.</div>` : `<div class="lie-hint lie-hint-wait">Venter på minst 2 innsendinger…</div>`}
-    </div>`;
-}
-
-function renderLiePlay() {
-  const lp = state.liePlay;
-  if (!lp) { main.innerHTML = `<div class="lie-screen"><div class="lie-title">Venter…</div></div>`; return; }
-  const total = state.players.length;
-  const votersTotal = Math.max(0, total - 1); // minus submitter
-  const votedCount = lp.votedIds.length;
-  main.innerHTML = `
-    <div class="lie-screen lie-play-screen">
-      <div class="lie-turn">Tur ${lp.turnIdx} / ${lp.totalTurns}</div>
-      <div class="lie-player-header">
-        <span class="lie-player-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</span>
-        <div class="lie-player-info">
-          <div class="lie-player-label">Hvem lyver?</div>
-          <div class="lie-player-name">${esc(lp.currentName)}</div>
-        </div>
-      </div>
-      <div class="lie-statements">
-        ${lp.statements.map((s, i) => `
-          <div class="lie-statement">
-            <div class="lie-stmt-num">${i + 1}</div>
-            <div class="lie-stmt-text">${esc(s)}</div>
-          </div>
-        `).join('')}
-      </div>
-      <div class="lie-vote-status">${votedCount} / ${votersTotal} har stemt</div>
-    </div>`;
-}
-
-function renderLieReveal() {
-  const lp = state.liePlay;
-  if (!lp) { main.innerHTML = `<div class="lie-screen"><div class="lie-title">Venter…</div></div>`; return; }
-  const lieIdx = lp.lieDisplayIdx;
-  const bd = lp.voteBreakdown || [0, 0, 0];
-  const names = lp.voterNames || [[], [], []];
-  const totalVotes = bd.reduce((a, b) => a + b, 0);
-  const fooled = bd.filter((_, i) => i !== lieIdx).reduce((a, b) => a + b, 0);
-  const submitter = state.players.find(p => p.id === lp.currentId);
-  const submitterDelta = submitter ? submitter.lastDelta : 0;
-  main.innerHTML = `
-    <div class="lie-screen lie-reveal-screen">
-      <div class="lie-turn">Tur ${lp.turnIdx} / ${lp.totalTurns}</div>
-      <div class="lie-player-header">
-        <span class="lie-player-emoji">${lp.currentEmoji || avatarFor(lp.currentName)}</span>
-        <div class="lie-player-info">
-          <div class="lie-player-label">Løgnen var…</div>
-          <div class="lie-player-name">${esc(lp.currentName)}</div>
-        </div>
-      </div>
-      <div class="lie-statements reveal">
-        ${lp.statements.map((s, i) => {
-          const isLie = i === lieIdx;
-          const count = bd[i] || 0;
-          const pct = totalVotes ? Math.round(count / totalVotes * 100) : 0;
-          return `
-            <div class="lie-statement ${isLie ? 'is-lie' : 'is-truth'}">
-              <div class="lie-stmt-num">${isLie ? '🤥' : '✓'}</div>
-              <div class="lie-stmt-body">
-                <div class="lie-stmt-text">${esc(s)}</div>
-                <div class="lie-stmt-votes">
-                  <div class="lie-votes-bar"><div class="lie-votes-fill ${isLie ? 'lie' : 'truth'}" style="width:${pct}%"></div></div>
-                  <div class="lie-votes-meta">${count} stemme${count === 1 ? '' : 'r'} · ${esc((names[i] || []).join(', ') || '–')}</div>
-                </div>
-              </div>
-            </div>
-          `;
-        }).join('')}
-      </div>
-      <div class="lie-reveal-summary">
-        ${fooled > 0
-          ? `🎭 ${esc(lp.currentName)} lurte ${fooled} spiller${fooled === 1 ? '' : 'e'} (+${submitterDelta} poeng til løgneren)`
-          : `👀 Ingen lot seg lure — ${esc(lp.currentName)} fikk ingen bonus.`}
-      </div>
-    </div>`;
-}
-
-// ============ SNAKE ============
-let snakeSnap = null;
-let snakeTimerRAF = null;
-
-let snakeNeedsInit = true;
-
-socket.on('snake:tick', s => {
-  snakeSnap = s;
-  if (state?.phase !== 'snake') return;
-  if (snakeNeedsInit && s.grid) {
-    const canvas = document.getElementById('snakeCanvas');
-    if (canvas) {
-      snake3d.init(canvas, s.grid.w, s.grid.h);
-      snakeNeedsInit = false;
-    }
-  }
-  drawSnake();
-});
-
-function renderSnake() {
-  const showCountdown = snakeSnap && !snakeSnap.started;
-  main.innerHTML = `
-    <div class="snake-screen">
-      <div class="snake-top">
-        <div class="snake-time" id="snakeTime">⏱ ${(snakeSnap?.isInfinite || state.snakeDuration === 0) ? '∞' : Math.ceil((snakeSnap?.timeLeft || 60000) / 1000) + 's'}</div>
-        <div class="snake-title">🐍 Slange-kamp</div>
-        <div class="snake-info">Spis, og unngå kollisjoner!</div>
-      </div>
-      <div class="snake-arena">
-        <div class="snake-canvas-wrap">
-          <canvas id="snakeCanvas"></canvas>
-          ${showCountdown ? `<div class="snake-overlay"><div id="snakeCd" class="snake-countdown">${Math.min(3, Math.max(1, Math.ceil((snakeSnap.countdownLeft || 3000) / 1000)))}</div></div>` : ''}
-        </div>
-        <div class="snake-scores" id="snakeScores"></div>
-      </div>
-    </div>`;
-  const canvas = document.getElementById('snakeCanvas');
-  snakeNeedsInit = true;
-  if (canvas && snakeSnap?.grid) {
-    snake3d.init(canvas, snakeSnap.grid.w, snakeSnap.grid.h);
-    snake3d.update(snakeSnap);
-    snakeNeedsInit = false;
-  }
-  snakeAnimateTimer();
-}
-
-function drawSnake() {
-  if (!snakeSnap) return;
-  snake3d.update(snakeSnap);
-  snake3d.render();
-  updateSnakeScores();
-}
-
-function updateSnakeScores() {
-  const el = document.getElementById('snakeScores');
-  if (!el || !snakeSnap) return;
-  const sorted = [...snakeSnap.snakes].sort((a, b) => b.score - a.score);
-  el.innerHTML = sorted.map((s, i) => `
-    <div class="snake-score-row ${s.alive ? '' : 'dead'}" style="border-color:${s.color}">
-      <div class="snake-score-rank">${i + 1}</div>
-      <div class="snake-score-name">${s.emoji || '🐍'} ${esc(s.name)}</div>
-      <div class="snake-score-val" style="color:${s.color}">${s.score}</div>
-      ${!s.alive && s.respawnIn > 0 ? `<div class="snake-score-resp">↺ ${Math.ceil(s.respawnIn/1000)}s</div>` : ''}
-    </div>`).join('');
-}
-
-function snakeAnimateTimer() {
-  if (snakeTimerRAF) cancelAnimationFrame(snakeTimerRAF);
-  const el = document.getElementById('snakeTime');
-  const cdEl = document.getElementById('snakeCd');
-  function tick() {
-    if (!snakeSnap || state?.phase !== 'snake') return;
-    if (el) el.textContent = `⏱ ${snakeSnap.isInfinite ? '∞' : Math.max(0, Math.ceil(snakeSnap.timeLeft / 1000)) + 's'}`;
-    if (cdEl && !snakeSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(snakeSnap.countdownLeft / 1000)));
-    // Re-render 3D scene hver frame for jevn animasjon
-    snake3d.render();
-    snakeTimerRAF = requestAnimationFrame(tick);
-  }
-  tick();
-}
-
-function renderSnakeEnd() {
-  snake3d.dispose();
-  const snakes = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
-  const top3 = snakes.slice(0, 3);
-  // Runde-statistikk
-  const longestSnake = snakes.reduce((max, s) => Math.max(max, (s.body || []).length), 0);
-  const totalScore = snakes.reduce((sum, s) => sum + (s.score || 0), 0);
-  main.innerHTML = `
-    <div class="end-screen">
-      <h2>🐍 Slange-resultat 🐍</h2>
-      <div class="podium">
-        ${top3[1] ? `<div class="podium-col p2" style="border-color:${top3[1].color}"><div class="podium-medal">🥈</div><div class="podium-avatar">${top3[1].emoji || '🐍'}</div><div class="podium-name">${esc(top3[1].name)}</div><div class="podium-score">${top3[1].score} p · ${top3[1].body?.length || 0} lang</div></div>` : ''}
-        ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '🐍'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p · ${top3[0].body?.length || 0} lang</div></div>` : ''}
-        ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '🐍'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p · ${top3[2].body?.length || 0} lang</div></div>` : ''}
-      </div>
-      <div class="round-stats">
-        <div class="round-stat"><div class="round-stat-num">${snakes.length}</div><div class="round-stat-label">spillere</div></div>
-        <div class="round-stat"><div class="round-stat-num">${longestSnake}</div><div class="round-stat-label">lengste slange</div></div>
-        <div class="round-stat"><div class="round-stat-num">${totalScore}</div><div class="round-stat-label">poeng delt ut</div></div>
-      </div>
-      <p style="color: var(--ink-2); font-size: 16px; margin-top: 14px">Poeng er lagt til hovedscoren</p>
-    </div>`;
-  for (let i = 0; i < 3; i++) setTimeout(() => window.confetti?.burst(), i * 500);
-  window.sfx?.fanfare();
-}
-
-// ============ BOMBERMAN ============
-let bombSnap = null;
-let bombWallsCache = null;
-let bombTimerRAF = null;
-
-let bombNeedsInit = true;
-
-socket.on('bomb:tick', s => {
-  if (s.walls) bombWallsCache = s.walls;
-  else if (bombWallsCache) s.walls = bombWallsCache;
-  const prev = bombSnap;
-  bombSnap = s;
-  // Lazy init av 3D-scenen når første tick ankommer
-  if (bombNeedsInit && state?.phase === 'bomb' && s.grid) {
-    const canvas = document.getElementById('bombCanvas');
-    if (canvas) {
-      bomb3d.init(canvas, s.grid.w, s.grid.h);
-      bombNeedsInit = false;
-    }
-  }
-  // Detekter døde spillere for kill-cam
-  if (prev && prev.players && s.players) {
-    for (const np of s.players) {
-      const op = prev.players.find(x => x.id === np.id);
-      if (op && op.alive && !np.alive) {
-        bomb3d.triggerKillCam(np.x, np.y, 2500);
-        showKillBanner(np.name, np.emoji);
-        window.sfx?.wrong?.();
-        break;
-      }
-    }
-  }
-});
-
-function showKillBanner(name, emoji) {
-  const old = document.getElementById('killBanner');
-  if (old) old.remove();
+function toast(text){
   const el = document.createElement('div');
-  el.id = 'killBanner';
-  el.className = 'kill-banner';
-  el.innerHTML = `<span class="kill-icon">💀</span> <b>${esc(name)}</b> ble sprengt ${emoji || '💣'}`;
+  el.className = 'toast';
+  el.textContent = text;
   document.body.appendChild(el);
-  requestAnimationFrame(() => el.classList.add('in'));
-  setTimeout(() => {
-    el.classList.remove('in');
-    setTimeout(() => el.remove(), 400);
-  }, 2200);
+  setTimeout(() => el.remove(), 3000);
 }
 
-function renderBomb() {
-  const showCountdown = bombSnap && !bombSnap.started;
-  main.innerHTML = `
-    <div class="snake-screen">
-      <div class="snake-top">
-        <div class="snake-time" id="bombTime">⏱ ${(bombSnap?.isInfinite || state.bombDuration === 0) ? '∞' : Math.ceil((bombSnap?.timeLeft || 90000) / 1000) + 's'}</div>
-        <div class="snake-title">💣 Bomberman</div>
-        <div class="snake-info">Spreng veggene, knus motstanderen</div>
-      </div>
-      <div class="snake-arena">
-        <div class="snake-canvas-wrap">
-          <canvas id="bombCanvas"></canvas>
-          ${showCountdown ? `<div class="snake-overlay"><div id="bombCd" class="snake-countdown">${Math.min(3, Math.max(1, Math.ceil((bombSnap.countdownLeft || 3000) / 1000)))}</div></div>` : ''}
-        </div>
-        <div class="snake-scores" id="bombScores"></div>
-      </div>
-    </div>`;
-  // Init Three.js-scenen (hvis bombSnap har grid) — ellers trigges init av bomb:tick-handleren
-  const canvas = document.getElementById('bombCanvas');
-  bombNeedsInit = true;
-  if (canvas && bombSnap?.grid) {
-    bomb3d.init(canvas, bombSnap.grid.w, bombSnap.grid.h);
-    bomb3d.update(bombSnap);
-    bombNeedsInit = false;
-  }
-  bombAnimateTimer();
+function escapeHtml(s){
+  return String(s||'').replace(/[&<>"']/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;' })[ch]);
 }
 
-function drawBomb() {
-  if (!bombSnap) return;
-  bomb3d.update(bombSnap);
-  bomb3d.render();
-  updateBombScores();
-}
-
-function updateBombScores() {
-  const el = document.getElementById('bombScores');
-  if (!el || !bombSnap) return;
-  const sorted = [...bombSnap.players].sort((a, b) => b.score - a.score);
-  el.innerHTML = sorted.map((s, i) => `
-    <div class="snake-score-row ${s.alive ? '' : 'dead'}" style="border-color:${s.color}">
-      <div class="snake-score-rank">${i + 1}</div>
-      <div class="snake-score-name">${s.emoji || '💣'} ${esc(s.name)}</div>
-      <div class="snake-score-val" style="color:${s.color}">${s.score}</div>
-      ${!s.alive && s.respawnIn > 0 ? `<div class="snake-score-resp">↺ ${Math.ceil(s.respawnIn/1000)}s</div>` : ''}
-      ${s.alive ? `<div class="snake-score-resp">💣×${s.bombsMax} · 🔥${s.range}${s.shield > 0 ? ' · 🛡️' : ''}</div>` : ''}
-    </div>`).join('');
-}
-
-function bombAnimateTimer() {
-  if (bombTimerRAF) cancelAnimationFrame(bombTimerRAF);
-  function tick() {
-    if (!bombSnap || state?.phase !== 'bomb') return;
-    const el = document.getElementById('bombTime');
-    const cdEl = document.getElementById('bombCd');
-    if (el) el.textContent = `⏱ ${bombSnap.isInfinite ? '∞' : Math.max(0, Math.ceil(bombSnap.timeLeft / 1000)) + 's'}`;
-    if (cdEl && !bombSnap.started) cdEl.textContent = Math.min(3, Math.max(1, Math.ceil(bombSnap.countdownLeft / 1000)));
-    // Re-draw for smooth animation av eksplosjoner/pulser
-    drawBomb();
-    bombTimerRAF = requestAnimationFrame(tick);
-  }
-  tick();
-}
-
-// bomb:tick oppdaterer bare snapshot, drawBomb i RAF-loop håndterer rendering
-
-function renderBombEnd() {
-  bomb3d.dispose();
-  const players = bombSnap ? [...bombSnap.players].sort((a, b) => b.score - a.score) : [];
-  const top3 = players.slice(0, 3);
-  // Runde-statistikk: total drepte + total score
-  const totalKills = players.reduce((sum, p) => sum + (p.kills || 0), 0);
-  const totalScore = players.reduce((sum, p) => sum + (p.score || 0), 0);
-  main.innerHTML = `
-    <div class="end-screen">
-      <h2>💣 Bomberman-resultat 💣</h2>
-      <div class="podium">
-        ${top3[1] ? `<div class="podium-col p2" style="border-color:${top3[1].color}"><div class="podium-medal">🥈</div><div class="podium-avatar">${top3[1].emoji || '💣'}</div><div class="podium-name">${esc(top3[1].name)}</div><div class="podium-score">${top3[1].score} p · ${top3[1].kills} kills</div></div>` : ''}
-        ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '💣'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p · ${top3[0].kills} kills</div></div>` : ''}
-        ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '💣'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p · ${top3[2].kills} kills</div></div>` : ''}
-      </div>
-      <div class="round-stats">
-        <div class="round-stat"><div class="round-stat-num">${players.length}</div><div class="round-stat-label">spillere</div></div>
-        <div class="round-stat"><div class="round-stat-num">${totalKills}</div><div class="round-stat-label">drap totalt</div></div>
-        <div class="round-stat"><div class="round-stat-num">${totalScore}</div><div class="round-stat-label">poeng delt ut</div></div>
-      </div>
-      <p style="color: var(--ink-2); font-size: 16px; margin-top: 14px">Poeng lagt til hovedscoren</p>
-    </div>`;
-  for (let i = 0; i < 3; i++) setTimeout(() => window.confetti?.burst(), i * 500);
-  window.sfx?.fanfare();
-}
-
-// ============ END ============
-function renderEnd() {
-  const source = state.teamMode
-    ? state.teams.map(t => ({ name: `${t.emoji} ${t.name}`, score: t.score, color: t.color }))
-    : state.players.map(p => ({ name: p.name, emoji: p.emoji, score: p.score }));
-  const sorted = [...source].sort((a, b) => b.score - a.score);
-  const top3 = sorted.slice(0, 3);
-  // Best stats (players only)
-  const players = state.players.filter(p => (p.totalCorrect || 0) + (p.totalWrong || 0) > 0);
-  const bestStreak = players.reduce((m, p) => (p.bestStreak || 0) > (m?.bestStreak || 0) ? p : m, null);
-  const fastest = players.filter(p => p.fastestMs != null).reduce((m, p) => !m || p.fastestMs < m.fastestMs ? p : m, null);
-  const mostCorrect = players.reduce((m, p) => (p.totalCorrect || 0) > (m?.totalCorrect || 0) ? p : m, null);
-  const mostFirst = players.reduce((m, p) => (p.firstCount || 0) > (m?.firstCount || 0) ? p : m, null);
-
-  main.innerHTML = `
-    <div class="end-screen">
-      <h2>🏆 ${state.teamMode ? 'Vinnerlag' : 'Vinnere'} 🏆</h2>
-      <div class="podium">
-        ${top3[1] ? podium(2, top3[1]) : ''}
-        ${top3[0] ? podium(1, top3[0]) : ''}
-        ${top3[2] ? podium(3, top3[2]) : ''}
-      </div>
-      ${!state.teamMode && players.length ? `
-      <div class="final-stats">
-        <h3>Kveldens heder</h3>
-        <div class="stats-grid">
-          ${mostCorrect ? `<div class="stat-card"><div class="stat-emoji">🎯</div><div class="stat-lbl">Mest riktige svar</div><div class="stat-val">${esc(mostCorrect.name)}</div><div class="stat-sub">${mostCorrect.totalCorrect} riktige</div></div>` : ''}
-          ${bestStreak && (bestStreak.bestStreak || 0) >= 2 ? `<div class="stat-card"><div class="stat-emoji">🔥</div><div class="stat-lbl">Beste streak</div><div class="stat-val">${esc(bestStreak.name)}</div><div class="stat-sub">${bestStreak.bestStreak} på rad</div></div>` : ''}
-          ${fastest ? `<div class="stat-card"><div class="stat-emoji">⚡</div><div class="stat-lbl">Raskest svar</div><div class="stat-val">${esc(fastest.name)}</div><div class="stat-sub">${(fastest.fastestMs/1000).toFixed(2)} sek</div></div>` : ''}
-          ${mostFirst && (mostFirst.firstCount || 0) >= 1 ? `<div class="stat-card"><div class="stat-emoji">🥇</div><div class="stat-lbl">Kjappest på avtrekkeren</div><div class="stat-val">${esc(mostFirst.name)}</div><div class="stat-sub">${mostFirst.firstCount} ${mostFirst.firstCount === 1 ? 'gang' : 'ganger'} først</div></div>` : ''}
-        </div>
-      </div>` : ''}
-      <p style="color: var(--ink-2); font-size: 18px; margin-top: 20px">Takk for i kveld!</p>
-    </div>`;
-  for (let i = 0; i < 5; i++) setTimeout(() => window.confetti?.burst(), i * 700);
-  // Drumroll + applause
-  window.sfx?.drumroll?.();
-  setTimeout(() => window.sfx?.applause(), 1200);
-}
-function podium(rank, p) {
-  const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : '🥉';
-  return `<div class="podium-col p${rank}" ${p.color ? `style="border-color:${p.color}"` : ''}>
-    <div class="podium-medal">${medal}</div>
-    ${p.emoji ? `<div class="podium-avatar">${p.emoji}</div>` : ''}
-    <div class="podium-name">${esc(p.name)}</div>
-    <div class="podium-score">${p.score} p</div>
-  </div>`;
-}
-
-// ============ CONTROLS ============
-function renderControls() {
-  let html = '';
-  if (state.phase === 'lobby') {
-    html = `<button class="btn btn-primary btn-lg cta" onclick="openGameMenu()">🎮 Velg spill</button>`;
-  } else if (state.phase === 'tutorial') {
-    html = `<button class="btn btn-primary" onclick="act('host:skip-tutorial')">Hopp over →</button>
-            <button class="btn btn-ghost btn-sm" onclick="act('host:reset')">Avbryt</button>`;
-  } else if (state.phase === 'question') {
-    html = `
-      ${state.paused
-        ? `<button class="btn btn-primary" onclick="act('host:resume')">▶ Fortsett</button>`
-        : `<button class="btn btn-ghost" onclick="act('host:pause')">⏸ Pause</button>`}
-      <button class="btn btn-ghost" onclick="act('host:reveal')">Avslør nå</button>
-      <button class="btn btn-ghost" onclick="act('host:skip')">⏭ Hopp over</button>`;
-  } else if (state.phase === 'reveal') {
-    html = `<button class="btn btn-primary" onclick="act('host:leaderboard')">📊 Poengtavle</button>
-            <button class="btn btn-ghost" onclick="act('host:next')">Neste →</button>`;
-  } else if (state.phase === 'leaderboard') {
-    html = `<button class="btn btn-primary" onclick="act('host:next')">Neste →</button>`;
-  } else if (state.phase === 'voting') {
-    html = `<button class="btn btn-ghost" onclick="act('host:end-voting')">Avslutt stemming</button>`;
-  } else if (state.phase === 'vote-result') {
-    html = `<button class="btn btn-primary" onclick="act('host:start-voting')">🗳️ Ny runde</button>
-            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'scatter-play') {
-    html = `<button class="btn btn-ghost" onclick="act('host:end-scatter')">Avslutt runde</button>`;
-  } else if (state.phase === 'scatter-review') {
-    html = `<button class="btn btn-primary" onclick="act('host:start-scatter')">📝 Ny runde</button>
-            <button class="btn btn-primary" onclick="act('host:leaderboard')">📊 Poengtavle</button>
-            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'icebreaker') {
-    html = `<button class="btn btn-primary" onclick="act('host:icebreaker')">💬 Neste kort</button>
-            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'wheel') {
-    html = `<button class="btn btn-ghost" onclick="act('host:wheel')">🎡 Snurr igjen</button>
-            <button class="btn btn-primary" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'snake') {
-    html = `<button class="btn btn-ghost" onclick="act('host:end-snake')">Avslutt runde</button>`;
-  } else if (state.phase === 'snake-end') {
-    html = `<button class="btn btn-primary" onclick="act('host:start-snake')">🐍 Ny runde</button>
-            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'bomb') {
-    html = `<button class="btn btn-ghost" onclick="act('host:end-bomb')">Avslutt runde</button>`;
-  } else if (state.phase === 'bomb-end') {
-    html = `<button class="btn btn-primary" onclick="act('host:start-bomb')">💣 Ny runde</button>
-            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'lie-collect') {
-    const lc = state.lieCollect || { submittedIds: [] };
-    const canStart = lc.submittedIds.length >= 2;
-    html = `<button class="btn btn-primary" ${canStart ? '' : 'disabled'} onclick="act('host:start-lie-round')">▶ Start runde</button>
-            <button class="btn btn-ghost" onclick="act('host:reset')">← Lobby</button>`;
-  } else if (state.phase === 'lie-play') {
-    html = `<button class="btn btn-ghost" onclick="act('host:end-lie-vote')">Avslutt stemming</button>
-            <button class="btn btn-ghost btn-sm" onclick="act('host:skip-lie')">⏭ Hopp over</button>`;
-  } else if (state.phase === 'lie-reveal') {
-    html = `<button class="btn btn-primary" onclick="act('host:skip-lie')">Neste spiller →</button>`;
-  } else if (state.phase === 'end') {
-    html = `<button class="btn btn-primary" onclick="act('host:reset')">← Ny runde</button>`;
-  }
-  if (state.phase !== 'lobby' && state.phase !== 'end') {
-    html += `<button class="btn btn-danger btn-sm" onclick="if(confirm('Avslutt spillet?')) act('host:reset')">Avslutt</button>`;
-  }
-  controls.innerHTML = html;
-}
-
-// ============ GAME MENU (modal) ============
-// Leaderboard-modal (persisterte historiske score)
-window.openLeaderboardModal = async () => {
-  document.getElementById('lbModal')?.remove();
-  const m = document.createElement('div');
-  m.id = 'lbModal';
-  m.className = 'game-menu-overlay open';
-  m.innerHTML = `
-    <div class="game-menu" style="max-width:680px" onclick="event.stopPropagation()">
-      <button class="menu-close" onclick="document.getElementById('lbModal').remove()">✕</button>
-      <h2>🏆 Historisk topplist</h2>
-      <p class="menu-sub">Alle spillere som har deltatt — minimum 4 må være med for at score skal telle.</p>
-      <div class="lb-filter">
-        ${[
-          ['all', '🌟 Alle spill'],
-          ['quiz', '🧠 Quiz'],
-          ['lightning', '⚡ Lyn-runde'],
-          ['bomb', '💣 Bomberman'],
-          ['snake', '🐍 Slange'],
-          ['scatter', '📝 Kategori'],
-          ['lie', '🤥 2 sannheter'],
-        ].map(([k, label]) => `<button class="lb-chip ${k === 'all' ? 'active' : ''}" data-g="${k}">${label}</button>`).join('')}
-      </div>
-      <div id="lbList" class="lb-list">Laster…</div>
-    </div>`;
-  m.addEventListener('click', () => m.remove());
-  document.body.appendChild(m);
-  async function loadList(game) {
-    const list = document.getElementById('lbList');
-    list.innerHTML = 'Laster…';
-    try {
-      const r = await fetch('/scores?game=' + encodeURIComponent(game));
-      const j = await r.json();
-      const scores = j.scores || [];
-      if (!scores.length) {
-        list.innerHTML = `<div class="lb-empty">Ingen historikk enda. Spill minst én runde med 4+ spillere for å bli med på listen! 🎮</div>`;
-        return;
-      }
-      list.innerHTML = scores.map((s, i) => `
-        <div class="lb-row ${i < 3 ? 'top' : ''}">
-          <div class="lb-rank">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : (i + 1)}</div>
-          <div class="lb-name">${esc(s.name)}</div>
-          <div class="lb-stats">${s.gamesPlayed} spill · best ${s.bestScore} p</div>
-          <div class="lb-score">${s.totalScore} p</div>
-        </div>`).join('');
-    } catch (e) {
-      list.innerHTML = `<div class="lb-empty">Kunne ikke hente score: ${esc(String(e?.message || e))}</div>`;
-    }
-  }
-  m.querySelectorAll('.lb-chip').forEach(b => {
-    b.addEventListener('click', () => {
-      m.querySelectorAll('.lb-chip').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      loadList(b.dataset.g);
-    });
-  });
-  loadList('all');
-};
-
-window.openGameMenu = () => {
-  if (!state || state.players.length === 0) {
-    showToast('Venter på spillere — be dem skanne QR-koden først 📱');
-    return;
-  }
-  document.getElementById('gameMenu')?.remove();
-  const menu = document.createElement('div');
-  menu.id = 'gameMenu';
-  menu.className = 'game-menu-overlay';
-  menu.innerHTML = `
-    <div class="game-menu" onclick="event.stopPropagation()">
-      <button class="menu-close" onclick="closeGameMenu()">✕</button>
-      <h2>Velg spill</h2>
-      <p class="menu-sub">${state.players.length} ${state.players.length === 1 ? 'spiller' : 'spillere'} klar${state.players.length > 1 ? 'e' : ''}${state.teamMode ? ' · ' + state.teams.length + ' lag' : ''}</p>
-
-      <div class="menu-section">
-        <div class="menu-section-title">🧠 Quiz</div>
-        <div class="menu-grid">
-          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','generelt')"><div class="emoji">🌍</div><b>Generelt</b><span>Allmennkunnskap</span></div>
-          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','norge')"><div class="emoji">🇳🇴</div><b>Norge</b><span>Historie og geografi</span></div>
-          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','dnb')"><div class="emoji">🏦</div><b>DNB & Finans</b><span>Bank og økonomi</span></div>
-          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','popkultur')"><div class="emoji">🎬</div><b>Pop-kultur</b><span>Film, musikk, serier</span></div>
-          <div class="menu-card quiz" onclick="pickGame('host:start-quiz','emoji')"><div class="emoji">🎭</div><b>Emoji-gåter</b><span>Gjett film fra emojier</span></div>
-        </div>
-      </div>
-
-      <div class="menu-section">
-        <div class="menu-section-title">⚡ Lyn-runde <span style="color:var(--ink-2); font-weight:400">— <span class="lightning-head-dur">${(state.lightningDuration || 5000) / 1000} sek</span>, dobbel poeng</span></div>
-        <div class="menu-grid">
-          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','generelt')"><div class="emoji">🌍⚡</div><b>Generelt</b><span>Rask & farlig</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
-          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','norge')"><div class="emoji">🇳🇴⚡</div><b>Norge</b><span>Ingen tid å tenke</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
-          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','popkultur')"><div class="emoji">🎬⚡</div><b>Pop-kultur</b><span>Er du kjapp nok?</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
-          <div class="menu-card lightning" onclick="pickGame('host:start-lightning','emoji')"><div class="emoji">🎭⚡</div><b>Emoji</b><span>Instinkt-gåter</span>${durChip('lightning', state.lightningDuration || 5000)}</div>
-        </div>
-      </div>
-
-      <div class="menu-section">
-        <div class="menu-section-title">🎉 Sosiale spill</div>
-        <div class="menu-grid">
-          <div class="menu-card social" onclick="pickGame('host:start-voting')"><div class="emoji">🗳️</div><b>Hvem er mest sannsynlig</b><span>Anonyme avstemninger</span></div>
-          <div class="menu-card social" onclick="pickGame('host:start-lie')"><div class="emoji">🤥</div><b>2 sannheter, 1 løgn</b><span>Stem fram løgneren</span>${durChip('lie', state.lieVoteDuration || 30000)}</div>
-          <div class="menu-card social" onclick="pickGame('host:start-scatter')"><div class="emoji">📝</div><b>Kategori-kamp</b><span>Én bokstav, fem kategorier</span>${durChip('scatter', state.scatterDuration || 60000)}</div>
-          <div class="menu-card social" onclick="pickGame('host:icebreaker')"><div class="emoji">💬</div><b>Bli-kjent-kort</b><span>Trekk et kort, del et svar</span></div>
-          <div class="menu-card social" onclick="pickGame('host:wheel')"><div class="emoji">🎡</div><b>Lykkehjulet</b><span>Trekk en tilfeldig person</span></div>
-          <div class="menu-card social" onclick="pickGame('host:start-snake')"><div class="emoji">🐍</div><b>Slange-kamp</b><span>Alle mot alle</span>${durChip('snake', state.snakeDuration || 60000)}</div>
-          <div class="menu-card social" onclick="pickGame('host:start-bomb')"><div class="emoji">💣</div><b>Bomberman</b><span>Spreng motstanderen</span>${durChip('bomb', state.bombDuration || 90000)}</div>
-        </div>
-      </div>
-    </div>`;
-  menu.addEventListener('click', () => closeGameMenu());
-  document.body.appendChild(menu);
-  requestAnimationFrame(() => menu.classList.add('open'));
-};
-
-window.closeGameMenu = () => {
-  const m = document.getElementById('gameMenu');
-  if (!m) return;
-  m.classList.remove('open');
-  setTimeout(() => m.remove(), 200);
-};
-
-window.pickGame = (ev, arg) => {
-  closeGameMenu();
-  socket.emit(ev, arg);
-};
-
-// Varighets-cycling på menu-cards
-const DUR_OPTS = {
-  snake:    { key: 'snakeDuration',     opts: [30000, 45000, 60000, 90000, 120000, 180000, 240000, 0] },
-  bomb:     { key: 'bombDuration',      opts: [30000, 60000, 90000, 120000, 180000, 240000, 300000, 0] },
-  scatter:  { key: 'scatterDuration',   opts: [30000, 45000, 60000, 90000, 120000, 180000] },
-  lie:      { key: 'lieVoteDuration',   opts: [15000, 20000, 30000, 45000, 60000, 90000] },
-  lightning:{ key: 'lightningDuration', opts: [3000, 5000, 7000, 10000, 15000] },
-};
-function fmtDur(ms) { return ms === 0 ? '∞' : (ms / 1000) + 's'; }
-window.cycleDur = (ev, game) => {
-  ev.stopPropagation();
-  const cfg = DUR_OPTS[game];
-  if (!cfg) return;
-  const cur = state[cfg.key] || 0;
-  const idx = cfg.opts.indexOf(cur);
-  const next = cfg.opts[(idx + 1) % cfg.opts.length];
-  socket.emit('host:config', { [cfg.key]: next });
-  // Oppdater alle synlige chips for dette spillet optimistisk
-  document.querySelectorAll('.dur-chip[data-dur="' + game + '"]').forEach(el => {
-    el.textContent = '⏱ ' + fmtDur(next);
-  });
-  // Oppdater lightning-section-header også
-  if (game === 'lightning') {
-    const hdr = document.querySelector('.lightning-head-dur');
-    if (hdr) hdr.textContent = fmtDur(next);
-  }
-};
-function durChip(game, cur) {
-  return `<span class="dur-chip" data-dur="${game}" onclick="cycleDur(event, '${game}')" title="Klikk for å endre varighet">⏱ ${fmtDur(cur)}</span>`;
-}
-
-// ============ KEYBOARD SHORTCUTS ============
-window.addEventListener('keydown', (e) => {
-  // Ignore when typing in inputs
-  if (e.target.matches('input, textarea, select')) return;
-  if (e.key === '?') { e.preventDefault(); openHelpModal(); return; }
-  if (e.key === 'Escape') { closeGameMenu(); closeHelpModal(); return; }
-  if (!state) return;
-  if (state.phase === 'question') {
-    if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:reveal'); return; }
-    if (e.key.toLowerCase() === 'r') { socket.emit('host:reveal'); return; }
-    if (e.key.toLowerCase() === 'p') { socket.emit(state.paused ? 'host:resume' : 'host:pause'); return; }
-    if (e.key.toLowerCase() === 's') { socket.emit('host:skip'); return; }
-  }
-  if (state.phase === 'reveal') {
-    if (e.key === ' ' || e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); socket.emit('host:next'); return; }
-    if (e.key.toLowerCase() === 'l') { socket.emit('host:leaderboard'); return; }
-  }
-  if (state.phase === 'leaderboard') {
-    if (e.key === ' ' || e.code === 'Space' || e.key === 'Enter') { e.preventDefault(); socket.emit('host:next'); return; }
-  }
-  if (state.phase === 'voting') {
-    if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:end-voting'); return; }
-  }
-  if (state.phase === 'icebreaker') {
-    if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:icebreaker'); return; }
-  }
-  if (state.phase === 'wheel') {
-    if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:wheel'); return; }
-  }
-  if (state.phase === 'tutorial') {
-    if (e.key === 'Enter' || e.key === ' ' || e.code === 'Space') { e.preventDefault(); socket.emit('host:skip-tutorial'); return; }
-  }
-  if (state.phase === 'lobby') {
-    if (e.key === ' ' || e.code === 'Space') { e.preventDefault(); openGameMenu(); return; }
-  }
-});
-
-function openHelpModal() {
-  document.getElementById('helpModal')?.remove();
-  const m = document.createElement('div');
-  m.id = 'helpModal';
-  m.className = 'game-menu-overlay';
-  m.innerHTML = `<div class="game-menu" style="max-width:560px" onclick="event.stopPropagation()">
-    <button class="menu-close" onclick="closeHelpModal()">✕</button>
-    <h2>⌨️ Tastatursnarveier</h2>
-    <p class="menu-sub">For vert på storskjerm</p>
-    <div class="help-list">
-      <div><kbd>Space</kbd> <span>Avslør / neste / snurr / start menu</span></div>
-      <div><kbd>R</kbd> <span>Avslør svar (under quiz)</span></div>
-      <div><kbd>P</kbd> <span>Pause / fortsett</span></div>
-      <div><kbd>S</kbd> <span>Hopp over spørsmål</span></div>
-      <div><kbd>L</kbd> <span>Vis poengtavle etter reveal</span></div>
-      <div><kbd>?</kbd> <span>Vis denne hjelpen</span></div>
-      <div><kbd>Esc</kbd> <span>Lukk meny/hjelp</span></div>
-    </div>
-  </div>`;
-  m.addEventListener('click', closeHelpModal);
-  document.body.appendChild(m);
-  requestAnimationFrame(() => m.classList.add('open'));
-}
-function closeHelpModal() {
-  const m = document.getElementById('helpModal');
-  if (!m) return;
-  m.classList.remove('open');
-  setTimeout(() => m.remove(), 200);
-}
-window.openHelpModal = openHelpModal;
-window.closeHelpModal = closeHelpModal;
-
-window.act = (ev, arg) => socket.emit(ev, arg);
-window.startIfReady = (ev, arg) => {
-  if (!state || state.players.length === 0) {
-    showToast('Venter på spillere — be dem skanne QR-koden først 📱');
-    return;
-  }
-  socket.emit(ev, arg);
-};
-
-function showToast(msg) {
-  let el = document.getElementById('toast');
-  if (!el) {
-    el = document.createElement('div');
-    el.id = 'toast';
-    el.className = 'toast';
-    document.body.appendChild(el);
-  }
-  el.textContent = msg;
-  el.classList.add('show');
-  clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => el.classList.remove('show'), 2800);
-}
-
-function animateTimer(startedAt, limit) {
-  const bar = document.getElementById('tbar');
-  if (!bar) return;
-  let lastTickSecond = -1;
-  function tick() {
-    const elapsed = Date.now() - startedAt;
-    const pct = Math.max(0, 1 - elapsed / limit);
-    bar.style.width = (pct * 100).toFixed(1) + '%';
-    const secondsLeft = Math.ceil((limit - elapsed) / 1000);
-    if (secondsLeft <= 3 && secondsLeft > 0) bar.classList.add('urgent');
-    else bar.classList.remove('urgent');
-    if (secondsLeft <= 5 && secondsLeft > 0 && secondsLeft !== lastTickSecond && !state.paused) {
-      lastTickSecond = secondsLeft;
-      window.sfx?.countdown();
-    }
-    if (pct > 0 && (state.phase === 'question' || state.phase === 'scatter-play')) {
-      timerRAF = requestAnimationFrame(tick);
-    }
-  }
-  tick();
-}
-
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
+// Expose for debugging
+window.state = () => state;
