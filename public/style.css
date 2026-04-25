@@ -1247,3 +1247,17 @@ body::after {
 }
 /* Hint-tekst skjules under spill */
 .player-state.snake-player .snake-hint { display: none; }
+
+/* ===== Punch + detonate ekstra-knapper (vises når powerup er aktiv) ===== */
+.bomb-left-col { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.bomb-btn-extra {
+  width: 72px; height: 72px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #5de0ae, #00a877 70%, #00583f 100%);
+  color: #fff; font-size: 32px; border: 2px solid #5de0ae;
+  box-shadow: 0 0 18px rgba(0,168,119,.4);
+  cursor: pointer; touch-action: none; -webkit-user-select: none; user-select: none;
+  display: none; align-items: center; justify-content: center;
+  font-family: inherit; transition: transform .08s;
+}
+.bomb-btn-extra.visible { display: flex; }
+.bomb-btn-extra.pressed, .bomb-btn-extra:active { transform: scale(.9); }

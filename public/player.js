@@ -436,7 +436,7 @@ function renderBombPlayer() {
       <div class="snake-player-top">
         <div class="snake-player-info" style="color:${color}">
           ${my?.emoji || '💣'} <b>${my ? my.score + ' p' : '0 p'}</b>
-          ${my ? `<span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>` : ''}
+          ${my ? `<span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.speed > 1 ? ' · ⚡'+my.speed : ''}${my.kick ? ' · 👟' : ''}${my.punch ? ' · 🥊' : ''}${my.remote ? ' · 📡' : ''}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>` : ''}
           ${my && !my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}
         </div>
         ${bombSnap && !bombSnap.started ? `<div class="snake-player-cd">Gjør deg klar…</div>` : ''}
@@ -449,7 +449,11 @@ function renderBombPlayer() {
         </div>
       </div>
       <div class="bomb-controls">
-        <button id="bombDrop" class="bomb-btn-big">💣</button>
+        <div class="bomb-left-col">
+          <button id="bombPunch" class="bomb-btn-extra" title="Kast bombe (krever 🥊)">🥊</button>
+          <button id="bombDetonate" class="bomb-btn-extra" title="Detoner (krever 📡)">💥</button>
+          <button id="bombDrop" class="bomb-btn-big">💣</button>
+        </div>
         <div id="bombJoystick" class="bomb-joystick" aria-label="Styrepinne">
           <div class="joystick-ring"></div>
           <div id="bombJoystickThumb" class="joystick-thumb"></div>
@@ -478,6 +482,28 @@ function renderBombPlayer() {
     setTimeout(() => bombBtn.classList.remove('pressed'), 120);
   });
   bombBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Punch-knapp (kaster bombe foran deg)
+  const punchBtn = document.getElementById('bombPunch');
+  punchBtn?.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    socket.emit('player:bomb-punch');
+    buzz(25);
+    punchBtn.classList.add('pressed');
+    setTimeout(() => punchBtn.classList.remove('pressed'), 120);
+  });
+  punchBtn?.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Detonate-knapp (fjerndetonering)
+  const detonateBtn = document.getElementById('bombDetonate');
+  detonateBtn?.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    socket.emit('player:bomb-detonate');
+    buzz(50);
+    detonateBtn.classList.add('pressed');
+    setTimeout(() => detonateBtn.classList.remove('pressed'), 120);
+  });
+  detonateBtn?.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Joystick
   const joystick = document.getElementById('bombJoystick');
@@ -637,10 +663,15 @@ function updateBombPlayer() {
   if (info && my) {
     info.innerHTML = `
       ${my.emoji || '💣'} <b>${my.score} p</b>
-      <span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>
+      <span class="bomb-stats"> · 💣×${my.bombsMax} · 🔥${my.range}${my.speed > 1 ? ' · ⚡'+my.speed : ''}${my.kick ? ' · 👟' : ''}${my.punch ? ' · 🥊' : ''}${my.remote ? ' · 📡' : ''}${my.shield > 0 ? ' · 🛡️' : ''}${my.kills ? ' · ☠️' + my.kills : ''}</span>
       ${!my.alive && my.respawnIn > 0 ? `<span class="snake-dead"> · 💀 respawn i ${Math.ceil(my.respawnIn/1000)}s</span>` : ''}`;
     info.style.color = my.color;
   }
+  // Vis/skjul ekstra-knapper basert på aktuelle powerups
+  const pBtn = document.getElementById('bombPunch');
+  const dBtn = document.getElementById('bombDetonate');
+  if (pBtn) pBtn.classList.toggle('visible', !!my?.punch);
+  if (dBtn) dBtn.classList.toggle('visible', !!my?.remote);
   drawBombMini();
 }
 

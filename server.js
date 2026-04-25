@@ -1093,6 +1093,12 @@ function startBomberman() {
       nextDir: null, alive: true, deadAt: 0,
       bombsMax: 1, bombsPlaced: 0, range: 2,
       shield: 0,
+      speed: 1,            // 1 = normal, 2 = rask, 3 = veldig rask
+      kick: false,          // Kan sparke bomber
+      punch: false,         // Kan kaste bomber
+      remote: false,        // Manuell detonasjon
+      facing: 'down',       // Retning for punch
+      moveAccum: 0,         // For sub-tick-hastighet
       dirs: { up: false, down: false, left: false, right: false },
       score: 0, kills: 0,
     });
@@ -1135,7 +1141,7 @@ function bombermanTickInner() {
   for (const bomb of toDetonate) detonateBomb(bomb);
   b.bombs = b.bombs.filter(bb => bb.explodesAt > now);
 
-  // Move players (støtter diagonalt via dirs-objekt med flere knapper samtidig)
+  // Move players (støtter diagonalt, hastighet og kick-mekanikk)
   const explCells = new Set(b.explosions.map(e => e.x + ',' + e.y));
   for (const [sid, p] of b.players) {
     if (!p.alive) continue;
@@ -1150,7 +1156,13 @@ function bombermanTickInner() {
       else if (p.nextDir === 'left') dx = -1;
       else if (p.nextDir === 'right') dx = 1;
     }
+    // Oppdater facing (siste akse-bevegelse) for punch
+    if (dx > 0) p.facing = 'right';
+    else if (dx < 0) p.facing = 'left';
+    else if (dy > 0) p.facing = 'down';
+    else if (dy < 0) p.facing = 'up';
     if (dx === 0 && dy === 0) continue;
+
     const canPass = (tx, ty) => {
       if (tx < 0 || tx >= W || ty < 0 || ty >= BOMB_GRID.h) return false;
       if (grid[idx(tx, ty)] !== 0) return false;
@@ -1165,26 +1177,65 @@ function bombermanTickInner() {
         else if (pu.type === 'range') p.range = Math.min(10, p.range + 1);
         else if (pu.type === 'shield') p.shield = (p.shield || 0) + 1;
         else if (pu.type === 'gold') p.score += 50;
+        else if (pu.type === 'speed') p.speed = Math.min(3, p.speed + 1);
+        else if (pu.type === 'kick') p.kick = true;
+        else if (pu.type === 'punch') p.punch = true;
+        else if (pu.type === 'remote') p.remote = true;
         b.powerups.splice(puIdx, 1);
       }
     };
     const tryMoveTo = (tx, ty) => {
-      if (!canPass(tx, ty)) return false;
+      if (!canPass(tx, ty)) {
+        // KICK: hvis det er en bombe der og spilleren har kick, start sliding
+        if (p.kick) {
+          const bombHere = b.bombs.find(bb => bb.x === tx && bb.y === ty);
+          if (bombHere && bombHere.vx === 0 && bombHere.vy === 0) {
+            // Regn ut spark-retning fra spillerens posisjon
+            const kdx = Math.sign(tx - p.x);
+            const kdy = Math.sign(ty - p.y);
+            bombHere.vx = kdx;
+            bombHere.vy = kdy;
+          }
+        }
+        return false;
+      }
       p.x = tx; p.y = ty;
       pickupIfAny(tx, ty);
       return true;
     };
-    let moved = false;
-    if (dx !== 0 && dy !== 0) {
-      // Diagonal tillatt KUN hvis begge sidesteg er frie (ingen corner-cut)
-      if (canPass(p.x + dx, p.y) && canPass(p.x, p.y + dy)) {
-        moved = tryMoveTo(p.x + dx, p.y + dy);
+
+    // Antall celler å flytte basert på hastighet (1 = normal, 2/3 = raskere)
+    const steps = Math.max(1, Math.min(3, p.speed || 1));
+    for (let s = 0; s < steps; s++) {
+      let moved = false;
+      if (dx !== 0 && dy !== 0) {
+        if (canPass(p.x + dx, p.y) && canPass(p.x, p.y + dy)) {
+          moved = tryMoveTo(p.x + dx, p.y + dy);
+        }
       }
+      if (!moved && dx !== 0) moved = tryMoveTo(p.x + dx, p.y);
+      if (!moved && dy !== 0) moved = tryMoveTo(p.x, p.y + dy);
+      if (!moved) break; // Stoppet av vegg/bombe — hopp ut
+      // Sjekk eksplosjon etter hver celle-bevegelse
+      if (explCells.has(p.x + ',' + p.y)) { killPlayer(p, null); break; }
     }
-    if (!moved && dx !== 0) moved = tryMoveTo(p.x + dx, p.y);
-    if (!moved && dy !== 0) moved = tryMoveTo(p.x, p.y + dy);
-    // Sjekk eksplosjon under spiller
-    if (explCells.has(p.x + ',' + p.y)) killPlayer(p, null);
+  }
+
+  // === Sliding bomber (kicked) ===
+  for (const bomb of b.bombs) {
+    if (!bomb.vx && !bomb.vy) continue;
+    const tx = bomb.x + bomb.vx;
+    const ty = bomb.y + bomb.vy;
+    const cellOk = tx > 0 && tx < W - 1 && ty > 0 && ty < BOMB_GRID.h - 1
+      && grid[idx(tx, ty)] === 0
+      && !b.bombs.some(bb => bb !== bomb && bb.x === tx && bb.y === ty)
+      && ![...b.players.values()].some(pl => pl.alive && pl.x === tx && pl.y === ty);
+    if (cellOk) {
+      bomb.x = tx; bomb.y = ty;
+    } else {
+      // Stopp
+      bomb.vx = 0; bomb.vy = 0;
+    }
   }
 
   // Broadcast snapshot (walls komprimeres av perMessageDeflate)
@@ -1220,14 +1271,18 @@ function detonateBomb(bomb) {
       if (cell === 2) {
         grid[idx(nx, ny)] = 0;
         b.wallsVersion = (b.wallsVersion || 0) + 1;
-        // 45% sjanse for powerup, vektet fordeling
-        if (Math.random() < 0.45) {
+        // 50% sjanse for powerup, vektet fordeling
+        if (Math.random() < 0.5) {
           const r = Math.random();
           let type;
-          if (r < 0.35) type = 'bomb';        // 35%
-          else if (r < 0.70) type = 'range';  // 35%
-          else if (r < 0.88) type = 'shield'; // 18%
-          else type = 'gold';                  // 12%
+          if (r < 0.22) type = 'bomb';        // 22% — +1 maks bomber
+          else if (r < 0.44) type = 'range';  // 22% — +1 rekkevidde
+          else if (r < 0.55) type = 'speed';  // 11% — raskere bevegelse
+          else if (r < 0.66) type = 'kick';   // 11% — spark bomber
+          else if (r < 0.76) type = 'punch';  // 10% — kast bomber
+          else if (r < 0.85) type = 'shield'; //  9% — 1 treff-beskyttelse
+          else if (r < 0.93) type = 'remote'; //  8% — manuell detonasjon
+          else type = 'gold';                  // 7% — +50 poeng
           b.powerups.push({ x: nx, y: ny, type });
         }
         break; // soft wall stopper
@@ -1289,6 +1344,8 @@ function bombSnapshot(includeWalls = false) {
       id: p.id, name: p.name, emoji: p.emoji, color: p.color,
       x: p.x, y: p.y, alive: p.alive, score: p.score, kills: p.kills,
       bombsMax: p.bombsMax, range: p.range, shield: p.shield || 0,
+      speed: p.speed || 1, kick: !!p.kick, punch: !!p.punch, remote: !!p.remote,
+      facing: p.facing || 'down',
       respawnIn: !p.alive && p.deadAt ? Math.max(0, BOMB_RESPAWN_MS - (now - p.deadAt)) : 0,
     })),
     bombs: b.bombs.map(bb => ({ x: bb.x, y: bb.y, ownerId: bb.ownerId, tLeft: Math.max(0, bb.explodesAt - now) })),
@@ -1651,11 +1708,54 @@ io.on('connection', (socket) => {
     game.bomb.bombs.push({
       id: ++game.bomb.bombCounter,
       x: p.x, y: p.y,
+      vx: 0, vy: 0,                     // For kicking
       ownerId: p.id,
-      explodesAt: Date.now() + BOMB_FUSE,
+      explodesAt: p.remote ? Number.MAX_SAFE_INTEGER : Date.now() + BOMB_FUSE,
+      remote: !!p.remote,
       range: p.range,
     });
     p.bombsPlaced += 1;
+  });
+
+  // Punch — kast bomben foran deg (krever punch-powerup)
+  socket.on('player:bomb-punch', () => {
+    if (game.phase !== 'bomb' || !game.bomb) return;
+    const p = game.bomb.players.get(socket.id);
+    if (!p || !p.alive || !p.punch) return;
+    // Finn bombe i retningen spilleren ser
+    const DIR = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+    const [fdx, fdy] = DIR[p.facing] || DIR.down;
+    const bombInFront = game.bomb.bombs.find(bb =>
+      bb.x === p.x + fdx && bb.y === p.y + fdy
+    );
+    if (!bombInFront) return;
+    // Kast bomben 3 ruter i den retningen — finn landing-celle
+    const W = game.bomb.map.W;
+    const H = BOMB_GRID.h;
+    let landX = bombInFront.x, landY = bombInFront.y;
+    for (let i = 1; i <= 3; i++) {
+      const tx = bombInFront.x + fdx * i;
+      const ty = bombInFront.y + fdy * i;
+      if (tx <= 0 || tx >= W - 1 || ty <= 0 || ty >= H - 1) break;
+      if (game.bomb.map.grid[game.bomb.map.idx(tx, ty)] !== 0) break;
+      if (game.bomb.bombs.some(bb => bb !== bombInFront && bb.x === tx && bb.y === ty)) break;
+      landX = tx; landY = ty;
+    }
+    bombInFront.x = landX;
+    bombInFront.y = landY;
+    bombInFront.vx = 0;
+    bombInFront.vy = 0;
+  });
+
+  // Remote-detonere alle bomber spilleren har lagt ut
+  socket.on('player:bomb-detonate', () => {
+    if (game.phase !== 'bomb' || !game.bomb) return;
+    const p = game.bomb.players.get(socket.id);
+    if (!p || !p.alive || !p.remote) return;
+    const now = Date.now();
+    for (const bb of game.bomb.bombs) {
+      if (bb.ownerId === p.id && bb.remote) bb.explodesAt = now;
+    }
   });
 
   socket.on('host:wheel', () => {

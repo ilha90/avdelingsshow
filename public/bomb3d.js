@@ -33,7 +33,10 @@ const MAT = {
   belt:   new THREE.MeshStandardMaterial({ color: 0x3a2a1a, roughness: 0.7, metalness: 0.1 }),
 };
 
-const PU_COLOR = { bomb: 0xe54b4b, range: 0xffbe0b, shield: 0x3a86ff, gold: 0xd4af37 };
+const PU_COLOR = {
+  bomb:   0xe54b4b, range: 0xffbe0b, shield: 0x3a86ff, gold: 0xd4af37,
+  speed:  0xa855f7, kick: 0x3ae49b, punch: 0xff6b9e, remote: 0x6bcfff,
+};
 
 export function init(canvas, gW, gH, options = {}) {
   gridW = gW; gridH = gH;
