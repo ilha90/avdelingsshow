@@ -969,7 +969,7 @@ function endSnake() {
 // ---- Bomberman ----
 const BOMB_GRID = { w: 25, h: 15 };
 const BOMB_DURATION_DEFAULT = 90000;
-const BOMB_TICK = 180;
+const BOMB_TICK = 220;
 const BOMB_FUSE = 2500;
 const BOMB_EXPLOSION_TTL = 700;
 const BOMB_RESPAWN_MS = 5000;
@@ -1166,7 +1166,8 @@ function bombermanTickInner() {
     const canPass = (tx, ty) => {
       if (tx < 0 || tx >= W || ty < 0 || ty >= BOMB_GRID.h) return false;
       if (grid[idx(tx, ty)] !== 0) return false;
-      if (b.bombs.some(bb => bb.x === tx && bb.y === ty)) return false;
+      // Bomber blokkerer (unntatt den du bærer)
+      if (b.bombs.some(bb => bb.x === tx && bb.y === ty && !bb.held)) return false;
       return true;
     };
     const pickupIfAny = (tx, ty) => {
@@ -1177,7 +1178,7 @@ function bombermanTickInner() {
         else if (pu.type === 'range') p.range = Math.min(10, p.range + 1);
         else if (pu.type === 'shield') p.shield = (p.shield || 0) + 1;
         else if (pu.type === 'gold') p.score += 50;
-        else if (pu.type === 'speed') p.speed = Math.min(3, p.speed + 1);
+        else if (pu.type === 'speed') p.speed = Math.min(1.75, (p.speed || 1) + 0.25);
         else if (pu.type === 'kick') p.kick = true;
         else if (pu.type === 'punch') p.punch = true;
         else if (pu.type === 'remote') p.remote = true;
@@ -1186,11 +1187,10 @@ function bombermanTickInner() {
     };
     const tryMoveTo = (tx, ty) => {
       if (!canPass(tx, ty)) {
-        // KICK: hvis det er en bombe der og spilleren har kick, start sliding
+        // KICK: hvis det er en bombe der (ikke båret) og spilleren har kick, start sliding
         if (p.kick) {
-          const bombHere = b.bombs.find(bb => bb.x === tx && bb.y === ty);
+          const bombHere = b.bombs.find(bb => bb.x === tx && bb.y === ty && !bb.held);
           if (bombHere && bombHere.vx === 0 && bombHere.vy === 0) {
-            // Regn ut spark-retning fra spillerens posisjon
             const kdx = Math.sign(tx - p.x);
             const kdy = Math.sign(ty - p.y);
             bombHere.vx = kdx;
@@ -1204,8 +1204,12 @@ function bombermanTickInner() {
       return true;
     };
 
-    // Antall celler å flytte basert på hastighet (1 = normal, 2/3 = raskere)
-    const steps = Math.max(1, Math.min(3, p.speed || 1));
+    // Akkumulator-basert hastighet (jevnere enn Math.floor av speed)
+    // speed=1 → 1 cell/tick. speed=1.5 → 1 cell 50% av tiden, 2 celler 50%.
+    p.moveAccum = (p.moveAccum || 0) + (p.speed || 1);
+    let steps = Math.floor(p.moveAccum);
+    p.moveAccum -= steps;
+    steps = Math.min(2, Math.max(1, steps));
     for (let s = 0; s < steps; s++) {
       let moved = false;
       if (dx !== 0 && dy !== 0) {
@@ -1215,9 +1219,16 @@ function bombermanTickInner() {
       }
       if (!moved && dx !== 0) moved = tryMoveTo(p.x + dx, p.y);
       if (!moved && dy !== 0) moved = tryMoveTo(p.x, p.y + dy);
-      if (!moved) break; // Stoppet av vegg/bombe — hopp ut
-      // Sjekk eksplosjon etter hver celle-bevegelse
+      if (!moved) break;
       if (explCells.has(p.x + ',' + p.y)) { killPlayer(p, null); break; }
+    }
+  }
+
+  // === Følg-bomber: båret bombe følger bæreren ===
+  for (const p of b.players.values()) {
+    if (p.holdingBomb != null) {
+      const bomb = b.bombs.find(bb => bb.id === p.holdingBomb);
+      if (bomb) { bomb.x = p.x; bomb.y = p.y; }
     }
   }
 

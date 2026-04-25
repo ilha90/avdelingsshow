@@ -1263,3 +1263,14 @@ body::after {
 }
 .bomb-btn-extra.visible { display: flex; }
 .bomb-btn-extra.pressed, .bomb-btn-extra:active { transform: scale(.9); }
+
+/* ===== Skjul snake-piltaster på PC/laptop (finger/mus istedenfor touch) ===== */
+@media (hover: hover) and (pointer: fine) {
+  .snake-pad {
+    transform: scale(0.5);
+    transform-origin: bottom right;
+    opacity: 0.4;
+    transition: opacity .2s;
+  }
+  .snake-pad:hover { opacity: 1; }
+}

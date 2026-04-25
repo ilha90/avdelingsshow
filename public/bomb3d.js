@@ -1,9 +1,29 @@
 // bomb3d.js — Three.js renderer for Bomberman
 // Støtter både host (overview) og spiller (follow-camera) perspektiv
 import * as THREE from 'three';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// Bloom-post-processing importeres dynamisk så det ikke kan krasje init hvis addons-CDN svikter
+let EffectComposer = null, RenderPass = null, UnrealBloomPass = null;
+let bloomLoaded = false;
+async function loadBloomModules() {
+  if (bloomLoaded) return;
+  bloomLoaded = true;
+  try {
+    const [ec, rp, ubp] = await Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+    ]);
+    EffectComposer = ec.EffectComposer;
+    RenderPass = rp.RenderPass;
+    UnrealBloomPass = ubp.UnrealBloomPass;
+    console.log('[bomb3d] bloom modules loaded');
+  } catch (e) {
+    console.warn('[bomb3d] bloom modules unavailable, fortsetter uten:', e?.message || e);
+  }
+}
+// Start lasting i bakgrunnen (non-blocking)
+loadBloomModules();
 
 let renderer = null, scene = null, camera = null, composer = null;
 let wallMeshes = [], crateMeshes = new Map();
@@ -94,16 +114,25 @@ export function init(canvas, gW, gH, options = {}) {
   scene.add(floorGroup);
 
   // === Post-processing: bloom for glødende ting (explosions, powerups, LED) ===
-  composer = new EffectComposer(renderer);
-  composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(
-    new THREE.Vector2(canvas.clientWidth, canvas.clientHeight),
-    0.7,   // strength
-    0.55,  // radius
-    0.4    // threshold
-  );
-  composer.addPass(bloom);
+  // Initialiseres kun hvis modulene er lastet (fallback til vanlig render ellers)
+  composer = null;
+  if (EffectComposer && RenderPass && UnrealBloomPass) {
+    try {
+      composer = new EffectComposer(renderer);
+      composer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      composer.addPass(new RenderPass(scene, camera));
+      const bloom = new UnrealBloomPass(
+        new THREE.Vector2(canvas.clientWidth, canvas.clientHeight),
+        0.7,   // strength
+        0.55,  // radius
+        0.4    // threshold
+      );
+      composer.addPass(bloom);
+    } catch (e) {
+      console.warn('[bomb3d] kunne ikke sette opp bloom:', e?.message || e);
+      composer = null;
+    }
+  }
   // Initialiser shake og shockwave-states
   shakeUntil = 0; shakeIntensity = 0;
   shockwaves = [];

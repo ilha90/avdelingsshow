@@ -34,7 +34,8 @@ export function init(canvas, gW, gH) {
 
   const cx = gW / 2, cz = gH / 2;
   camera = new THREE.PerspectiveCamera(42, canvas.clientWidth / Math.max(1, canvas.clientHeight), 0.1, 250);
-  camera.position.set(cx, Math.max(gH * 1.0, 22), gH + 8);
+  // Pull kameraet lengre unna så hele brettet vises også på smale mobil-canvas
+  camera.position.set(cx, Math.max(gH * 1.3, 32), gH + 16);
   camera.lookAt(cx, 0, cz - 1);
 
   scene.add(new THREE.AmbientLight(0xe0e8ff, 0.5));
