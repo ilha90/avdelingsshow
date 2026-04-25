@@ -287,6 +287,7 @@ socket.on('bomb:tick', data => {
     bombRenderer.setBombs(data.bombs);
     bombRenderer.setPowerups(data.powerups);
     bombRenderer.updateSoft(data.soft);
+    if (bombRenderer.setFlames) bombRenderer.setFlames(data.flames || []);
   }
   renderGameHud(data, 'bomb');
   // Champion-cinematic: akkurat én overlevende + flere hadde startet (>=2)

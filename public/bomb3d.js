@@ -146,6 +146,42 @@ export class BombRenderer {
     }
   }
 
+  // Flammer fra fire-bomber — vis som flammende emoji-sprites
+  setFlames(flames){
+    if (!this.flameGroup){
+      this.flameGroup = new THREE.Group();
+      this.scene.add(this.flameGroup);
+    }
+    // Diff: remove dem som ikke er i nye liste
+    const activeKeys = new Set(flames.map(f => f.x + ':' + f.y + ':' + f.until));
+    const existing = this.flameGroup.children.slice();
+    for (const c of existing){
+      if (!activeKeys.has(c.userData.key)){
+        this.flameGroup.remove(c);
+      }
+    }
+    const existingKeys = new Set(this.flameGroup.children.map(c => c.userData.key));
+    for (const f of flames){
+      const key = f.x + ':' + f.y + ':' + f.until;
+      if (existingKeys.has(key)) continue;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: makeEmojiTexture('🔥'),
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      }));
+      sprite.scale.set(0.9, 0.9, 0.9);
+      sprite.position.set(f.x + 0.5, 0.5, f.y + 0.5);
+      sprite.userData = { key, born: performance.now(), until: f.until };
+      this.flameGroup.add(sprite);
+      // Ekstra glow-light
+      const light = new THREE.PointLight(0xff5a2a, 2, 3, 2);
+      light.position.set(f.x + 0.5, 0.6, f.y + 0.5);
+      this.fxGroup.add(light);
+      light.userData = { born: performance.now(), type: 'flash' };
+    }
+  }
+
   setPlayers(players){
     // Create/update player meshes
     const seen = new Set();
@@ -244,24 +280,42 @@ export class BombRenderer {
       seen.add(b.id);
       let rec = this.bombMeshes.get(b.id);
       if (!rec){
-        const mat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.4, metalness: 0.5 });
+        // Velg farge + emoji basert på bombe-type
+        let color = 0x111111;
+        let emoji = null;
+        if (b.type === 'laser'){ color = 0x4080ff; emoji = '⚡'; }
+        else if (b.type === 'fire'){ color = 0xff6a2a; emoji = '🌋'; }
+        const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
         const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.36, 16, 12), mat);
         mesh.castShadow = true;
         this.bombGroup.add(mesh);
-        rec = { mesh, prevX: b.x, prevZ: b.y };
+        let emojiSprite = null;
+        if (emoji){
+          emojiSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: makeEmojiTexture(emoji),
+            transparent: true,
+            depthWrite: false
+          }));
+          emojiSprite.scale.set(0.55, 0.55, 0.55);
+          emojiSprite.position.y = 0.55;
+          this.bombGroup.add(emojiSprite);
+        }
+        rec = { mesh, emojiSprite, prevX: b.x, prevZ: b.y, type: b.type };
         this.bombMeshes.set(b.id, rec);
       }
       rec.mesh.position.set(b.x + 0.5, 0.4, b.y + 0.5);
+      if (rec.emojiSprite) rec.emojiSprite.position.set(b.x + 0.5, 0.8, b.y + 0.5);
       // Pulse
       const t = performance.now() * 0.007;
       const s = 1 + 0.08 * Math.sin(t + b.x + b.y);
       rec.mesh.scale.setScalar(s);
-      rec.mesh.material.emissive = new THREE.Color(b.flashing ? 0xff2a2a : 0x550000);
+      rec.mesh.material.emissive = new THREE.Color(b.flashing ? 0xff2a2a : (b.type === 'laser' ? 0x2030a0 : b.type === 'fire' ? 0x802010 : 0x550000));
       rec.mesh.material.emissiveIntensity = b.flashing ? (0.5 + 0.5 * Math.sin(t*4)) : 0.2;
     }
     for (const [id, rec] of this.bombMeshes){
       if (!seen.has(id)){
         this.bombGroup.remove(rec.mesh);
+        if (rec.emojiSprite) this.bombGroup.remove(rec.emojiSprite);
         this.bombMeshes.delete(id);
       }
     }
@@ -499,6 +553,19 @@ export class BombRenderer {
       this.camera.position.x += (Math.random() - 0.5) * this.shakeMag * f;
       this.camera.position.z += (Math.random() - 0.5) * this.shakeMag * f;
       this.camera.position.y += (Math.random() - 0.5) * this.shakeMag * f * 0.4;
+    }
+
+    // Flamme-animasjon
+    if (this.flameGroup){
+      for (const c of this.flameGroup.children.slice()){
+        const age = (now - c.userData.born) / 1000;
+        const life = (c.userData.until - now) / 1000;
+        if (life <= 0){ this.flameGroup.remove(c); continue; }
+        // Bob + pulserende
+        c.position.y = 0.5 + 0.15 * Math.sin(now * 0.012 + c.position.x);
+        c.material.rotation = Math.sin(now * 0.006) * 0.25;
+        c.scale.setScalar(0.85 + 0.2 * Math.sin(now * 0.01 + c.position.x));
+      }
     }
 
     this.renderer.render(this.scene, this.camera);

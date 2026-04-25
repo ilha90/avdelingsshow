@@ -1531,6 +1531,9 @@ function startBomberman(){
       maxBombs: 1, placedBombs: 0,
       range: 2,
       kick: false, punch: false, remote: false,
+      speed: 0,
+      laserBomb: false,
+      fireBomb: false,
       shield: 1, // start with 1 shield? spec doesn't say — we'll give 0
       invulnerableUntil: Date.now() + 2000,
       respawnAt: 0,
@@ -1629,16 +1632,26 @@ function bombTick(){
     if (p.dirs.has('up')) dy -= 1;
     if (p.dirs.has('down')) dy += 1;
     // Cap to 1 per axis (no multi-step)
-    if (dx !== 0 && dy !== 0){
-      if (canPass(p.x + dx, p.y, p) && canPass(p.x, p.y + dy, p)){
+    const doMove = () => {
+      if (dx !== 0 && dy !== 0){
+        if (canPass(p.x + dx, p.y, p) && canPass(p.x, p.y + dy, p)){
+          tryMoveBomb(p, dx, dy);
+        } else if (canPass(p.x + dx, p.y, p)){
+          tryMoveBomb(p, dx, 0);
+        } else if (canPass(p.x, p.y + dy, p)){
+          tryMoveBomb(p, 0, dy);
+        }
+      } else if (dx !== 0 || dy !== 0){
         tryMoveBomb(p, dx, dy);
-      } else if (canPass(p.x + dx, p.y, p)){
-        tryMoveBomb(p, dx, 0);
-      } else if (canPass(p.x, p.y + dy, p)){
-        tryMoveBomb(p, 0, dy);
       }
-    } else if (dx !== 0 || dy !== 0){
-      tryMoveBomb(p, dx, dy);
+    };
+    doMove();
+    // Speed — stackable ekstra-flytt i samme tick
+    if (p.speed > 0 && (dx !== 0 || dy !== 0)){
+      const extraProb = Math.min(0.85, p.speed * 0.2);
+      if (Math.random() < extraProb){
+        doMove();
+      }
     }
   }
 
@@ -1703,6 +1716,10 @@ function bombTick(){
     b.exploded = true;
     const cells = explodeCells(b);
     explosions.push(...cells);
+    // Hvis fire-bomb: spawn flammer i nabo-ringer
+    if (b.type === 'fire'){
+      spawnFireFlames(cells);
+    }
     // Refund bomb to owner
     const owner = game.bomb.players.get(b.owner);
     if (owner && owner.placedBombs > 0) owner.placedBombs--;
@@ -1738,7 +1755,9 @@ function bombTick(){
         game.bomb.softSet.delete(key);
         game.bomb.soft = game.bomb.soft.filter(c => !(c[0]===x && c[1]===y));
         if (Math.random() < 0.5){
-          const kind = rollPowerup();
+          // Bruk bombeierens stats for pool-bias
+          const owner = game.bomb.players.get(b.owner);
+          const kind = rollPowerup(owner);
           if (kind){
             const p = { x, y, kind };
             game.bomb.powerups.push(p);
@@ -1772,6 +1791,25 @@ function bombTick(){
   // Remove exploded bombs
   for (const [id, b] of Array.from(game.bomb.bombs.entries())){
     if (b.exploded) game.bomb.bombs.delete(id);
+  }
+
+  // Rydd utløpte flammer + drep spillere som står i dem
+  if (game.bomb.flames && game.bomb.flames.length){
+    const now = Date.now();
+    game.bomb.flames = game.bomb.flames.filter(f => f.until > now);
+    // Kollisjons-sjekk
+    for (const f of game.bomb.flames){
+      for (const p of game.bomb.players.values()){
+        if (!p.alive) continue;
+        if (p.x === f.x && p.y === f.y){
+          if (p.invulnerableUntil && Date.now() < p.invulnerableUntil) continue;
+          if (p.shield > 0){ p.shield--; p.invulnerableUntil = Date.now() + 1000; continue; }
+          p.alive = false;
+          p.respawnAt = Date.now() + 5000;
+          killsThisTick.push({ killer: null, victim: p.id, x: p.x, y: p.y, name: p.name, cause: 'flame' });
+        }
+      }
+    }
   }
 
   // Send updates
@@ -1822,6 +1860,8 @@ function placeBomb(p){
     kickedDir: null,
     thrown: null,
     remote: p.remote,
+    // Ny: bombe-type basert på aktive flagg
+    type: p.fireBomb ? 'fire' : (p.laserBomb ? 'laser' : 'normal'),
     exploded: false,
     flashing: false
   };
@@ -1910,32 +1950,98 @@ function tryMoveBomb(p, dx, dy){
 function explodeCells(b){
   const cells = [[b.x, b.y]];
   const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+  const isLaser = b.type === 'laser';
   for (const [dx, dy] of dirs){
-    for (let i=1; i <= b.range; i++){
+    // Laser: penetrerer 2 myke treff før den stopper. Normal: 1.
+    let softBreaks = 0;
+    const maxSoft = isLaser ? 2 : 1;
+    for (let i = 1; i <= b.range; i++){
       const x = b.x + dx*i, y = b.y + dy*i;
       const k = x+':'+y;
       if (game.bomb.hardSet.has(k)) break;
       cells.push([x, y]);
-      if (game.bomb.softSet.has(k)) break;
+      if (game.bomb.softSet.has(k)){
+        softBreaks++;
+        if (softBreaks >= maxSoft) break;
+      }
     }
   }
   return cells;
 }
 
-function rollPowerup(){
-  const pool = ['bomb','bomb','fire','fire','kick','punch','remote','shield','gold','speed'];
+// Flame-propagation for fire-bombs: etter eksplosjon, spawn flammer i
+// naboceller (1 ring). Flammer varer 2 ticks og kan infektere én gang.
+function spawnFireFlames(cells){
+  if (!game.bomb.flames) game.bomb.flames = [];
+  const now = Date.now();
+  const ttl = 900; // ms
+  const seen = new Set();
+  for (const [x, y] of cells){
+    // 4-nabo + selve celle
+    const neighbors = [[0,0], [-1,0], [1,0], [0,-1], [0,1]];
+    for (const [dx, dy] of neighbors){
+      const nx = x + dx, ny = y + dy;
+      const k = nx + ':' + ny;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      if (game.bomb.hardSet.has(k)) continue;
+      if (nx < 0 || ny < 0 || nx >= BOMB_COLS || ny >= BOMB_ROWS) continue;
+      game.bomb.flames.push({
+        x: nx, y: ny,
+        until: now + ttl,
+        infected: true // forhindrer re-infeksjon
+      });
+    }
+  }
+}
+
+// Nye constants for balansering — lavere max for å nå 'taket' raskere
+const MAX_BOMBS = 5;        // var 8 — nå når du maks raskere
+const MAX_RANGE = 6;        // var 10
+const MAX_SHIELDS = 1;      // var 3 — ikke stackable lenger
+// speed er fritt stackable (ingen cap)
+
+function rollPowerup(p){
+  // Basispool
+  const pool = ['bomb','bomb','fire','fire','kick','punch','remote','gold','speed'];
+  // Shield tilbys kun hvis du IKKE har det alt
+  if (!p || !p.shield || p.shield < MAX_SHIELDS){
+    pool.push('shield');
+  }
+  // Laser/fire er sjeldne drops generelt, men ser større sjanse
+  // hvis du har makset bomber eller rekkevidde (brukeren ba om dette)
+  if (p && (p.maxBombs >= MAX_BOMBS || p.range >= MAX_RANGE)){
+    pool.push('laser', 'laser', 'fire-bomb', 'fire-bomb');
+  } else {
+    pool.push('laser', 'fire-bomb'); // én hver, sjelden
+  }
   return pool[(Math.random()*pool.length)|0];
 }
 
 function applyPowerup(p, kind){
   switch(kind){
-    case 'bomb': p.maxBombs = Math.min(8, p.maxBombs + 1); break;
-    case 'fire': p.range = Math.min(10, p.range + 1); break;
+    case 'bomb': p.maxBombs = Math.min(MAX_BOMBS, p.maxBombs + 1); break;
+    case 'fire': p.range = Math.min(MAX_RANGE, p.range + 1); break;
     case 'kick': p.kick = true; break;
     case 'punch': p.punch = true; break;
     case 'remote': p.remote = true; break;
-    case 'shield': p.shield = Math.min(3, p.shield + 1); break;
-    case 'speed': p.speed = true; break; // cosmetic — kan bygges ut senere
+    case 'shield':
+      // Ikke stackable — cap på MAX_SHIELDS (1)
+      p.shield = Math.min(MAX_SHIELDS, (p.shield || 0) + 1);
+      break;
+    case 'speed':
+      // Stackable: hver speed øker p.speed med 1. Brukes i tick-sjekk
+      // for å bestemme om spilleren får ekstra flytt-tick
+      p.speed = (p.speed || 0) + 1;
+      break;
+    case 'laser':
+      // Laser-bomb aktivert: fremtidige bomber penetrerer 2 treff
+      p.laserBomb = true;
+      break;
+    case 'fire-bomb':
+      // Fire-bomb aktivert: fremtidige bomber spawner flammer i nabo-celler
+      p.fireBomb = true;
+      break;
     case 'gold': {
       const pl = game.players.get(p.id); if (pl) pl.score += 50;
       break;
@@ -1970,11 +2076,16 @@ function buildBombState(){
       kills: p.kills,
       maxBombs: p.maxBombs, range: p.range,
       kick: p.kick, punch: p.punch, remote: p.remote,
+      speed: p.speed || 0,
+      laserBomb: !!p.laserBomb,
+      fireBomb: !!p.fireBomb,
       carrying: !!p.carrying
     })),
     bombs: Array.from(game.bomb.bombs.values()).map(b => ({
-      id: b.id, x: b.x, y: b.y, owner: b.owner, flashing: b.flashing, remote: b.remote
+      id: b.id, x: b.x, y: b.y, owner: b.owner, flashing: b.flashing, remote: b.remote,
+      type: b.type || 'normal'
     })),
+    flames: (game.bomb.flames || []).map(f => ({ x: f.x, y: f.y, until: f.until })),
     powerups: game.bomb.powerups.slice(),
     soft: game.bomb.soft,
     endAt: game.bomb.endAt

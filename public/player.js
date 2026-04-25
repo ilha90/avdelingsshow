@@ -235,6 +235,7 @@ socket.on('bomb:tick', d => {
     bombRenderer.setBombs(d.bombs);
     bombRenderer.setPowerups(d.powerups);
     bombRenderer.updateSoft(d.soft);
+    if (bombRenderer.setFlames) bombRenderer.setFlames(d.flames || []);
     updateBombHeader(d);
   }
 });
@@ -1008,11 +1009,25 @@ function bindBombControls(){
     thumb.style.transform = 'translate(-50%, -50%)';
     const pull = Math.hypot(dx, dy) / max;
     joy.classList.toggle('max-pull', pull > 0.85);
-    const dead = max * 0.22;
+    // Redusert deadzone (14% i stedet for 22%) for mer responsiv følelse
+    const dead = max * 0.14;
+    // Bruk axis-ratio for mer nøyaktig diagonal-detekt
     dirs.clear();
     if (Math.hypot(dx, dy) > dead){
-      if (Math.abs(dx) > dead) dirs.add(dx > 0 ? 'right' : 'left');
-      if (Math.abs(dy) > dead) dirs.add(dy > 0 ? 'down' : 'up');
+      // Skewed threshold: hvis absolute dominerer (> 2.5x), aktiver bare den
+      // ellers aktiver begge aksene (diagonal)
+      const ratio = Math.abs(dx) / Math.max(1, Math.abs(dy));
+      if (ratio > 2.5){
+        // Mest horisontal — bare én retning
+        dirs.add(dx > 0 ? 'right' : 'left');
+      } else if (ratio < 0.4){
+        // Mest vertikal
+        dirs.add(dy > 0 ? 'down' : 'up');
+      } else {
+        // Diagonal — begge akser
+        if (Math.abs(dx) > dead * 0.7) dirs.add(dx > 0 ? 'right' : 'left');
+        if (Math.abs(dy) > dead * 0.7) dirs.add(dy > 0 ? 'down' : 'up');
+      }
     }
     const dirKey = [...dirs].sort().join(',');
     if (dirKey !== lastDirKey){
@@ -1093,6 +1108,9 @@ function updateBombHeader(d){
     if (mine.punch) icons.textContent += ' 🥊';
     if (mine.remote) icons.textContent += ' 📡';
     if (mine.shield > 0) icons.textContent += ' 🛡️' + (mine.shield > 1 ? ('×'+mine.shield) : '');
+    if (mine.speed > 0) icons.textContent += ' 💨' + (mine.speed > 1 ? ('×'+mine.speed) : '');
+    if (mine.laserBomb) icons.textContent += ' ⚡';
+    if (mine.fireBomb) icons.textContent += ' 🌋';
   }
   const btn = document.getElementById('bomb-btn');
   if (btn){
