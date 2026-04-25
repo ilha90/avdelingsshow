@@ -6,6 +6,7 @@ import * as confetti from './confetti.js';
 import * as ai from './ai.js';
 import * as stageBg from './stage-bg.js';
 import * as fx from './effects.js';
+import { BOMB_CHARS, buildCharSvg } from './bomb-chars.js';
 
 // ====== Score-tracking for animasjoner ======
 const lastScores = new Map(); // pid -> score ved forrige render (for tickUpScore)
@@ -353,6 +354,7 @@ function render(s, prevPhase){
       'lie-collect': 'Spillere sender inn påstander...',
       'lie-play': 'Gjetter løgnen.',
       'lie-reveal': 'Avsløring!',
+      'bomb-select': 'Velger karakterer...',
       end: 'Sluttskjerm.'
     };
     center.textContent = labels[s.phase] || s.phase;
@@ -384,6 +386,7 @@ function render(s, prevPhase){
     case 'icebreaker': renderIcebreaker(s); break;
     case 'wheel': renderWheel(s); break;
     case 'snake': renderSnakeGame(s); break;
+    case 'bomb-select': renderBombSelect(s); break;
     case 'bomb': renderBombGame(s); break;
     case 'lie-collect': renderLieCollect(s); break;
     case 'lie-play': renderLiePlay(s); break;
@@ -1199,6 +1202,47 @@ function renderSnakeGame(s){
     });
   }
 }
+function renderBombSelect(s){
+  const o = document.getElementById('overlays');
+  const bs = s.bombSelect || { chosen: [] };
+  const chosenMap = new Map(bs.chosen.map(c => [c.pid, c.charId]));
+  if (!o.querySelector('.bomb-select-host')){
+    o.innerHTML = `
+      <div class="bomb-select-host">
+        <div class="bsh-title">💣 Bomberman — Velg karakter</div>
+        <div class="bsh-sub">Hver spiller velger sin gameshow-host. Spillet starter når alle er klare.</div>
+        <div class="bsh-grid">${BOMB_CHARS.map(c => `
+          <div class="bsh-char" data-char="${c.id}">
+            <div class="bsh-char-svg">${buildCharSvg(c, { size: 120 })}</div>
+            <div class="bsh-char-name">${c.name}</div>
+            <div class="bsh-char-by" data-by="${c.id}"></div>
+          </div>
+        `).join('')}</div>
+        <div class="bsh-status" id="bsh-status"></div>
+      </div>
+    `;
+  }
+  // Oppdater hvilke er tatt + hvem tok hvilken
+  o.querySelectorAll('.bsh-char').forEach(el => {
+    const id = el.dataset.char;
+    const byEl = el.querySelector('.bsh-char-by');
+    const takers = s.players.filter(p => chosenMap.get(p.id) === id);
+    el.classList.toggle('taken', takers.length > 0);
+    byEl.innerHTML = takers.length
+      ? takers.map(p => `<span style="color:${p.color}">${p.emoji} ${escapeHtml(p.name)}</span>`).join(' ')
+      : '';
+  });
+  const total = s.players.length;
+  const picked = bs.chosen.length;
+  const remaining = Math.max(0, Math.round((bs.deadline - Date.now()) / 1000));
+  const statusEl = o.querySelector('#bsh-status');
+  statusEl.innerHTML = `
+    <div class="bsh-progress"><div style="width:${total ? (picked/total*100) : 0}%"></div></div>
+    <div class="bsh-count">${picked} / ${total} har valgt · <b>${remaining}s</b> igjen</div>
+  `;
+  // Start ambient hvis ikke allerede
+}
+
 function renderBombGame(s){
   const o = document.getElementById('overlays');
   if (!bombRenderer){

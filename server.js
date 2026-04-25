@@ -15,6 +15,7 @@ import {
   TEAM_NAMES,
   TUTORIAL_TEXT
 } from './public/data.js';
+import { BOMB_CHARS, getChar } from './public/bomb-chars.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -169,6 +170,7 @@ const game = {
   snake: null,  // { snakes: Map, food: [], tickTimer, endAt }
   // Bomb
   bomb: null,   // { players: Map, bombs: Map, hard: [], soft: [], powerups: [], tickTimer, endAt, explosions }
+  bombSelect: null, // { chosen: Map<pid, charId>, deadline, timer }
   // AI questions
   customQuestions: [],
   customMostLikely: [],
@@ -271,6 +273,12 @@ function publicState(){
   if (game.wheel){
     base.wheel = { chosen: game.wheel.chosen };
   }
+  if (game.bombSelect){
+    base.bombSelect = {
+      chosen: Array.from(game.bombSelect.chosen.entries()).map(([pid, cid]) => ({ pid, charId: cid })),
+      deadline: game.bombSelect.deadline
+    };
+  }
   // Awards — kun når vi er på end-phase
   if (game.phase === 'end'){
     base.awards = computeAwards();
@@ -364,7 +372,30 @@ io.on('connection', socket => {
       }
     }
     if (rec){
-      rec.id = socket.id;
+      // Flytt rec til ny socket-id som map-nøkkel (den gamle nøkkelen var gammel socket-id)
+      if (rec.id !== socket.id){
+        game.players.delete(rec.id);
+        rec.id = socket.id;
+        game.players.set(socket.id, rec);
+        // Flytt også i aktive spill-Maps hvis spillet pågår
+        if (game.bombSelect && game.bombSelect.chosen.has(rec.id)){
+          const c = game.bombSelect.chosen.get(rec.id);
+          game.bombSelect.chosen.delete(rec.id);
+          game.bombSelect.chosen.set(socket.id, c);
+        }
+        if (game.snake && game.snake.snakes.has(rec.id)){
+          const s = game.snake.snakes.get(rec.id);
+          s.id = socket.id;
+          game.snake.snakes.delete(rec.id);
+          game.snake.snakes.set(socket.id, s);
+        }
+        if (game.bomb && game.bomb.players.has(rec.id)){
+          const bp = game.bomb.players.get(rec.id);
+          bp.id = socket.id;
+          game.bomb.players.delete(rec.id);
+          game.bomb.players.set(socket.id, bp);
+        }
+      }
       rec.name = n; rec.emoji = e;
     } else {
       // Max 100 spillere samtidig (spec) — reconnects teller ikke mot capet
@@ -460,6 +491,8 @@ io.on('connection', socket => {
     game.quiz = null; game.vote = null; game.scatter = null; game.lie = null;
     game.icebreaker = null; game.wheel = null;
     game.snake = null; game.bomb = null;
+    if (game.bombSelect && game.bombSelect.timer) clearTimeout(game.bombSelect.timer);
+    game.bombSelect = null;
     game.lastGame = null;
     for (const p of game.players.values()) p.score = 0;
     resetMatchStats();
@@ -542,7 +575,19 @@ io.on('connection', socket => {
   });
   socket.on('host:start-bomb', () => {
     if (!game.hosts.has(socket.id)) return;
-    playTutorialThen('bomb', () => startBomberman());
+    playTutorialThen('bomb', () => startBombCharacterSelect());
+  });
+  socket.on('player:bomb-char', ({ charId } = {}) => {
+    if (!game.bombSelect) return;
+    if (game.phase !== 'bomb-select') return;
+    const p = game.players.get(socket.id); if (!p) return;
+    if (!BOMB_CHARS.find(c => c.id === charId)) return;
+    game.bombSelect.chosen.set(socket.id, charId);
+    broadcast();
+    // Alle har valgt?
+    if (game.bombSelect.chosen.size >= game.players.size){
+      startBombermanNow();
+    }
   });
   socket.on('host:end-bomb', () => {
     if (!game.hosts.has(socket.id)) return;
@@ -1397,6 +1442,43 @@ const BOMB_ROWS = 15;
 const BOMB_TICK = 220;
 const BOMB_FUSE_TICKS = Math.round(2800 / BOMB_TICK);
 
+function startBombCharacterSelect(){
+  stopAllTimers();
+  const players = Array.from(game.players.values());
+  if (players.length === 0){
+    // ingen spillere — gå direkte tilbake til lobby
+    game.phase = 'lobby';
+    broadcast();
+    return;
+  }
+  game.bombSelect = {
+    chosen: new Map(),       // pid -> charId
+    deadline: Date.now() + 22000,
+    timer: null
+  };
+  game.phase = 'bomb-select';
+  broadcast();
+  // Auto-start etter 22 sek: de som ikke har valgt får tildelt ledig karakter
+  game.bombSelect.timer = setTimeout(() => {
+    startBombermanNow();
+  }, 22000);
+}
+
+function startBombermanNow(){
+  if (!game.bombSelect) return;
+  if (game.bombSelect.timer){ clearTimeout(game.bombSelect.timer); game.bombSelect.timer = null; }
+  // Tildel gjenstående spillere en ledig karakter
+  const taken = new Set(game.bombSelect.chosen.values());
+  const available = BOMB_CHARS.map(c => c.id).filter(id => !taken.has(id));
+  for (const p of game.players.values()){
+    if (!game.bombSelect.chosen.has(p.id)){
+      const pick = available.shift() || BOMB_CHARS[Math.floor(Math.random() * BOMB_CHARS.length)].id;
+      game.bombSelect.chosen.set(p.id, pick);
+    }
+  }
+  startBomberman();
+}
+
 function startBomberman(){
   stopAllTimers();
   // Build map: hard walls in grid pattern, soft walls randomly
@@ -1438,8 +1520,10 @@ function startBomberman(){
   const bombPlayers = new Map();
   players.forEach((p, i) => {
     const sp = spawnCorners[i % spawnCorners.length];
+    const charId = (game.bombSelect && game.bombSelect.chosen.get(p.id)) || BOMB_CHARS[i % BOMB_CHARS.length].id;
     bombPlayers.set(p.id, {
       id: p.id, name: p.name, color: p.color,
+      character: charId,
       x: sp.x, y: sp.y,
       alive: true, score: 0, kills: 0,
       dirs: new Set(),
@@ -1455,6 +1539,8 @@ function startBomberman(){
     });
     p.score = 0;
   });
+  // Clear select-state nå som vi har startet
+  game.bombSelect = null;
   // Spec says start: just player with no shield. Actually we start with 0 shields. Clear shield:
   for (const bp of bombPlayers.values()) bp.shield = 0;
 
@@ -1529,6 +1615,14 @@ function bombTick(){
   // Move players (1 step per tick)
   for (const p of game.bomb.players.values()){
     if (!p.alive) continue;
+
+    // Action FØR bevegelse — så bomben plasseres der spilleren faktisk står
+    // visuelt akkurat nå (før tick-move). Dette fikser "bomba plasseres rart etter bevegelse"
+    if (p.actionPending){
+      p.actionPending = false;
+      handleBombAction(p);
+    }
+
     let dx = 0, dy = 0;
     if (p.dirs.has('left')) dx -= 1;
     if (p.dirs.has('right')) dx += 1;
@@ -1545,12 +1639,6 @@ function bombTick(){
       }
     } else if (dx !== 0 || dy !== 0){
       tryMoveBomb(p, dx, dy);
-    }
-
-    // Action (unified button)
-    if (p.actionPending){
-      p.actionPending = false;
-      handleBombAction(p);
     }
   }
 
@@ -1876,6 +1964,7 @@ function buildBombState(){
   return {
     players: Array.from(game.bomb.players.values()).map(p => ({
       id: p.id, name: p.name, color: p.color,
+      character: p.character,
       x: p.x, y: p.y, alive: p.alive,
       shield: p.shield, invulnerableUntil: p.invulnerableUntil,
       kills: p.kills,

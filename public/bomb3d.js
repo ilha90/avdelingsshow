@@ -1,6 +1,7 @@
 // public/bomb3d.js — Three.js Bomberman-scene
 import * as THREE from 'three';
 import { colorFor } from './avatars.js';
+import { BOMB_CHARS, getChar, buildCharSvg } from './bomb-chars.js';
 
 const COLS = 25;
 const ROWS = 15;
@@ -153,36 +154,46 @@ export class BombRenderer {
       let rec = this.playerMeshes.get(p.id);
       if (!rec){
         const group = new THREE.Group();
-        const color = p.color || colorFor(p.name || p.id);
-        // Body
-        const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.1 });
-        const body = new THREE.Mesh(new THREE.SphereGeometry(0.36, 16, 12), bodyMat);
-        body.position.y = 0.4;
-        body.castShadow = true;
-        group.add(body);
-        // Head (emoji-ish)
-        const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), new THREE.MeshStandardMaterial({ color: 0xfff0cf }));
-        head.position.y = 0.85;
-        head.castShadow = true;
-        group.add(head);
-        // Eyes
-        const eyeMat = new THREE.MeshStandardMaterial({ color: 0x0a1a15 });
-        const e1 = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), eyeMat);
-        const e2 = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), eyeMat);
-        e1.position.set(-0.07, 0.9, 0.2); e2.position.set(0.07, 0.9, 0.2);
-        group.add(e1); group.add(e2);
-        // Shield ring (initially hidden)
+        // Bygg karakter-sprite (SVG-billboard)
+        const charId = p.character || 'classic';
+        const sprite = makeCharacterSprite(charId);
+        sprite.scale.set(1.25, 1.55, 1);
+        sprite.position.y = 0.78;
+        group.add(sprite);
+        // Base-platform (liten sylinder under karakteren for skygge + fotstikk)
+        const base = new THREE.Mesh(
+          new THREE.CircleGeometry(0.34, 24),
+          new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 })
+        );
+        base.rotation.x = -Math.PI / 2;
+        base.position.y = 0.02;
+        group.add(base);
+        // Navn-tag (canvas-tekst over hodet)
+        const nameSprite = makeNameTagSprite(p.name, p.color || '#47D197');
+        nameSprite.scale.set(1.4, 0.35, 1);
+        nameSprite.position.y = 1.7;
+        group.add(nameSprite);
+        // Shield-ring
         const ring = new THREE.Mesh(
-          new THREE.TorusGeometry(0.5, 0.04, 8, 32),
-          new THREE.MeshBasicMaterial({ color: 0x5de0ae, transparent: true, opacity: 0.8 })
+          new THREE.TorusGeometry(0.55, 0.05, 8, 32),
+          new THREE.MeshBasicMaterial({ color: 0x5de0ae, transparent: true, opacity: 0.85 })
         );
         ring.rotation.x = Math.PI/2;
-        ring.position.y = 0.4;
+        ring.position.y = 0.1;
         ring.visible = false;
         group.add(ring);
-        rec = { group, body, head, ring, prevX: p.x, prevZ: p.y, curX: p.x, curZ: p.y, dead: false };
+        rec = { group, sprite, base, nameSprite, ring, charId, prevX: p.x, prevZ: p.y, curX: p.x, curZ: p.y, dead: false };
         this.playerGroup.add(group);
         this.playerMeshes.set(p.id, rec);
+      } else if (rec.charId !== (p.character || 'classic')){
+        // Karakter endret (f.eks. ny valg mid-game?) — bytt sprite
+        rec.group.remove(rec.sprite);
+        rec.charId = p.character || 'classic';
+        const newSprite = makeCharacterSprite(rec.charId);
+        newSprite.scale.set(1.25, 1.55, 1);
+        newSprite.position.y = 0.78;
+        rec.group.add(newSprite);
+        rec.sprite = newSprite;
       }
       rec.prevX = rec.curX; rec.prevZ = rec.curZ;
       rec.curX = p.x; rec.curZ = p.y;
@@ -237,20 +248,36 @@ export class BombRenderer {
       let rec = this.powerMeshes.get(id);
       if (!rec){
         const group = new THREE.Group();
-        const box = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.55), new THREE.MeshStandardMaterial({
-          color: colorForPower(p.kind), emissive: 0x111111, roughness: 0.3, metalness: 0.4
+        const emoji = emojiForPower(p.kind);
+        // Emoji-sprite som roterer og flyter — ingen bokser!
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: makeEmojiTexture(emoji),
+          transparent: true,
+          sizeAttenuation: true
         }));
-        box.position.y = 0.35;
-        box.castShadow = true;
-        group.add(box);
+        sprite.scale.set(0.85, 0.85, 0.85);
+        sprite.position.y = 0.55;
+        group.add(sprite);
+        // Liten glow-halo under emoji
+        const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: makeGlowTexture(colorForPower(p.kind)),
+          transparent: true,
+          opacity: 0.7,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending
+        }));
+        glow.scale.set(1.4, 1.4, 1);
+        glow.position.y = 0.35;
+        group.add(glow);
         group.position.set(p.x + 0.5, 0, p.y + 0.5);
         this.powerGroup.add(group);
-        rec = { group, box };
+        rec = { group, sprite, glow };
         this.powerMeshes.set(id, rec);
       }
       const t = performance.now() * 0.002;
-      rec.box.rotation.y = t * 2;
-      rec.box.position.y = 0.35 + 0.08 * Math.sin(t*3);
+      rec.sprite.position.y = 0.55 + 0.12 * Math.sin(t * 3);
+      rec.sprite.material.rotation = Math.sin(t) * 0.15;
+      rec.glow.material.opacity = 0.55 + 0.25 * Math.sin(t * 4);
     }
     for (const [id, rec] of this.powerMeshes){
       if (!seen.has(id)){
@@ -372,8 +399,8 @@ export class BombRenderer {
       rec.group.position.x += ((x+0.5) - rec.group.position.x) * this.lerp;
       rec.group.position.z += ((z+0.5) - rec.group.position.z) * this.lerp;
       rec.group.position.y = 0;
-      // Bob
-      rec.group.children[0].position.y = 0.4 + Math.sin(now*0.006 + rec.curX) * 0.04;
+      // Bob — løft kun sprite (children[0] er sprite nå)
+      if (rec.sprite) rec.sprite.position.y = 0.78 + Math.sin(now*0.006 + rec.curX) * 0.04;
     }
 
     // FX lifetime
@@ -440,6 +467,45 @@ export class BombRenderer {
   }
 }
 
+const _charTexCache = new Map();
+function makeCharacterSprite(charId){
+  // Bygg (eller hent cached) SVG → Image → Texture
+  let tex = _charTexCache.get(charId);
+  if (!tex){
+    const char = getChar(charId);
+    const svgStr = buildCharSvg(char, { size: 256 });
+    const img = new Image();
+    const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+    img.src = dataUri;
+    tex = new THREE.Texture(img);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    img.onload = () => { tex.needsUpdate = true; };
+    _charTexCache.set(charId, tex);
+  }
+  return new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, sizeAttenuation: true
+  }));
+}
+
+function makeNameTagSprite(name, color){
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'bold 34px "Plus Jakarta Sans", sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillText(name, 128 + 2, 34 + 2);
+  // Hovedtekst
+  ctx.fillStyle = color || '#ffffff';
+  ctx.fillText(name, 128, 34);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthWrite: false, sizeAttenuation: true
+  }));
+}
+
 function colorForPower(kind){
   switch(kind){
     case 'bomb': return 0x333333;
@@ -452,4 +518,57 @@ function colorForPower(kind){
     case 'speed': return 0xffffff;
     default: return 0xcccccc;
   }
+}
+
+function emojiForPower(kind){
+  switch(kind){
+    case 'bomb': return '💣';
+    case 'fire': return '🔥';
+    case 'kick': return '👟';
+    case 'punch': return '🥊';
+    case 'remote': return '📡';
+    case 'shield': return '🛡️';
+    case 'gold': return '⭐';
+    case 'speed': return '⚡';
+    default: return '❓';
+  }
+}
+
+// Texture-cache så vi ikke regenererer samme emoji-canvas hver gang
+const _emojiTexCache = new Map();
+function makeEmojiTexture(emoji){
+  if (_emojiTexCache.has(emoji)) return _emojiTexCache.get(emoji);
+  const canvas = document.createElement('canvas');
+  canvas.width = 128; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, 128, 128);
+  ctx.font = '96px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(emoji, 64, 70);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  _emojiTexCache.set(emoji, tex);
+  return tex;
+}
+
+const _glowTexCache = new Map();
+function makeGlowTexture(color){
+  const key = color;
+  if (_glowTexCache.has(key)) return _glowTexCache.get(key);
+  const canvas = document.createElement('canvas');
+  canvas.width = 128; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  const r = (color >> 16) & 0xff;
+  const g = (color >> 8) & 0xff;
+  const bl = color & 0xff;
+  const grad = ctx.createRadialGradient(64, 64, 5, 64, 64, 60);
+  grad.addColorStop(0, `rgba(${r},${g},${bl},1)`);
+  grad.addColorStop(0.4, `rgba(${r},${g},${bl},0.5)`);
+  grad.addColorStop(1, `rgba(${r},${g},${bl},0)`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(canvas);
+  _glowTexCache.set(key, tex);
+  return tex;
 }

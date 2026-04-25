@@ -1,6 +1,7 @@
 // public/player.js — spiller-UI + kontroller
 import { AVATAR_CHOICES, colorFor } from './avatars.js';
 import { sfx, setMuted, isMuted, unlock as unlockAudio } from './sound.js';
+import { BOMB_CHARS, buildCharSvg } from './bomb-chars.js';
 
 const socket = io({ transports: ['websocket','polling'] });
 let state = null;
@@ -60,6 +61,44 @@ function getSaved(){
 // ====== Login ======
 function showLogin(){
   const s = getSaved();
+  // Hvis vi har lagret token+navn, tilby å fortsette eller starte på nytt
+  if (s.name && s.token){
+    showReturnChoice(s);
+    return;
+  }
+  showLoginForm(s);
+}
+
+function showReturnChoice(s){
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="login-title">Velkommen tilbake!</div>
+      <div style="font-size: 120px; filter: drop-shadow(0 6px 20px rgba(0,0,0,.4));">${s.emoji}</div>
+      <div class="name-big" style="color: var(--accent-soft)">${escapeHtml(s.name)}</div>
+      <div style="color: var(--ink-muted); font-size: 14px; text-align: center; max-width: 320px; line-height: 1.5;">
+        Vi husker deg fra sist. Vil du fortsette som <b style="color: var(--accent)">${escapeHtml(s.name)}</b>, eller starte på nytt?
+      </div>
+      <button class="btn-primary" id="return-continue">
+        Fortsett som ${escapeHtml(s.name)} ✓
+      </button>
+      <button class="btn" id="return-new" style="margin-top: 6px;">
+        Velg nytt navn og emoji
+      </button>
+    </div>
+  `;
+  app.querySelector('#return-continue').addEventListener('click', () => {
+    socket.emit('player:hello', { name: s.name, emoji: s.emoji, token: s.token });
+    sfx.join();
+    haptic.success();
+  });
+  app.querySelector('#return-new').addEventListener('click', () => {
+    // Glem token så vi ikke auto-rejoiner
+    localStorage.removeItem(LS.token);
+    showLoginForm({ name: '', emoji: '🦊', token: '' });
+  });
+}
+
+function showLoginForm(s){
   app.innerHTML = `
     <div class="login-screen">
       <div class="login-title">Avdelingsshow</div>
@@ -91,12 +130,6 @@ function showLogin(){
   };
   app.querySelector('#join-btn').addEventListener('click', join);
   app.querySelector('#name-in').addEventListener('keydown', e => { if (e.key === 'Enter') join(); });
-  // Auto-rejoin if saved
-  if (s.name && s.token){
-    setTimeout(() => {
-      socket.emit('player:hello', { name: s.name, emoji: s.emoji, token: s.token });
-    }, 200);
-  }
 }
 
 socket.on('player:welcome', ({ id, token, team }) => {
@@ -177,10 +210,14 @@ socket.on('disconnect', () => {
 });
 socket.on('connect', () => {
   ensureConnEl().classList.remove('show');
-  // Re-emit hello med lagret token (socket.io reconnect beholder ikke state.id på server)
-  const s = getSaved();
-  if (s.token && s.name){
-    socket.emit('player:hello', { name: s.name, emoji: s.emoji, token: s.token });
+  // Kun auto-rehello hvis vi har 'me' fra tidligere denne sesjonen
+  // (nettverks-reconnect) — ikke ved page-reload der me=null. Da skal
+  // bruker eksplisitt velge via showReturnChoice.
+  if (me){
+    const s = getSaved();
+    if (s.token && s.name){
+      socket.emit('player:hello', { name: s.name, emoji: s.emoji, token: s.token });
+    }
   }
 });
 
@@ -236,6 +273,7 @@ function render(s){
     case 'icebreaker': showIcebreaker(s); break;
     case 'wheel': showWheel(s); break;
     case 'snake': showSnakeGame(s); break;
+    case 'bomb-select': showBombSelect(s); break;
     case 'bomb': showBombGame(s); break;
     case 'lie-collect': showLieCollect(s); break;
     case 'lie-play': showLiePlay(s); break;
@@ -739,6 +777,56 @@ function updateSnakeHeader(d){
 }
 
 // ====== Bomb game view ======
+function showBombSelect(s){
+  const bs = s.bombSelect || { chosen: [] };
+  const chosenByMe = bs.chosen.find(c => c.pid === me.id);
+  const takenByOthers = new Set(bs.chosen.filter(c => c.pid !== me.id).map(c => c.charId));
+  // Bygg char-grid kun første gang eller hvis layout endrer seg
+  const existing = app.querySelector('.bomb-select-screen');
+  if (!existing){
+    app.innerHTML = `
+      <div class="bomb-select-screen">
+        <div class="bs-title">Velg karakter</div>
+        <div class="bs-sub">Hvem er du i Bomberman?</div>
+        <div class="bs-grid" id="bs-grid"></div>
+        <div class="bs-status" id="bs-status"></div>
+      </div>
+    `;
+  }
+  const grid = app.querySelector('#bs-grid');
+  if (grid && grid.children.length !== BOMB_CHARS.length){
+    grid.innerHTML = BOMB_CHARS.map(c => `
+      <button class="bs-char" data-char="${c.id}">
+        <div class="bs-char-svg">${buildCharSvg(c, { size: 96 })}</div>
+        <div class="bs-char-name">${c.name}</div>
+      </button>
+    `).join('');
+    grid.querySelectorAll('.bs-char').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.char;
+        if (btn.classList.contains('taken')) { sfx.wrong(); return; }
+        if (!cooldown('bomb-char', 400)) return;
+        socket.emit('player:bomb-char', { charId: id });
+        sfx.correct(); haptic.success();
+      });
+    });
+  }
+  // Oppdater taken/valgt-tilstand
+  grid.querySelectorAll('.bs-char').forEach(btn => {
+    const id = btn.dataset.char;
+    btn.classList.toggle('taken', takenByOthers.has(id) && (!chosenByMe || chosenByMe.charId !== id));
+    btn.classList.toggle('mine', !!chosenByMe && chosenByMe.charId === id);
+  });
+  // Status
+  const statusEl = app.querySelector('#bs-status');
+  const total = s.players.length;
+  const picked = bs.chosen.length;
+  const remaining = Math.max(0, Math.round((bs.deadline - Date.now()) / 1000));
+  statusEl.innerHTML = chosenByMe
+    ? `<div class="bs-ok">✓ Du har valgt ${escapeHtml(BOMB_CHARS.find(c => c.id === chosenByMe.charId)?.name || '')}</div><div class="bs-wait">Venter på andre... ${picked}/${total} · ${remaining}s</div>`
+    : `<div class="bs-pick">Trykk på en karakter for å velge</div><div class="bs-wait">${picked}/${total} har valgt · ${remaining}s igjen</div>`;
+}
+
 function showBombGame(s){
   // Idempotent — state-updates skal ikke rebuilde event-listenere
   if (document.getElementById('bomb-canvas')) return;
@@ -776,6 +864,30 @@ function bindBombControls(){
   const dirs = new Set();
   const sendDirs = () => socket.emit('player:bomb-move', { dirs: [...dirs] });
 
+  // ===== Bomb-knapp: tap = place, dobbelt-tap = detonate, hold = detonate =====
+  let lastBombTapAt = 0;
+  let bombHoldTimer = null;
+  let bombHoldDetonated = false;
+  const HOLD_MS = 260;
+  const DOUBLE_MS = 320;
+
+  const triggerBombAction = () => {
+    if (!cooldown('bomb', 180)) return;
+    const now = Date.now();
+    const isDouble = (now - lastBombTapAt) < DOUBLE_MS;
+    lastBombTapAt = now;
+    if (isDouble){
+      // Dobbel-tap → hvis remote, detonate; ellers bare legg bombe
+      socket.emit('player:bomb-detonate');
+      haptic.buzz();
+      sfx.pickup();
+    } else {
+      socket.emit('player:bomb-action');
+      haptic.bump();
+      sfx.buttonDown();
+    }
+  };
+
   // Keyboard
   const keyDir = e => {
     const k = e.key.toLowerCase();
@@ -785,11 +897,24 @@ function bindBombControls(){
     if (['arrowright','d'].includes(k)) return 'right';
     return null;
   };
+  let spaceDown = false;
+  let spaceDownAt = 0;
+  let spaceHoldTimer = null;
   const onDown = e => {
     if (e.key === ' ' || e.key.toLowerCase() === 'b'){
       e.preventDefault();
-      socket.emit('player:bomb-action');
-      sfx.buttonDown();
+      if (spaceDown) return;
+      spaceDown = true;
+      spaceDownAt = Date.now();
+      // Start hold-timer — hvis holdt > HOLD_MS, detonate
+      spaceHoldTimer = setTimeout(() => {
+        if (spaceDown){
+          socket.emit('player:bomb-detonate');
+          haptic.buzz();
+          sfx.pickup();
+          spaceDown = 'consumed'; // for å forhindre place-on-release
+        }
+      }, HOLD_MS);
       return;
     }
     if (e.key.toLowerCase() === 'x'){
@@ -801,6 +926,15 @@ function bindBombControls(){
     dirs.add(d); sendDirs();
   };
   const onUp = e => {
+    if (e.key === ' ' || e.key.toLowerCase() === 'b'){
+      clearTimeout(spaceHoldTimer);
+      if (spaceDown === true){
+        // Ikke holdt lenge nok — det var en tap → bomb-action
+        triggerBombAction();
+      }
+      spaceDown = false;
+      return;
+    }
     const d = keyDir(e); if (!d) return;
     dirs.delete(d); sendDirs();
   };
@@ -834,10 +968,8 @@ function bindBombControls(){
     thumb.style.left = (r.width/2 + dx) + 'px';
     thumb.style.top = (r.height/2 + dy) + 'px';
     thumb.style.transform = 'translate(-50%, -50%)';
-    // Glow på max-pull
     const pull = Math.hypot(dx, dy) / max;
     joy.classList.toggle('max-pull', pull > 0.85);
-    // Dead zone 22%
     const dead = max * 0.22;
     dirs.clear();
     if (Math.hypot(dx, dy) > dead){
@@ -858,14 +990,33 @@ function bindBombControls(){
     dirs.clear(); sendDirs();
   }
 
-  // Bomb button med haptic
-  document.getElementById('bomb-btn').addEventListener('pointerdown', e => {
+  // Bomb button — hold = detonate, dobbel-tap = detonate, enkelt-tap = place
+  const bombBtn = document.getElementById('bomb-btn');
+  bombBtn.addEventListener('pointerdown', e => {
     e.preventDefault();
-    if (!cooldown('bomb', 180)) return;
-    socket.emit('player:bomb-action');
-    sfx.buttonDown();
-    haptic.bump();
+    bombHoldDetonated = false;
+    bombHoldTimer = setTimeout(() => {
+      // Hold lenge nok → detonate (hvis remote)
+      socket.emit('player:bomb-detonate');
+      haptic.buzz();
+      sfx.pickup();
+      bombHoldDetonated = true;
+    }, HOLD_MS);
+    bombBtn.classList.add('holding');
   });
+  bombBtn.addEventListener('pointerup', e => {
+    clearTimeout(bombHoldTimer);
+    bombBtn.classList.remove('holding');
+    if (!bombHoldDetonated){
+      triggerBombAction();
+    }
+  });
+  bombBtn.addEventListener('pointercancel', e => {
+    clearTimeout(bombHoldTimer);
+    bombBtn.classList.remove('holding');
+  });
+
+  // Remote-btn (eksplisitt) — ett trykk = detonate
   document.getElementById('remote-btn').addEventListener('pointerdown', e => {
     e.preventDefault();
     if (!cooldown('remote', 180)) return;
