@@ -451,7 +451,6 @@ function renderBombPlayer() {
       </div>
       <div class="bomb-controls">
         <div class="bomb-left-col">
-          <button id="bombPunch" class="bomb-btn-extra" title="Kast bombe (krever 🥊)">🥊</button>
           <button id="bombDetonate" class="bomb-btn-extra" title="Detoner (krever 📡)">💥</button>
           <button id="bombDrop" class="bomb-btn-big">💣</button>
         </div>
@@ -484,18 +483,7 @@ function renderBombPlayer() {
   });
   bombBtn.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  // Punch-knapp (kaster bombe foran deg)
-  const punchBtn = document.getElementById('bombPunch');
-  punchBtn?.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    socket.emit('player:bomb-punch');
-    buzz(25);
-    punchBtn.classList.add('pressed');
-    setTimeout(() => punchBtn.classList.remove('pressed'), 120);
-  });
-  punchBtn?.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  // Detonate-knapp (fjerndetonering)
+  // Detonate-knapp (fjerndetonering, kun når spiller har remote)
   const detonateBtn = document.getElementById('bombDetonate');
   detonateBtn?.addEventListener('pointerdown', (e) => {
     e.preventDefault();
@@ -669,10 +657,25 @@ function updateBombPlayer() {
     info.style.color = my.color;
   }
   // Vis/skjul ekstra-knapper basert på aktuelle powerups
-  const pBtn = document.getElementById('bombPunch');
   const dBtn = document.getElementById('bombDetonate');
-  if (pBtn) pBtn.classList.toggle('visible', !!my?.punch);
   if (dBtn) dBtn.classList.toggle('visible', !!my?.remote);
+  // Bombe-knappens ikon endres basert på kontekst
+  const bombBtnEl = document.getElementById('bombDrop');
+  if (bombBtnEl && my) {
+    if (my.holdingBomb) {
+      bombBtnEl.textContent = '🫳'; // Kaster når man trykker
+      bombBtnEl.title = 'Kast bombe';
+    } else {
+      const ownBombHere = bombSnap?.bombs?.some(b => b.x === my.x && b.y === my.y && b.ownerId === my.id && !b.held);
+      if (ownBombHere && my.punch) {
+        bombBtnEl.textContent = '🤲'; // Plukker opp
+        bombBtnEl.title = 'Plukk opp bomben';
+      } else {
+        bombBtnEl.textContent = '💣';
+        bombBtnEl.title = 'Legg bombe';
+      }
+    }
+  }
   drawBombMini();
 }
 

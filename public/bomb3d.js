@@ -405,10 +405,10 @@ export function update(bombSnap) {
     if (o.label && camera) o.label.lookAt(camera.position);
   }
 
-  // Bomber
+  // Bomber (keyed by id så mesh er stabil selv når bomben sprettes/kastes/holdes)
   const seenBombs = new Set();
   for (const b of bombSnap.bombs) {
-    const key = b.x + ',' + b.y;
+    const key = b.id != null ? ('id:' + b.id) : (b.x + ',' + b.y);
     seenBombs.add(key);
     let obj = bombMeshes.get(key);
     if (!obj) {
@@ -423,11 +423,13 @@ export function update(bombSnap) {
       const spark = new THREE.PointLight(0xffa040, 1.2, 2);
       spark.position.y = 0.85;
       group.add(spark);
-      group.position.set(b.x + 0.5, 0, b.y + 0.5);
       scene.add(group);
       obj = { group, body, fuse, spark };
       bombMeshes.set(key, obj);
     }
+    // Posisjon — held bombe holdes over hodet
+    const targetY = b.held ? 1.55 : 0;
+    obj.group.position.set(b.x + 0.5, targetY, b.y + 0.5);
     const f = Math.max(0, b.tLeft / 2500);
     const pulse = 1 + 0.15 * Math.sin(Date.now() / (100 + f * 300));
     obj.body.scale.setScalar(pulse);

@@ -1139,6 +1139,8 @@ function bombRespawnPlayer(sid, player) {
     player.alive = true; player.deadAt = 0;
     player.shield = 1; // respawn-beskyttelse (1 treff)
     player.invulnerableUntil = Date.now() + 1500; // 1.5s grace
+    player.holdingBomb = null;
+    player.moveAccum = 0;
     // Clear cells around spawn of soft walls
     for (const [dx, dy] of [[0,0],[0,1],[1,0],[0,-1],[-1,0]]) {
       const nx = pos.x + dx, ny = pos.y + dy;
@@ -1355,6 +1357,40 @@ function bombermanTickInner() {
   }
 }
 
+// Kast bombe i spillerens facing-retning. 3 ruter default, men sprett 1 rute ekstra
+// hvis første landing er blokkert. Fall tilbake til nærmere cell hvis alt er blokkert.
+function throwBomb(bomb, player) {
+  const DIR = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+  const [fdx, fdy] = DIR[player.facing] || DIR.down;
+  const W = game.bomb.map.W;
+  const H = BOMB_GRID.h;
+  const mapIdx = game.bomb.map.idx;
+  const isClear = (x, y) => {
+    if (x <= 0 || x >= W - 1 || y <= 0 || y >= H - 1) return false;
+    if (game.bomb.map.grid[mapIdx(x, y)] !== 0) return false;
+    if (game.bomb.bombs.some(b => b !== bomb && b.x === x && b.y === y && !b.held)) return false;
+    if ([...game.bomb.players.values()].some(pl => pl.alive && pl.x === x && pl.y === y && pl.id !== player.id)) return false;
+    return true;
+  };
+  bomb.held = false;
+  bomb.vx = 0; bomb.vy = 0;
+  // Start-posisjon: spillerens posisjon (for hold) eller bombens posisjon
+  const baseX = player.x, baseY = player.y;
+  // Prøv 3 ruter frem
+  let tx = baseX + fdx * 3, ty = baseY + fdy * 3;
+  if (isClear(tx, ty)) { bomb.x = tx; bomb.y = ty; return; }
+  // Sprett én rute til
+  tx += fdx; ty += fdy;
+  if (isClear(tx, ty)) { bomb.x = tx; bomb.y = ty; return; }
+  // Fall tilbake til nærmere rute
+  for (let d = 3; d >= 1; d--) {
+    const cx = baseX + fdx * d, cy = baseY + fdy * d;
+    if (isClear(cx, cy)) { bomb.x = cx; bomb.y = cy; return; }
+  }
+  // Alt blokkert — bombe lander på spillerens fot
+  bomb.x = baseX; bomb.y = baseY;
+}
+
 function detonateBomb(bomb) {
   const b = game.bomb;
   const { grid, W, idx } = b.map;
@@ -1362,6 +1398,13 @@ function detonateBomb(bomb) {
   const now = Date.now();
   const owner = b.players.get(bomb.ownerId);
   if (owner) owner.bombsPlaced = Math.max(0, owner.bombsPlaced - 1);
+  // Hvis noen holdt bomben, frigjør deres hold
+  if (bomb.held) {
+    for (const pl of b.players.values()) {
+      if (pl.holdingBomb === bomb.id) pl.holdingBomb = null;
+    }
+    bomb.held = false;
+  }
 
   // Origin
   addExplosion(bomb.x, bomb.y, bomb.ownerId);
@@ -1425,6 +1468,12 @@ function killPlayer(p, byOwnerId) {
   }
   p.alive = false;
   p.deadAt = Date.now();
+  // Slipp bæret bombe ved dødsfall (den blir liggende der spilleren stod)
+  if (p.holdingBomb != null) {
+    const heldBomb = game.bomb?.bombs?.find(b => b.id === p.holdingBomb);
+    if (heldBomb) { heldBomb.held = false; heldBomb.x = p.x; heldBomb.y = p.y; }
+    p.holdingBomb = null;
+  }
   if (byOwnerId && byOwnerId !== p.id) {
     const killer = game.bomb.players.get(byOwnerId);
     if (killer) { killer.kills += 1; killer.score += 100; }
@@ -1451,9 +1500,10 @@ function bombSnapshot(includeWalls = false) {
       bombsMax: p.bombsMax, range: p.range, shield: p.shield || 0,
       speed: p.speed || 1, kick: !!p.kick, punch: !!p.punch, remote: !!p.remote,
       facing: p.facing || 'down',
+      holdingBomb: p.holdingBomb || null,
       respawnIn: !p.alive && p.deadAt ? Math.max(0, BOMB_RESPAWN_MS - (now - p.deadAt)) : 0,
     })),
-    bombs: b.bombs.map(bb => ({ x: bb.x, y: bb.y, ownerId: bb.ownerId, tLeft: Math.max(0, bb.explodesAt - now) })),
+    bombs: b.bombs.map(bb => ({ id: bb.id, x: bb.x, y: bb.y, ownerId: bb.ownerId, held: !!bb.held, tLeft: Math.max(0, bb.explodesAt - now) })),
     explosions: b.explosions.map(e => ({ x: e.x, y: e.y, tLeft: Math.max(0, e.endsAt - now) })),
     powerups: b.powerups,
   };
@@ -1809,52 +1859,47 @@ io.on('connection', (socket) => {
     p.nextDir = null; // Ikke bruk legacy
   });
 
+  // Unified bomb-handling:
+  //   Holding bombe → kaster (med bounce hvis første landing blokkert)
+  //   Står på egen bombe + har punch → plukker opp
+  //   Ellers → legger ned ny bombe
   socket.on('player:bomb-drop', () => {
     if (game.phase !== 'bomb' || !game.bomb) return;
     const p = game.bomb.players.get(socket.id);
     if (!p || !p.alive) return;
+
+    // 1) Holder en bombe → kast
+    if (p.holdingBomb != null) {
+      const bomb = game.bomb.bombs.find(b => b.id === p.holdingBomb);
+      if (bomb) throwBomb(bomb, p);
+      p.holdingBomb = null;
+      return;
+    }
+
+    // 2) Står på egen bombe + har punch → plukk opp (held-state)
+    if (p.punch) {
+      const bombHere = game.bomb.bombs.find(b => b.x === p.x && b.y === p.y && b.ownerId === p.id && !b.held);
+      if (bombHere) {
+        bombHere.held = true;
+        p.holdingBomb = bombHere.id;
+        return;
+      }
+    }
+
+    // 3) Legg ned ny bombe
     if (p.bombsPlaced >= p.bombsMax) return;
-    if (game.bomb.bombs.some(bb => bb.x === p.x && bb.y === p.y)) return;
+    if (game.bomb.bombs.some(bb => bb.x === p.x && bb.y === p.y && !bb.held)) return;
     game.bomb.bombs.push({
       id: ++game.bomb.bombCounter,
       x: p.x, y: p.y,
-      vx: 0, vy: 0,                     // For kicking
+      vx: 0, vy: 0,
+      held: false,
       ownerId: p.id,
       explodesAt: p.remote ? Number.MAX_SAFE_INTEGER : Date.now() + BOMB_FUSE,
       remote: !!p.remote,
       range: p.range,
     });
     p.bombsPlaced += 1;
-  });
-
-  // Punch — kast bomben foran deg (krever punch-powerup)
-  socket.on('player:bomb-punch', () => {
-    if (game.phase !== 'bomb' || !game.bomb) return;
-    const p = game.bomb.players.get(socket.id);
-    if (!p || !p.alive || !p.punch) return;
-    // Finn bombe i retningen spilleren ser
-    const DIR = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
-    const [fdx, fdy] = DIR[p.facing] || DIR.down;
-    const bombInFront = game.bomb.bombs.find(bb =>
-      bb.x === p.x + fdx && bb.y === p.y + fdy
-    );
-    if (!bombInFront) return;
-    // Kast bomben 3 ruter i den retningen — finn landing-celle
-    const W = game.bomb.map.W;
-    const H = BOMB_GRID.h;
-    let landX = bombInFront.x, landY = bombInFront.y;
-    for (let i = 1; i <= 3; i++) {
-      const tx = bombInFront.x + fdx * i;
-      const ty = bombInFront.y + fdy * i;
-      if (tx <= 0 || tx >= W - 1 || ty <= 0 || ty >= H - 1) break;
-      if (game.bomb.map.grid[game.bomb.map.idx(tx, ty)] !== 0) break;
-      if (game.bomb.bombs.some(bb => bb !== bombInFront && bb.x === tx && bb.y === ty)) break;
-      landX = tx; landY = ty;
-    }
-    bombInFront.x = landX;
-    bombInFront.y = landY;
-    bombInFront.vx = 0;
-    bombInFront.vy = 0;
   });
 
   // Remote-detonere alle bomber spilleren har lagt ut
@@ -1864,7 +1909,7 @@ io.on('connection', (socket) => {
     if (!p || !p.alive || !p.remote) return;
     const now = Date.now();
     for (const bb of game.bomb.bombs) {
-      if (bb.ownerId === p.id && bb.remote) bb.explodesAt = now;
+      if (bb.ownerId === p.id && bb.remote && !bb.held) bb.explodesAt = now;
     }
   });
 

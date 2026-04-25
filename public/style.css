@@ -1314,3 +1314,16 @@ body::after {
 .player-state.tutorial-player {
   display: flex; flex-direction: column; align-items: center;
 }
+
+/* ============ Runde-stats på end-skjerm ============ */
+.round-stats { display: flex; justify-content: center; gap: 30px; margin-top: 24px; flex-wrap: wrap; }
+.round-stat { text-align: center; padding: 14px 22px;
+  background: var(--card); border: 1px solid var(--card-b); border-radius: 14px;
+  min-width: 120px; animation: rowSlideIn .5s cubic-bezier(.2, 1.4, .3, 1) both; }
+.round-stat-num { font-size: 36px; font-weight: 800; color: var(--gold-2); line-height: 1; }
+.round-stat-label { font-size: 13px; color: var(--ink-2); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+
+/* Helt skjul snake-pad på desktop (brukere har piltaster) */
+@media (hover: hover) and (pointer: fine) {
+  .snake-pad { display: none; }
+}

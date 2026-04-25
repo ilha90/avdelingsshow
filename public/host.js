@@ -1027,15 +1027,23 @@ function renderSnakeEnd() {
   snake3d.dispose();
   const snakes = snakeSnap ? [...snakeSnap.snakes].sort((a, b) => b.score - a.score) : [];
   const top3 = snakes.slice(0, 3);
+  // Runde-statistikk
+  const longestSnake = snakes.reduce((max, s) => Math.max(max, (s.body || []).length), 0);
+  const totalScore = snakes.reduce((sum, s) => sum + (s.score || 0), 0);
   main.innerHTML = `
     <div class="end-screen">
       <h2>🐍 Slange-resultat 🐍</h2>
       <div class="podium">
-        ${top3[1] ? `<div class="podium-col p2" style="border-color:${top3[1].color}"><div class="podium-medal">🥈</div><div class="podium-avatar">${top3[1].emoji || '🐍'}</div><div class="podium-name">${esc(top3[1].name)}</div><div class="podium-score">${top3[1].score} p</div></div>` : ''}
-        ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '🐍'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p</div></div>` : ''}
-        ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '🐍'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p</div></div>` : ''}
+        ${top3[1] ? `<div class="podium-col p2" style="border-color:${top3[1].color}"><div class="podium-medal">🥈</div><div class="podium-avatar">${top3[1].emoji || '🐍'}</div><div class="podium-name">${esc(top3[1].name)}</div><div class="podium-score">${top3[1].score} p · ${top3[1].body?.length || 0} lang</div></div>` : ''}
+        ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '🐍'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p · ${top3[0].body?.length || 0} lang</div></div>` : ''}
+        ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '🐍'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p · ${top3[2].body?.length || 0} lang</div></div>` : ''}
       </div>
-      <p style="color: var(--ink-2); font-size: 16px; margin-top: 20px">Poeng er lagt til hovedscoren</p>
+      <div class="round-stats">
+        <div class="round-stat"><div class="round-stat-num">${snakes.length}</div><div class="round-stat-label">spillere</div></div>
+        <div class="round-stat"><div class="round-stat-num">${longestSnake}</div><div class="round-stat-label">lengste slange</div></div>
+        <div class="round-stat"><div class="round-stat-num">${totalScore}</div><div class="round-stat-label">poeng delt ut</div></div>
+      </div>
+      <p style="color: var(--ink-2); font-size: 16px; margin-top: 14px">Poeng er lagt til hovedscoren</p>
     </div>`;
   for (let i = 0; i < 3; i++) setTimeout(() => window.confetti?.burst(), i * 500);
   window.sfx?.fanfare();
@@ -1160,6 +1168,9 @@ function renderBombEnd() {
   bomb3d.dispose();
   const players = bombSnap ? [...bombSnap.players].sort((a, b) => b.score - a.score) : [];
   const top3 = players.slice(0, 3);
+  // Runde-statistikk: total drepte + total score
+  const totalKills = players.reduce((sum, p) => sum + (p.kills || 0), 0);
+  const totalScore = players.reduce((sum, p) => sum + (p.score || 0), 0);
   main.innerHTML = `
     <div class="end-screen">
       <h2>💣 Bomberman-resultat 💣</h2>
@@ -1168,7 +1179,12 @@ function renderBombEnd() {
         ${top3[0] ? `<div class="podium-col p1" style="border-color:${top3[0].color}"><div class="podium-medal">🥇</div><div class="podium-avatar">${top3[0].emoji || '💣'}</div><div class="podium-name">${esc(top3[0].name)}</div><div class="podium-score">${top3[0].score} p · ${top3[0].kills} kills</div></div>` : ''}
         ${top3[2] ? `<div class="podium-col p3" style="border-color:${top3[2].color}"><div class="podium-medal">🥉</div><div class="podium-avatar">${top3[2].emoji || '💣'}</div><div class="podium-name">${esc(top3[2].name)}</div><div class="podium-score">${top3[2].score} p · ${top3[2].kills} kills</div></div>` : ''}
       </div>
-      <p style="color: var(--ink-2); font-size: 16px; margin-top: 20px">Poeng lagt til hovedscoren</p>
+      <div class="round-stats">
+        <div class="round-stat"><div class="round-stat-num">${players.length}</div><div class="round-stat-label">spillere</div></div>
+        <div class="round-stat"><div class="round-stat-num">${totalKills}</div><div class="round-stat-label">drap totalt</div></div>
+        <div class="round-stat"><div class="round-stat-num">${totalScore}</div><div class="round-stat-label">poeng delt ut</div></div>
+      </div>
+      <p style="color: var(--ink-2); font-size: 16px; margin-top: 14px">Poeng lagt til hovedscoren</p>
     </div>`;
   for (let i = 0; i < 3; i++) setTimeout(() => window.confetti?.burst(), i * 500);
   window.sfx?.fanfare();
