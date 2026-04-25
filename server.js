@@ -182,6 +182,7 @@ const game = {
     firstAnswers: new Map(),   // quiz: antall ganger først ute
     correctAnswers: new Map(), // quiz: antall riktige
     bestStreak: new Map(),     // quiz: høyeste streak i løpet av spillet
+    allCorrectRounds: 0,       // quiz: antall runder der alle svarte riktig
     kills: new Map(),          // bomb: antall kills
     survived: new Map(),       // bomb: antall ganger siste overlevende
     biggestSnake: new Map(),   // snake: lengste slange noensinne
@@ -303,6 +304,9 @@ function computeAwards(){
     if (ca) add('🎯', 'Treffsikker', ca, ca.value + ' riktige');
     const bs = topOf(game.matchStats.bestStreak);
     if (bs && bs.value >= 3) add('🔥', 'Beste streak', bs, bs.value + ' på rad');
+    if (game.matchStats.allCorrectRounds > 0){
+      awards.push({ icon: '💯', label: 'Samlet innsats', winner: 'Alle', emoji: '🎉', value: game.matchStats.allCorrectRounds + ' ' + (game.matchStats.allCorrectRounds === 1 ? 'runde' : 'runder') + ' der alle traff rett' });
+    }
   }
   // Bomb
   if (lg === 'bomb'){
@@ -330,6 +334,7 @@ function resetMatchStats(){
   game.matchStats.firstAnswers.clear();
   game.matchStats.correctAnswers.clear();
   game.matchStats.bestStreak.clear();
+  game.matchStats.allCorrectRounds = 0;
   game.matchStats.kills.clear();
   game.matchStats.survived.clear();
   game.matchStats.biggestSnake.clear();
@@ -362,6 +367,11 @@ io.on('connection', socket => {
       rec.id = socket.id;
       rec.name = n; rec.emoji = e;
     } else {
+      // Max 100 spillere samtidig (spec) — reconnects teller ikke mot capet
+      if (game.players.size >= 100){
+        socket.emit('error:msg', 'Rommet er fullt (maks 100 spillere)');
+        return;
+      }
       const p = {
         id: socket.id,
         token: Math.random().toString(36).slice(2) + Date.now().toString(36),
@@ -413,6 +423,15 @@ io.on('connection', socket => {
   // ===== Host =====
   socket.on('host:hello', ({ password } = {}) => {
     if (password !== HOST_PASSWORD) { socket.emit('host:denied'); return; }
+    // Kun 1 host om gangen — kick den gamle
+    if (game.hosts.size > 0){
+      for (const oldHostId of game.hosts){
+        if (oldHostId !== socket.id){
+          io.to(oldHostId).emit('host:evicted');
+        }
+      }
+      game.hosts.clear();
+    }
     game.hosts.add(socket.id);
     socket.emit('host:ok', { connectUrl: null });
     broadcast();
@@ -536,6 +555,43 @@ io.on('connection', socket => {
       game._tutorialNextFn = null;
       fn();
     }
+  });
+
+  // ===== Host: kick en spiller =====
+  socket.on('host:kick', ({ pid } = {}) => {
+    if (!game.hosts.has(socket.id)) return;
+    if (!pid || !game.players.has(pid)) return;
+    const p = game.players.get(pid);
+    io.to(pid).emit('kicked', { reason: 'Du ble kicket av host' });
+    // Drop socket
+    const victimSocket = io.sockets.sockets.get(pid);
+    if (victimSocket) victimSocket.disconnect(true);
+    game.players.delete(pid);
+    // Hvis spillet er aktivt, rydd ut referanser i tilhørende Map
+    if (game.snake && game.snake.snakes.has(pid)) game.snake.snakes.delete(pid);
+    if (game.bomb && game.bomb.players.has(pid)) game.bomb.players.delete(pid);
+    broadcast();
+  });
+
+  // ===== Host: stokk lag på nytt =====
+  socket.on('host:reshuffle-teams', () => {
+    if (!game.hosts.has(socket.id)) return;
+    if (!game.config.teams) return;
+    assignTeams();
+    broadcast();
+  });
+
+  // ===== Host: legg til custom voting-prompts =====
+  socket.on('host:add-voting-prompts', (prompts) => {
+    if (!game.hosts.has(socket.id)) return;
+    if (!Array.isArray(prompts)) return;
+    for (const p of prompts){
+      const s = sanitizeText(p, 200);
+      if (s && s.length >= 4) game.customMostLikely.push(s);
+    }
+    // Cap for å hindre misbruk
+    if (game.customMostLikely.length > 200) game.customMostLikely.length = 200;
+    broadcast();
   });
 
   // ===== Quiz answer =====
@@ -765,8 +821,23 @@ function revealQuiz(){
   game.quiz.revealCorrect = true;
   game.phase = 'reveal';
   game.quiz.results = results;
+
+  // 💯 Alle riktig — trigges når alle aktive spillere svarte riktig (min 2 spillere)
+  const correctCount = results.filter(r => r.correct).length;
+  const allCorrect = game.players.size >= 2 && correctCount === game.players.size;
+  if (allCorrect){
+    game.matchStats.allCorrectRounds++;
+    // Gi bonus-poeng til alle og legg til trofé-event
+    for (const r of results){
+      const p = game.players.get(r.pid);
+      if (p){ p.score += 50; r.delta += 50; }
+      r.trophies = r.trophies || [];
+      r.trophies.push({ kind: 'all-correct' });
+    }
+  }
+
   broadcast();
-  io.emit('quiz:reveal', { correctIdx: q.c, results });
+  io.emit('quiz:reveal', { correctIdx: q.c, results, allCorrect });
 
   // Leaderboard?
   const N = game.config.lbevery;
@@ -1758,7 +1829,7 @@ function explodeCells(b){
 }
 
 function rollPowerup(){
-  const pool = ['bomb','bomb','fire','fire','kick','punch','remote','shield','gold'];
+  const pool = ['bomb','bomb','fire','fire','kick','punch','remote','shield','gold','speed'];
   return pool[(Math.random()*pool.length)|0];
 }
 
@@ -1770,6 +1841,7 @@ function applyPowerup(p, kind){
     case 'punch': p.punch = true; break;
     case 'remote': p.remote = true; break;
     case 'shield': p.shield = Math.min(3, p.shield + 1); break;
+    case 'speed': p.speed = true; break; // cosmetic — kan bygges ut senere
     case 'gold': {
       const pl = game.players.get(p.id); if (pl) pl.score += 50;
       break;

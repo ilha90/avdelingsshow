@@ -64,6 +64,7 @@
     </div>
     <h3>Innstillinger</h3>
     <label>Lag-modus <select id="cfg-teams"><option value="0">Av</option><option value="1">På</option></select></label>
+    <button class="btn" id="btn-shuffle-teams" style="display:none">🔀 Stokk lag på nytt</button>
     <label>Antall spørsmål <select id="cfg-qcount"><option>5</option><option>8</option><option selected>10</option><option>12</option><option>15</option><option>20</option></select></label>
     <label>Tid per spørsmål (s) <select id="cfg-qtime"><option>10</option><option>15</option><option selected>20</option><option>30</option></select></label>
     <label>Tavle hver N <select id="cfg-lbevery"><option value="0">Av</option><option value="3" selected>3</option><option value="5">5</option><option value="10">10</option></select></label>
@@ -87,6 +88,12 @@
       <label>Antall <select id="ai-count"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></label>
       <button class="btn gold" id="ai-gen">Generer</button>
       <small id="ai-status"></small>
+    </div>
+    <div class="ai-box" style="border-color: rgba(71,209,151,.25); background: rgba(71,209,151,.06);">
+      <h3>🗳️ Egne 'mest sannsynlig'-spørsmål</h3>
+      <textarea id="mlp-input" rows="4" placeholder="Én linje per spørsmål, f.eks.:&#10;...glemmer kaffekoppen igjen&#10;...tar trappen i stedet for heisen"></textarea>
+      <button class="btn" id="mlp-add">Legg til</button>
+      <small id="mlp-status"></small>
     </div>
     <div id="center-msg" style="color:var(--muted); font-size:13px;">Åpne menyen for å starte et spill.</div>
   </section>

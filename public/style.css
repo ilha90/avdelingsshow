@@ -269,6 +269,23 @@ body::after {
   opacity: 0; transform: scale(0);
   transition: opacity .3s, transform .3s var(--ease-out-back);
 }
+.player-card .kick-btn {
+  position: absolute; top: 4px; left: 4px;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: rgba(255,90,107,.2);
+  border: 1px solid rgba(255,90,107,.45);
+  color: #ffb3bb;
+  font-weight: 900; font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  opacity: 0; transform: scale(0.7);
+  transition: opacity .2s, transform .2s var(--ease-out-back), background .2s;
+  line-height: 1;
+  padding: 0;
+}
+.player-card:hover .kick-btn { opacity: 1; transform: scale(1); }
+.player-card .kick-btn:hover { background: rgba(255,90,107,.45); color: #fff; }
 .player-card[data-streak="3"] .streak,
 .player-card[data-streak="4"] .streak,
 .player-card[data-streak="5"] .streak,

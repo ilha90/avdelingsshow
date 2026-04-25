@@ -47,6 +47,13 @@ socket.on('host:denied', () => {
   pwError.textContent = 'Feil passord';
   sessionStorage.removeItem('host:pw');
 });
+socket.on('host:evicted', () => {
+  // En annen host har logget inn og overtatt — vis banner og send tilbake til gate
+  sessionStorage.removeItem('host:pw');
+  pwGate.classList.remove('hidden');
+  hostMain.classList.add('hidden');
+  pwError.textContent = 'En annen host har tatt over';
+});
 
 // ====== Topbar ======
 document.getElementById('btn-help').addEventListener('click', () => {
@@ -75,6 +82,8 @@ function initHostUI(){
     });
   };
   bindCfg('cfg-teams', 'teams');
+  const btnShuffle = document.getElementById('btn-shuffle-teams');
+  btnShuffle.addEventListener('click', () => socket.emit('host:reshuffle-teams'));
   bindCfg('cfg-qcount', 'qcount');
   bindCfg('cfg-qtime', 'qtime');
   bindCfg('cfg-lbevery', 'lbevery');
@@ -95,6 +104,21 @@ function initHostUI(){
   aiKey.value = ai.getKey();
   aiKey.addEventListener('change', () => ai.setKey(aiKey.value));
   document.getElementById('ai-gen').addEventListener('click', aiGenerate);
+
+  // Custom 'mest sannsynlig'-prompts
+  document.getElementById('mlp-add').addEventListener('click', () => {
+    const ta = document.getElementById('mlp-input');
+    const raw = ta.value.split('\n').map(l => l.trim()).filter(l => l.length >= 4);
+    if (!raw.length){
+      document.getElementById('mlp-status').textContent = 'Skriv minst én linje (>= 4 tegn)';
+      return;
+    }
+    socket.emit('host:add-voting-prompts', raw);
+    ta.value = '';
+    document.getElementById('mlp-status').textContent = 'La til ' + raw.length + ' spørsmål ✓';
+    sfx.correct();
+    setTimeout(() => { document.getElementById('mlp-status').textContent = ''; }, 4000);
+  });
 
   // Connect URL
   fetch('/connect-url').then(r => r.json()).then(j => {
@@ -133,11 +157,21 @@ socket.on('state', s => {
   state = s;
   render(s, prevPhase);
 });
-socket.on('quiz:reveal', ({ correctIdx, results }) => {
+socket.on('quiz:reveal', ({ correctIdx, results, allCorrect }) => {
+  // 💯 Alle riktig — kraftig feiring
+  if (allCorrect){
+    fx.phaseBanner('💯 ALLE RIKTIG!', 'Hele gjengen traff!');
+    fx.toast('Alle svarte riktig — +50 til alle', { icon: '💯', kind: 'first' });
+    stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.5);
+    setTimeout(() => stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 1.0), 300);
+    confetti.burst({ count: 160 });
+    mascotCelebrate(5000);
+    sfx.bigWin();
+  }
   // Score-deltas på hver spiller + halo + toasts
   for (const r of results){
     if (r.delta > 0){
-      fx.scoreDeltaOnPlayer(r.pid, r.delta, { gold: r.trophies && r.trophies.some(t => t.kind === 'first') });
+      fx.scoreDeltaOnPlayer(r.pid, r.delta, { gold: r.trophies && r.trophies.some(t => t.kind === 'first' || t.kind === 'all-correct') });
     }
     if (r.trophies && r.trophies.length){
       for (const t of r.trophies){
@@ -153,6 +187,8 @@ socket.on('quiz:reveal', ({ correctIdx, results }) => {
             mascotCelebrate();
             mascotSpeak('🔥 ' + r.name + ' ' + t.n + ' på rad!');
           }
+        } else if (t.kind === 'all-correct'){
+          fx.halo(r.pid, 'gold');
         }
       }
     }
@@ -310,9 +346,9 @@ function renderPlayers(s){
       ? `<span class="team-badge" style="color:${p.team.color}; background: ${p.team.color}22;">${p.team.emoji} ${escapeHtml(p.team.name)}</span>`
       : '';
     el.classList.toggle('is-leader', p.id === leaderId && p.score > 0);
-    // Behold answered-tilstand om den finnes; oppdater kun innhold
     const wasAnswered = el.classList.contains('answered');
     el.innerHTML = `
+      <button class="kick-btn" title="Kick ${escapeHtml(p.name)}" data-kick="${p.id}">×</button>
       <span class="status-dot"></span>
       <span class="crown">👑</span>
       <span class="emoji">${p.emoji}</span>
@@ -323,6 +359,16 @@ function renderPlayers(s){
     `;
     if (wasAnswered) el.classList.add('answered');
     if (p.hasAnswered) el.classList.add('answered');
+    // Kick-knapp handler (re-bindet hver render siden innerHTML er byttet)
+    const kbtn = el.querySelector('.kick-btn');
+    if (kbtn){
+      kbtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (confirm('Kick ' + p.name + '?')){
+          socket.emit('host:kick', { pid: p.id });
+        }
+      });
+    }
   });
 
   // Bytte av leder?
@@ -346,6 +392,9 @@ function updateLobbyConfig(s){
   setVal('cfg-lietime', s.config.lietime);
   setVal('cfg-snaketime', s.config.snaketime);
   setVal('cfg-bombtime', s.config.bombtime);
+  // Toggle shuffle-lag-knapp basert på lagmodus + phase==lobby
+  const shuffle = document.getElementById('btn-shuffle-teams');
+  if (shuffle) shuffle.style.display = (s.config.teams && s.phase === 'lobby') ? '' : 'none';
 }
 
 function renderCenterControls(s){
