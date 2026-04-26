@@ -1309,6 +1309,7 @@ function renderEnd(s){
   const o = document.getElementById('overlays');
   const podium = s.players.slice().sort((a,b) => b.score - a.score).slice(0, 3);
   const awards = s.awards || [];
+  const recap = s.recap || [];
   const total = s.players.reduce((n,p) => n + p.score, 0);
   const facts = [];
   if (podium[0]) facts.push(`<b>${escapeHtml(podium[0].name)}</b> tok ${podium[0].score} poeng — topp av ${s.players.length} spillere`);
@@ -1317,9 +1318,11 @@ function renderEnd(s){
     facts.push(`Vinneren hadde <b>${diff}</b> poeng forsprang til andreplassen`);
   }
   const gameLabel = { quiz: 'Quiz', lightning: 'Lyn-runde', snake: 'Slange-kamp', bomb: 'Bomberman', scatter: 'Kategori-kamp', lie: '2 sannheter 1 løgn' }[s.lastGame] || '';
+
+  // Bygg DOM men skjul podium + awards initiellt (recap først)
   o.innerHTML = `
-    <div class="end-screen">
-      <h1>🎉 ${gameLabel ? escapeHtml(gameLabel) + ' — over' : 'Runde over'} 🎉</h1>
+    <div class="end-screen hidden-initially">
+      <h1 class="end-title">🎉 ${gameLabel ? escapeHtml(gameLabel) + ' — over' : 'Runde over'} 🎉</h1>
       <div class="podium">
         ${podium[1] ? `<div class="podium-spot"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
         ${podium[0] ? `<div class="podium-spot"><div class="avatar">${podium[0].emoji}</div><div class="name">${escapeHtml(podium[0].name)}</div><div class="score">${podium[0].score}</div><div class="podium-bar gold">🥇</div></div>` : ''}
@@ -1349,16 +1352,33 @@ function renderEnd(s){
   `;
   document.getElementById('end-btn').addEventListener('click', () => socket.emit('host:reset'));
 
-  // Cinematic orchestration
+  // Sekvens: recap først, så cinematicEnd
+  runMatchRecapThenEnd(recap, podium, awards);
+}
+
+async function runMatchRecapThenEnd(recap, podium, awards){
+  const endScreen = document.querySelector('.end-screen');
+  if (endScreen) endScreen.style.visibility = 'hidden';
+  document.body.classList.add('dim-lights');
+
+  // Vis recap-intro
+  if (recap.length){
+    await showRecapIntro();
+    for (let i = 0; i < recap.length; i++){
+      await showRecapCard(recap[i], i + 1, recap.length);
+    }
+    await sleep(600);
+  }
+
+  // Gå til vanlig cinematicEnd
+  if (endScreen){
+    endScreen.style.visibility = '';
+    endScreen.classList.remove('hidden-initially');
+  }
   fx.cinematicEnd({
     podium, awards,
     onDrumroll: () => sfx.drumroll(1100),
-    onSpotlight: (i) => {
-      sfx.zoom();
-      const positions = ['silver', 'gold', 'bronze']; // rekkefølge: bronze(0), silver(1), gold(2)
-      // Mascot-cheer på hver posisjon
-      mascotCelebrate(900);
-    },
+    onSpotlight: (i) => { sfx.zoom(); mascotCelebrate(900); },
     onAwardTick: (i) => {
       sfx.tickUp(i);
       stageBg.boom(window.innerWidth/2, window.innerHeight * 0.7, i%2 ? 'gold' : 'mint', 0.6);
@@ -1371,14 +1391,59 @@ function renderEnd(s){
       setTimeout(() => stageBg.boom(window.innerWidth * 0.2, window.innerHeight * 0.4, 'mint', 1.3), 200);
       setTimeout(() => stageBg.boom(window.innerWidth * 0.8, window.innerHeight * 0.4, 'gold', 1.3), 400);
       mascotCelebrate(8000);
-      // Fade inn "Tilbake"-knappen
       const btn = document.getElementById('end-btn');
       if (btn) btn.style.opacity = '1';
     }
   });
-
-  // Reset rank-tracking for next match
   fx.resetRankTracking();
+}
+
+async function showRecapIntro(){
+  const el = document.createElement('div');
+  el.className = 'recap-intro';
+  el.innerHTML = `
+    <div class="ri-tag">MATCH RECAP</div>
+    <div class="ri-title">Høydepunkter</div>
+    <div class="ri-sub">Dette var runden i et nøtteskall</div>
+  `;
+  document.body.appendChild(el);
+  sfx.fanfare();
+  stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.3);
+  setTimeout(() => el.classList.add('in'), 20);
+  await sleep(1800);
+  el.classList.add('out');
+  await sleep(500);
+  el.remove();
+}
+
+async function showRecapCard(card, idx, total){
+  const el = document.createElement('div');
+  el.className = 'recap-card color-' + (card.color || 'mint');
+  el.innerHTML = `
+    <div class="rc-num">${idx} / ${total}</div>
+    <div class="rc-icon">${card.icon}</div>
+    <div class="rc-title">${escapeHtml(card.title)}</div>
+    <div class="rc-stat">${escapeHtml(card.stat)}</div>
+    <div class="rc-winner">
+      <span class="rc-emoji">${card.emoji || '🏆'}</span>
+      <span class="rc-name">${escapeHtml(card.name)}</span>
+    </div>
+  `;
+  document.body.appendChild(el);
+  sfx.drumroll(400);
+  setTimeout(() => el.classList.add('in'), 20);
+  await sleep(300);
+  sfx.zoom();
+  stageBg.boom(
+    window.innerWidth / 2,
+    window.innerHeight / 2,
+    card.color === 'gold' ? 'gold' : 'mint',
+    0.9
+  );
+  await sleep(1800);
+  el.classList.add('out');
+  await sleep(500);
+  el.remove();
 }
 
 // ====== Mascot ======

@@ -185,9 +185,12 @@ const game = {
   matchStats: {
     firstAnswers: new Map(),   // quiz: antall ganger først ute
     correctAnswers: new Map(), // quiz: antall riktige
+    totalAnswers: new Map(),   // quiz: totalt antall svar (for nøyaktighet)
     bestStreak: new Map(),     // quiz: høyeste streak i løpet av spillet
     allCorrectRounds: 0,       // quiz: antall runder der alle svarte riktig
+    fastestAnswer: null,       // quiz: { pid, name, ms } — raskeste riktige svar
     kills: new Map(),          // bomb: antall kills
+    biggestCombo: null,        // bomb: { pid, name, count } — største combo i ett tick
     survived: new Map(),       // bomb: antall ganger siste overlevende
     biggestSnake: new Map(),   // snake: lengste slange noensinne
     apples: new Map(),         // snake: antall matebiter
@@ -290,6 +293,7 @@ function publicState(){
   // Awards — kun når vi er på end-phase
   if (game.phase === 'end'){
     base.awards = computeAwards();
+    base.recap = computeMatchRecap();
     base.lastGame = game.lastGame;
   }
   return base;
@@ -346,12 +350,178 @@ function computeAwards(){
   return awards;
 }
 
+function computeMatchRecap(){
+  // Returnerer opptil 5 highlight-kort for match-recap sekvens
+  const recap = [];
+  const pp = (pid) => game.players.get(pid);
+  const lg = game.lastGame;
+
+  // 1. FLEST POENG — alltid vis
+  const players = Array.from(game.players.values()).sort((a, b) => b.score - a.score);
+  if (players.length > 0 && players[0].score > 0){
+    recap.push({
+      icon: '🏆',
+      title: 'Storvinneren',
+      stat: players[0].score + ' poeng',
+      name: players[0].name,
+      emoji: players[0].emoji,
+      color: 'gold'
+    });
+  }
+
+  // 2. Quiz: raskeste svar
+  if ((lg === 'quiz' || lg === 'lightning') && game.matchStats.fastestAnswer){
+    const f = game.matchStats.fastestAnswer;
+    const p = pp(f.pid);
+    recap.push({
+      icon: '⚡',
+      title: 'Raskeste svar',
+      stat: (f.ms / 1000).toFixed(2) + ' sekunder',
+      name: f.name,
+      emoji: p?.emoji || '⚡',
+      color: 'mint'
+    });
+  }
+
+  // 3. Quiz: beste streak
+  if ((lg === 'quiz' || lg === 'lightning') && game.matchStats.bestStreak.size){
+    let bestPid = null, bestN = 0;
+    for (const [pid, n] of game.matchStats.bestStreak){
+      if (n > bestN){ bestPid = pid; bestN = n; }
+    }
+    if (bestN >= 3){
+      const p = pp(bestPid);
+      recap.push({
+        icon: '🔥',
+        title: 'Lengste streak',
+        stat: bestN + ' på rad',
+        name: p?.name || '?',
+        emoji: p?.emoji || '🔥',
+        color: 'orange'
+      });
+    }
+  }
+
+  // 4. Quiz: nøyaktighet (riktige / totale)
+  if ((lg === 'quiz' || lg === 'lightning')){
+    let bestAccPid = null, bestAcc = 0, bestTotal = 0;
+    for (const [pid, correct] of game.matchStats.correctAnswers){
+      const total = game.matchStats.totalAnswers.get(pid) || 1;
+      const acc = correct / total;
+      if (total >= 3 && acc > bestAcc){
+        bestAccPid = pid; bestAcc = acc; bestTotal = correct;
+      }
+    }
+    if (bestAccPid){
+      const p = pp(bestAccPid);
+      recap.push({
+        icon: '🎯',
+        title: 'Høyeste nøyaktighet',
+        stat: Math.round(bestAcc * 100) + '% (' + bestTotal + ' riktige)',
+        name: p?.name || '?',
+        emoji: p?.emoji || '🎯',
+        color: 'mint'
+      });
+    }
+  }
+
+  // 5. Bomb: største combo
+  if (lg === 'bomb' && game.matchStats.biggestCombo){
+    const c = game.matchStats.biggestCombo;
+    const p = pp(c.pid);
+    const label = c.count >= 4 ? 'MEGA' : c.count === 3 ? 'TRIPPEL' : 'DOBBELT';
+    recap.push({
+      icon: '💥',
+      title: 'Største combo',
+      stat: label + ' (' + c.count + ' i ett tick)',
+      name: c.name,
+      emoji: p?.emoji || '💣',
+      color: 'danger'
+    });
+  }
+
+  // 6. Bomb: flest kills
+  if (lg === 'bomb' && game.matchStats.kills.size){
+    let bestPid = null, bestN = 0;
+    for (const [pid, n] of game.matchStats.kills){
+      if (n > bestN){ bestPid = pid; bestN = n; }
+    }
+    if (bestN > 0){
+      const p = pp(bestPid);
+      recap.push({
+        icon: '💣',
+        title: 'Flest drap',
+        stat: bestN + ' kills',
+        name: p?.name || '?',
+        emoji: p?.emoji || '💣',
+        color: 'danger'
+      });
+    }
+  }
+
+  // 7. Snake: lengste slange
+  if (lg === 'snake' && game.matchStats.biggestSnake.size){
+    let bestPid = null, bestN = 0;
+    for (const [pid, n] of game.matchStats.biggestSnake){
+      if (n > bestN){ bestPid = pid; bestN = n; }
+    }
+    if (bestN >= 5){
+      const p = pp(bestPid);
+      const label = bestN >= 50 ? 'LEGENDE!' : bestN >= 30 ? 'EPISK!' : bestN >= 20 ? 'LANG' : 'OK';
+      recap.push({
+        icon: '🐍',
+        title: 'Lengste slange',
+        stat: bestN + ' segmenter ' + label,
+        name: p?.name || '?',
+        emoji: p?.emoji || '🐍',
+        color: 'mint'
+      });
+    }
+  }
+
+  // 8. Snake: flest epler
+  if (lg === 'snake' && game.matchStats.apples.size){
+    let bestPid = null, bestN = 0;
+    for (const [pid, n] of game.matchStats.apples){
+      if (n > bestN){ bestPid = pid; bestN = n; }
+    }
+    if (bestN >= 3){
+      const p = pp(bestPid);
+      recap.push({
+        icon: '🍎',
+        title: 'Fråtser',
+        stat: bestN + ' epler',
+        name: p?.name || '?',
+        emoji: p?.emoji || '🍎',
+        color: 'gold'
+      });
+    }
+  }
+
+  // 9. Alle-riktig-runder (hvis noe, spesialt)
+  if ((lg === 'quiz' || lg === 'lightning') && game.matchStats.allCorrectRounds > 0){
+    recap.push({
+      icon: '💯',
+      title: 'Samlet innsats',
+      stat: game.matchStats.allCorrectRounds + ' runde' + (game.matchStats.allCorrectRounds > 1 ? 'r' : '') + ' der alle traff',
+      name: 'Hele gjengen',
+      emoji: '🎉',
+      color: 'gold'
+    });
+  }
+
+  return recap.slice(0, 5); // Cap til 5 highlights
+}
+
 function resetMatchStats(){
   game.matchStats.firstAnswers.clear();
   game.matchStats.correctAnswers.clear();
+  game.matchStats.totalAnswers.clear();
   game.matchStats.bestStreak.clear();
   game.matchStats.allCorrectRounds = 0;
+  game.matchStats.fastestAnswer = null;
   game.matchStats.kills.clear();
+  game.matchStats.biggestCombo = null;
   game.matchStats.survived.clear();
   game.matchStats.biggestSnake.clear();
   game.matchStats.apples.clear();
@@ -899,12 +1069,19 @@ function revealQuiz(){
     const p = game.players.get(pid); if (!p) continue;
     const correct = ans.idx === q.c;
     let base = 0, trophies = [];
+    // Totale svar — for nøyaktighet-stats
+    game.matchStats.totalAnswers.set(pid, (game.matchStats.totalAnswers.get(pid) || 0) + 1);
     if (correct){
       const timeLeft = Math.max(0, (game.quiz.deadline - ans.t) / 1000);
       base = Math.round((500 + Math.min(500, timeLeft / secs * 500)) * mult);
       p.score += base;
       // Match stats — correct
       game.matchStats.correctAnswers.set(pid, (game.matchStats.correctAnswers.get(pid) || 0) + 1);
+      // Raskeste riktige svar totalt
+      const answeredMs = ans.t - game.quiz.startAt;
+      if (!game.matchStats.fastestAnswer || answeredMs < game.matchStats.fastestAnswer.ms){
+        game.matchStats.fastestAnswer = { pid, name: p.name, ms: answeredMs };
+      }
       // Streak
       const s = (game.quiz.streaks.get(pid) || 0) + 1;
       game.quiz.streaks.set(pid, s);
@@ -1956,6 +2133,14 @@ function bombTick(){
         // Bonus-poeng: 50 per kill i combo, +100 for triple/mega
         const bonus = count * 50 + (count >= 3 ? 100 : 0);
         if (killer) killer.score += bonus;
+        // Track biggestCombo for match-recap
+        if (!game.matchStats.biggestCombo || count > game.matchStats.biggestCombo.count){
+          game.matchStats.biggestCombo = {
+            pid: killerId,
+            name: killer?.name || '?',
+            count
+          };
+        }
       }
     }
   }
