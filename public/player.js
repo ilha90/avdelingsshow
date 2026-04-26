@@ -446,12 +446,17 @@ function stopQuizHaptic(){
 }
 
 // Reset key når vi forlater quiz
-function resetQuizKey(){ lastQuizKey = null; stopQuizHaptic(); }
+function resetQuizKey(){ lastQuizKey = null; _lastRevealKey = null; stopQuizHaptic(); }
 
+let _lastRevealKey = null;
 function showReveal(s){
   const correct = s.quiz?.correctIdx;
   if (correct == null) return;
   const q = s.quiz.question;
+  const qKey = s.quiz.index + ':' + (q?.q || '');
+  // Kun trigger én gang per spørsmål
+  if (_lastRevealKey === qKey) return;
+  _lastRevealKey = qKey;
   const me_p = s.players.find(p => p.id === me.id);
   // Hent mitt resultat fra siste results (lagres i window.lastQuizResult når quiz:reveal kommer)
   const myResult = window.lastQuizResult || null;

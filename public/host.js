@@ -129,23 +129,6 @@ function initHostUI(){
     }
   });
 
-  // ===== TTS-toggle =====
-  const btnTts = document.getElementById('btn-tts');
-  let ttsEnabled = localStorage.getItem('avdelingsshow:tts') !== '0'; // default på
-  updateTtsButton();
-  btnTts.addEventListener('click', () => {
-    ttsEnabled = !ttsEnabled;
-    localStorage.setItem('avdelingsshow:tts', ttsEnabled ? '1' : '0');
-    updateTtsButton();
-    if (!ttsEnabled) stopTts();
-  });
-  function updateTtsButton(){
-    btnTts.textContent = ttsEnabled ? '🗣️' : '🔇🗣️';
-    btnTts.style.opacity = ttsEnabled ? '1' : '0.5';
-    btnTts.title = 'Tekst-til-tale: ' + (ttsEnabled ? 'PÅ' : 'AV');
-  }
-  window._ttsEnabled = () => ttsEnabled;
-
   // AI
   const aiKey = document.getElementById('ai-key');
   aiKey.value = ai.getKey();
@@ -174,6 +157,10 @@ function initHostUI(){
 
   // Mascot wander
   setInterval(wanderMascot, 7000);
+
+  // Garderobe — bytt karakter hvert 60 sekund
+  setTimeout(mascotWardrobeChange, 22000);  // første klesbytte etter 22s
+  setInterval(mascotWardrobeChange, 60000); // deretter hver 60s
 
   // Keep-alive mot /health for å hindre Render-coldstart under show
   setInterval(() => { fetch('/health').catch(() => {}); }, 4 * 60 * 1000);
@@ -291,6 +278,8 @@ socket.on('bomb:tick', data => {
     if (bombRenderer.setFlames) bombRenderer.setFlames(data.flames || []);
   }
   renderGameHud(data, 'bomb');
+  // Track aktive bomb-karakterer så maskot-garderobe kan velge fra dem
+  window._bombPlayerCharacters = data.players.map(p => p.character).filter(Boolean);
   // Champion-cinematic: akkurat én overlevende + flere hadde startet (>=2)
   const alive = data.players.filter(p => p.alive);
   if (!_bombChampionShown && data.players.length >= 2 && alive.length === 1){
@@ -885,9 +874,6 @@ function renderQuestion(s){
       setTimeout(() => { bar.style.width = '0%'; }, 50);
       sfx.tick();
 
-      // TTS — les opp spørsmålet hvis aktivert
-      speakQuestion(q);
-
       // Sett opp time-pressure-watcher: aktiver siste 5 sek
       startTimePressureWatcher(s.quiz.deadline);
     }, 1350);
@@ -925,84 +911,7 @@ function stopTimePressureWatcher(){
   fx.timePressureStop();
 }
 
-// ===== TTS =====
-let _ttsVoice = null;
-function pickNorwegianVoice(){
-  if (!('speechSynthesis' in window)) return null;
-  const voices = window.speechSynthesis.getVoices();
-  // Prefer nb-NO, nn-NO, nordics, any Norwegian variant
-  const nb = voices.find(v => v.lang === 'nb-NO');
-  if (nb) return nb;
-  const nn = voices.find(v => v.lang === 'nn-NO');
-  if (nn) return nn;
-  const norsk = voices.find(v => /^n[bn]/i.test(v.lang) || /norsk|norw/i.test(v.name));
-  if (norsk) return norsk;
-  // Fallback til svensk/dansk som høres nordisk ut
-  const nordic = voices.find(v => /^(sv|da)/i.test(v.lang));
-  if (nordic) return nordic;
-  // Siste fallback: engelsk
-  return voices.find(v => /^en/i.test(v.lang)) || voices[0] || null;
-}
-
-function ensureVoiceLoaded(cb){
-  if (!('speechSynthesis' in window)) { cb(null); return; }
-  const voices = window.speechSynthesis.getVoices();
-  if (voices.length > 0){
-    _ttsVoice = _ttsVoice || pickNorwegianVoice();
-    cb(_ttsVoice);
-    return;
-  }
-  // Vent på voiceschanged-event (Chrome lazy-laster stemmer)
-  const onChange = () => {
-    window.speechSynthesis.removeEventListener('voiceschanged', onChange);
-    _ttsVoice = pickNorwegianVoice();
-    cb(_ttsVoice);
-  };
-  window.speechSynthesis.addEventListener('voiceschanged', onChange);
-  // Trigg lasting
-  window.speechSynthesis.getVoices();
-}
-
-function speakQuestion(q){
-  if (!window._ttsEnabled || !window._ttsEnabled()) return;
-  if (!('speechSynthesis' in window)) return;
-  if (q.isEmoji) return; // Emoji-gåter leses ikke
-  stopTts();
-  ensureVoiceLoaded((voice) => {
-    const text = q.q;
-    if (!text) return;
-    const utt = new SpeechSynthesisUtterance(text);
-    if (voice) utt.voice = voice;
-    utt.lang = 'nb-NO';
-    utt.rate = 0.95;
-    utt.pitch = 1.05;
-    utt.volume = 0.9;
-    window.speechSynthesis.speak(utt);
-  });
-}
-
-function speakText(text, opts = {}){
-  if (!window._ttsEnabled || !window._ttsEnabled()) return;
-  if (!('speechSynthesis' in window)) return;
-  stopTts();
-  ensureVoiceLoaded((voice) => {
-    const utt = new SpeechSynthesisUtterance(text);
-    if (voice) utt.voice = voice;
-    utt.lang = opts.lang || 'nb-NO';
-    utt.rate = opts.rate ?? 1.0;
-    utt.pitch = opts.pitch ?? 1.0;
-    utt.volume = opts.volume ?? 0.9;
-    window.speechSynthesis.speak(utt);
-  });
-}
-
-function stopTts(){
-  if ('speechSynthesis' in window){
-    try { window.speechSynthesis.cancel(); } catch(e){}
-  }
-}
-// Expose for mute-kontroll
-window.stopTts = stopTts;
+// ===== Mascot =====
 
 function renderReveal(s){
   if (!s.quiz) return;
@@ -1016,10 +925,6 @@ function renderReveal(s){
   });
   sfx.reveal();
   confetti.burst({ x: window.innerWidth/2, y: window.innerHeight/2 - 100, count: 60 });
-  // TTS: les opp riktig svar
-  if (correct != null && q.a && q.a[correct]){
-    setTimeout(() => speakText('Riktig svar: ' + q.a[correct], { rate: 0.95 }), 900);
-  }
 }
 
 function renderLeaderboard(s){
@@ -1052,7 +957,6 @@ function renderVoting(s){
       </div>
     `;
     mascotSpeak(s.vote.prompt, 4000);
-    speakText('Hvem er mest sannsynlig ' + s.vote.prompt);
   } else {
     const c = o.querySelector('.voting-wrap div[style*="--muted"]:last-child');
     if (c) c.textContent = s.vote.votesCount + ' / ' + s.players.length + ' har stemt';
@@ -1139,9 +1043,6 @@ function renderIcebreaker(s){
     </div>
   `;
   mascotSpeak(s.icebreaker.prompt, 6000);
-  let ttsText = s.icebreaker.prompt;
-  if (t) ttsText = (t.name + ': ' + s.icebreaker.prompt);
-  speakText(ttsText);
 }
 
 function renderWheel(s){
@@ -1496,6 +1397,70 @@ function mascotForPhase(phase){
   else if (phase === 'wheel' || phase === 'end') mascotEmotion('dancing');
   else mascotEmotion(null);
 }
+
+// Hold oversikt over hvilke karakterer som er brukt sist — unngå repetisjon
+let _lastWardrobeIds = [];
+function pickWardrobeChar(){
+  // Foretrekker karakter fra aktive bomb-spillere hvis spillet pågår
+  const activeChars = window._bombPlayerCharacters || [];
+  const pool = activeChars.length
+    ? activeChars
+    : BOMB_CHARS.map(c => c.id);
+  // Unngå å velge én av de 3 siste
+  const recent = new Set(_lastWardrobeIds.slice(-3));
+  const candidates = pool.filter(id => !recent.has(id));
+  const arr = candidates.length ? candidates : pool;
+  const pick = arr[Math.floor(Math.random() * arr.length)];
+  _lastWardrobeIds.push(pick);
+  if (_lastWardrobeIds.length > 8) _lastWardrobeIds.shift();
+  return pick;
+}
+
+async function mascotWardrobeChange(){
+  if (!mascot) return;
+  // Ikke triggre under aktive cinematic-faser — rar timing
+  if (document.body.classList.contains('dim-lights')) return;
+  const charId = pickWardrobeChar();
+  const char = BOMB_CHARS.find(c => c.id === charId) || BOMB_CHARS[0];
+
+  // Annonser
+  mascotSpeak('🎭 Klesbytte! ' + char.name, 2800);
+  try { sfx.whoosh(); } catch(e){}
+
+  // Lukk garderobe-dør
+  mascot.classList.add('wardrobe-closing');
+  await sleep(550);
+  try { sfx.pop(); } catch(e){}
+
+  // Bytt SVG-innhold
+  const existingSvg = mascot.querySelector('.gh-svg');
+  if (existingSvg){
+    // Bygg ny karakter-SVG med walking=false, facing=right
+    const newSvgMarkup = buildCharSvg(char, { size: 160, walking: false, facing: 'right' });
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = newSvgMarkup;
+    const newSvg = wrapper.firstElementChild;
+    newSvg.classList.add('gh-svg', 'mascot-outfit');
+    // Behold viewBox og class-hierarki
+    existingSvg.replaceWith(newSvg);
+  }
+
+  await sleep(400);
+
+  // Åpne dør (reveal!)
+  mascot.classList.remove('wardrobe-closing');
+  mascot.classList.add('wardrobe-opening');
+  await sleep(600);
+  mascot.classList.remove('wardrobe-opening');
+
+  try { sfx.correct(); } catch(e){}
+  mascotSpeak('Hva synes dere? ✨', 3200);
+}
+
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+// Expose for debugging / testing
+window.mascotWardrobeChange = mascotWardrobeChange;
 
 function showKillBanner(name){
   const el = document.createElement('div');

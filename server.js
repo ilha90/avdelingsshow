@@ -913,8 +913,12 @@ function revealQuiz(){
     }
   }
 
-  broadcast();
+  // Viktig: send quiz:reveal FØR broadcast(state). Klient-side setter
+  // window.lastQuizResult fra quiz:reveal, og showReveal() (som kjøres via
+  // state-handler) må kunne lese det. Feil rekkefølge ga 'Du svarte ikke'
+  // selv for korrekte svar.
   io.emit('quiz:reveal', { correctIdx: q.c, results, allCorrect });
+  broadcast();
 
   // Leaderboard?
   const N = game.config.lbevery;
