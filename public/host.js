@@ -7,6 +7,7 @@ import * as ai from './ai.js';
 import * as stageBg from './stage-bg.js';
 import * as fx from './effects.js';
 import { BOMB_CHARS, buildCharSvg } from './bomb-chars.js';
+import { SNAKE_CHARS, buildSnakePreviewSvg } from './snake-chars.js';
 
 // ====== Score-tracking for animasjoner ======
 const lastScores = new Map(); // pid -> score ved forrige render (for tickUpScore)
@@ -356,6 +357,7 @@ function render(s, prevPhase){
       'lie-play': 'Gjetter løgnen.',
       'lie-reveal': 'Avsløring!',
       'bomb-select': 'Velger karakterer...',
+      'snake-select': 'Velger slanger...',
       end: 'Sluttskjerm.'
     };
     center.textContent = labels[s.phase] || s.phase;
@@ -386,6 +388,7 @@ function render(s, prevPhase){
     case 'scatter-review': renderScatterReview(s); break;
     case 'icebreaker': renderIcebreaker(s); break;
     case 'wheel': renderWheel(s); break;
+    case 'snake-select': renderSnakeSelect(s); break;
     case 'snake': renderSnakeGame(s); break;
     case 'bomb-select': renderBombSelect(s); break;
     case 'bomb': renderBombGame(s); break;
@@ -1190,6 +1193,45 @@ function renderWheel(s){
       }, 4300);
     }
   }
+}
+
+function renderSnakeSelect(s){
+  const o = document.getElementById('overlays');
+  const sel = s.snakeSelect || { chosen: [] };
+  const chosenMap = new Map(sel.chosen.map(c => [c.pid, c.charId]));
+  if (!o.querySelector('.snake-select-host')){
+    o.innerHTML = `
+      <div class="snake-select-host bomb-select-host">
+        <div class="bsh-title">🐍 Slange-kamp — Velg slange</div>
+        <div class="bsh-sub">Hver spiller velger sin slange. Spillet starter når alle er klare.</div>
+        <div class="bsh-grid">${SNAKE_CHARS.map(c => `
+          <div class="bsh-char" data-char="${c.id}">
+            <div class="bsh-char-svg">${buildSnakePreviewSvg(c, { size: 110 })}</div>
+            <div class="bsh-char-name">${c.name}</div>
+            <div class="bsh-char-by" data-by="${c.id}"></div>
+          </div>
+        `).join('')}</div>
+        <div class="bsh-status" id="ssh-status"></div>
+      </div>
+    `;
+  }
+  o.querySelectorAll('.bsh-char').forEach(el => {
+    const id = el.dataset.char;
+    const byEl = el.querySelector('.bsh-char-by');
+    const takers = s.players.filter(p => chosenMap.get(p.id) === id);
+    el.classList.toggle('taken', takers.length > 0);
+    byEl.innerHTML = takers.length
+      ? takers.map(p => `<span style="color:${p.color}">${p.emoji} ${escapeHtml(p.name)}</span>`).join(' ')
+      : '';
+  });
+  const total = s.players.length;
+  const picked = sel.chosen.length;
+  const remaining = Math.max(0, Math.round((sel.deadline - Date.now()) / 1000));
+  const statusEl = o.querySelector('#ssh-status');
+  statusEl.innerHTML = `
+    <div class="bsh-progress"><div style="width:${total ? (picked/total*100) : 0}%"></div></div>
+    <div class="bsh-count">${picked} / ${total} har valgt · <b>${remaining}s</b> igjen</div>
+  `;
 }
 
 function renderSnakeGame(s){

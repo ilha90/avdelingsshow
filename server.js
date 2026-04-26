@@ -16,6 +16,7 @@ import {
   TUTORIAL_TEXT
 } from './public/data.js';
 import { BOMB_CHARS, getChar } from './public/bomb-chars.js';
+import { SNAKE_CHARS, getSnakeChar } from './public/snake-chars.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -171,6 +172,7 @@ const game = {
   // Bomb
   bomb: null,   // { players: Map, bombs: Map, hard: [], soft: [], powerups: [], tickTimer, endAt, explosions }
   bombSelect: null, // { chosen: Map<pid, charId>, deadline, timer }
+  snakeSelect: null, // { chosen: Map<pid, charId>, deadline, timer }
   // AI questions
   customQuestions: [],
   customMostLikely: [],
@@ -279,6 +281,12 @@ function publicState(){
       deadline: game.bombSelect.deadline
     };
   }
+  if (game.snakeSelect){
+    base.snakeSelect = {
+      chosen: Array.from(game.snakeSelect.chosen.entries()).map(([pid, cid]) => ({ pid, charId: cid })),
+      deadline: game.snakeSelect.deadline
+    };
+  }
   // Awards — kun når vi er på end-phase
   if (game.phase === 'end'){
     base.awards = computeAwards();
@@ -382,6 +390,11 @@ io.on('connection', socket => {
           const c = game.bombSelect.chosen.get(rec.id);
           game.bombSelect.chosen.delete(rec.id);
           game.bombSelect.chosen.set(socket.id, c);
+        }
+        if (game.snakeSelect && game.snakeSelect.chosen.has(rec.id)){
+          const c = game.snakeSelect.chosen.get(rec.id);
+          game.snakeSelect.chosen.delete(rec.id);
+          game.snakeSelect.chosen.set(socket.id, c);
         }
         if (game.snake && game.snake.snakes.has(rec.id)){
           const s = game.snake.snakes.get(rec.id);
@@ -493,6 +506,8 @@ io.on('connection', socket => {
     game.snake = null; game.bomb = null;
     if (game.bombSelect && game.bombSelect.timer) clearTimeout(game.bombSelect.timer);
     game.bombSelect = null;
+    if (game.snakeSelect && game.snakeSelect.timer) clearTimeout(game.snakeSelect.timer);
+    game.snakeSelect = null;
     game.lastGame = null;
     for (const p of game.players.values()) p.score = 0;
     resetMatchStats();
@@ -567,7 +582,18 @@ io.on('connection', socket => {
   });
   socket.on('host:start-snake', () => {
     if (!game.hosts.has(socket.id)) return;
-    playTutorialThen('snake', () => startSnake());
+    playTutorialThen('snake', () => startSnakeCharacterSelect());
+  });
+  socket.on('player:snake-char', ({ charId } = {}) => {
+    if (!game.snakeSelect) return;
+    if (game.phase !== 'snake-select') return;
+    const p = game.players.get(socket.id); if (!p) return;
+    if (!SNAKE_CHARS.find(c => c.id === charId)) return;
+    game.snakeSelect.chosen.set(socket.id, charId);
+    broadcast();
+    if (game.snakeSelect.chosen.size >= game.players.size){
+      startSnakeNow();
+    }
   });
   socket.on('host:end-snake', () => {
     if (!game.hosts.has(socket.id)) return;
@@ -1153,6 +1179,40 @@ const SNAKE_COLS = 40;
 const SNAKE_ROWS = 25;
 const SNAKE_TICK = 140;
 
+function startSnakeCharacterSelect(){
+  stopAllTimers();
+  const players = Array.from(game.players.values());
+  if (players.length === 0){
+    game.phase = 'lobby';
+    broadcast();
+    return;
+  }
+  game.snakeSelect = {
+    chosen: new Map(),
+    deadline: Date.now() + 22000,
+    timer: null
+  };
+  game.phase = 'snake-select';
+  broadcast();
+  game.snakeSelect.timer = setTimeout(() => {
+    startSnakeNow();
+  }, 22000);
+}
+
+function startSnakeNow(){
+  if (!game.snakeSelect) return;
+  if (game.snakeSelect.timer){ clearTimeout(game.snakeSelect.timer); game.snakeSelect.timer = null; }
+  const taken = new Set(game.snakeSelect.chosen.values());
+  const available = SNAKE_CHARS.map(c => c.id).filter(id => !taken.has(id));
+  for (const p of game.players.values()){
+    if (!game.snakeSelect.chosen.has(p.id)){
+      const pick = available.shift() || SNAKE_CHARS[Math.floor(Math.random() * SNAKE_CHARS.length)].id;
+      game.snakeSelect.chosen.set(p.id, pick);
+    }
+  }
+  startSnake();
+}
+
 function startSnake(){
   stopAllTimers();
   const snakes = new Map();
@@ -1160,10 +1220,12 @@ function startSnake(){
   const positions = spreadSpawns(players.length, SNAKE_COLS, SNAKE_ROWS, 4);
   players.forEach((p, i) => {
     const pos = positions[i];
+    const charId = (game.snakeSelect && game.snakeSelect.chosen.get(p.id)) || SNAKE_CHARS[i % SNAKE_CHARS.length].id;
     snakes.set(p.id, {
       id: p.id,
       name: p.name,
       color: p.color,
+      character: charId,
       segs: [{ x: pos.x, y: pos.y }, { x: pos.x, y: pos.y }, { x: pos.x, y: pos.y }],
       dir: pos.dir,
       nextDir: pos.dir,
@@ -1174,6 +1236,8 @@ function startSnake(){
     });
     p.score = 0;
   });
+  // Nullstill select etter bruk
+  game.snakeSelect = null;
   game.snake = {
     snakes,
     food: spawnFood([], snakes, 8),
@@ -1359,6 +1423,8 @@ function buildSnakeState(){
   return {
     snakes: Array.from(game.snake.snakes.values()).map(s => ({
       id: s.id, name: s.name, color: s.color, alive: s.alive,
+      character: s.character,
+      dir: s.dir,
       segs: s.segs.slice(0, 60),
       len: s.segs.length
     })),

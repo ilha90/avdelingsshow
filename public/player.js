@@ -2,6 +2,7 @@
 import { AVATAR_CHOICES, colorFor } from './avatars.js';
 import { sfx, setMuted, isMuted, unlock as unlockAudio } from './sound.js';
 import { BOMB_CHARS, buildCharSvg } from './bomb-chars.js';
+import { SNAKE_CHARS, buildSnakePreviewSvg } from './snake-chars.js';
 
 const socket = io({ transports: ['websocket','polling'] });
 let state = null;
@@ -279,6 +280,7 @@ function render(s){
     case 'scatter-review': showWaitScreen('Gjennomgang pågår...'); break;
     case 'icebreaker': showIcebreaker(s); break;
     case 'wheel': showWheel(s); break;
+    case 'snake-select': showSnakeSelect(s); break;
     case 'snake': showSnakeGame(s); break;
     case 'bomb-select': showBombSelect(s); break;
     case 'bomb': showBombGame(s); break;
@@ -697,6 +699,53 @@ function showWaitScreen(msg){
 }
 
 // ====== Snake game view ======
+function showSnakeSelect(s){
+  const sel = s.snakeSelect || { chosen: [] };
+  const chosenByMe = sel.chosen.find(c => c.pid === me.id);
+  const takenByOthers = new Set(sel.chosen.filter(c => c.pid !== me.id).map(c => c.charId));
+  const existing = app.querySelector('.snake-select-screen');
+  if (!existing){
+    app.innerHTML = `
+      <div class="snake-select-screen bomb-select-screen">
+        <div class="bs-title">Velg slange</div>
+        <div class="bs-sub">Velg din favorittslange før kampen</div>
+        <div class="bs-grid" id="ss-grid"></div>
+        <div class="bs-status" id="ss-status"></div>
+      </div>
+    `;
+  }
+  const grid = app.querySelector('#ss-grid');
+  if (grid && grid.children.length !== SNAKE_CHARS.length){
+    grid.innerHTML = SNAKE_CHARS.map(c => `
+      <button class="bs-char" data-char="${c.id}">
+        <div class="bs-char-svg">${buildSnakePreviewSvg(c, { size: 110 })}</div>
+        <div class="bs-char-name">${c.name}</div>
+      </button>
+    `).join('');
+    grid.querySelectorAll('.bs-char').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.char;
+        if (btn.classList.contains('taken')){ sfx.wrong(); return; }
+        if (!cooldown('snake-char', 400)) return;
+        socket.emit('player:snake-char', { charId: id });
+        sfx.correct(); haptic.success();
+      });
+    });
+  }
+  grid.querySelectorAll('.bs-char').forEach(btn => {
+    const id = btn.dataset.char;
+    btn.classList.toggle('taken', takenByOthers.has(id) && (!chosenByMe || chosenByMe.charId !== id));
+    btn.classList.toggle('mine', !!chosenByMe && chosenByMe.charId === id);
+  });
+  const statusEl = app.querySelector('#ss-status');
+  const total = s.players.length;
+  const picked = sel.chosen.length;
+  const remaining = Math.max(0, Math.round((sel.deadline - Date.now()) / 1000));
+  statusEl.innerHTML = chosenByMe
+    ? `<div class="bs-ok">✓ Du har valgt ${escapeHtml(SNAKE_CHARS.find(c => c.id === chosenByMe.charId)?.name || '')}</div><div class="bs-wait">Venter på andre... ${picked}/${total} · ${remaining}s</div>`
+    : `<div class="bs-pick">Trykk på en slange for å velge</div><div class="bs-wait">${picked}/${total} har valgt · ${remaining}s igjen</div>`;
+}
+
 function showSnakeGame(s){
   // Idempotent — bare build DOM + bind første gang, så state-updates ikke
   // ødelegger event-listenere.

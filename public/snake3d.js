@@ -1,12 +1,18 @@
 // public/snake3d.js — Three.js Snake-scene
-// Viktig: dynamisk import av addons via importmap — håndter feil.
 
 import * as THREE from 'three';
 import { colorFor } from './avatars.js';
+import { SNAKE_CHARS, getSnakeChar, getMaterialConfig, hexToInt } from './snake-chars.js';
 
 const COLS = 40;
 const ROWS = 25;
 const CELL = 1;
+
+function hexToIntSafe(v){
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return parseInt(v.replace('#',''), 16);
+  return 0xffffff;
+}
 
 export class SnakeRenderer {
   constructor(canvas){
@@ -136,45 +142,126 @@ export class SnakeRenderer {
     const currentAliveIds = new Set();
     this.snakeGroup.clear();
     this.segMeshes.clear();
+    // Store animatable-materials for tier='legendary' pulse
+    this._animatedMats = [];
     for (const s of (state.snakes || [])){
       if (!s.alive){
-        // Hvis slangen var i live og nå er død → death-explosion ved hode-pos
         if (this.prevAliveIds.has(s.id)){
           const head = this.prevHeadPos.get(s.id);
-          if (head) this.spawnDeathExplosion(head.x, head.z, s.color || 0xff5a6b);
+          if (head){
+            const col = s.color ? hexToIntSafe(s.color) : 0xff5a6b;
+            this.spawnDeathExplosion(head.x, head.z, col);
+          }
         }
         continue;
       }
       currentAliveIds.add(s.id);
-      const color = s.color || colorFor(s.name || s.id);
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.18 });
+
+      // Hent karakter-variant
+      const charVariant = getSnakeChar(s.character || 'sn-green');
+      const bodyInt = hexToInt(charVariant.body);
+      const bellyInt = hexToInt(charVariant.belly);
+      const eyeInt = hexToInt(charVariant.eye);
+      const accentInt = hexToInt(charVariant.accent);
+      const matCfg = getMaterialConfig(charVariant);
+
+      const emissiveInt = typeof matCfg.emissive === 'string' ? hexToInt(matCfg.emissive) : matCfg.emissive;
+
+      // Felles material for kropp
+      const makeMat = (isHead) => {
+        const m = new THREE.MeshStandardMaterial({
+          color: bodyInt,
+          roughness: matCfg.roughness,
+          metalness: matCfg.metalness,
+          emissive: emissiveInt,
+          emissiveIntensity: matCfg.emissiveIntensity * (isHead ? 1.2 : 1.0)
+        });
+        if (matCfg.animated) this._animatedMats.push(m);
+        return m;
+      };
+
       const arr = [];
       s.segs.forEach((p, i) => {
-        const size = i === 0 ? 0.95 : 0.82;
+        const isHead = i === 0;
+        const size = isHead ? 0.95 : 0.82 - Math.min(0.25, i * 0.01);
         const geo = new THREE.BoxGeometry(size, size, size);
-        const m = new THREE.Mesh(geo, mat);
+        const m = new THREE.Mesh(geo, makeMat(isHead));
         m.position.set(p.x + 0.5, size/2, p.y + 0.5);
         m.castShadow = true;
-        // Subtil taper: lengre ned fra hode = mindre metalness
-        if (i > 0) m.material = new THREE.MeshStandardMaterial({ color, roughness: 0.55 + Math.min(0.3, i * 0.02), metalness: 0.1 });
         this.snakeGroup.add(m);
         arr.push(m);
 
-        if (i === 0){
+        // Belly-stripe: liten flat box under hvert segment
+        if (!isHead){
+          const belly = new THREE.Mesh(
+            new THREE.BoxGeometry(size*0.6, 0.1, size*0.9),
+            new THREE.MeshStandardMaterial({ color: bellyInt, roughness: 0.7 })
+          );
+          belly.position.set(p.x + 0.5, 0.06, p.y + 0.5);
+          this.snakeGroup.add(belly);
+          arr.push(belly);
+        }
+
+        if (isHead){
+          // Retning basert på s.dir
+          const dir = s.dir || 'right';
+          const eyeOffsetX = dir === 'left' ? -0.2 : dir === 'right' ? 0.2 : 0;
+          const eyeOffsetZ = dir === 'up' ? -0.2 : dir === 'down' ? 0.2 : 0;
+          const lateralX = (dir === 'up' || dir === 'down') ? 0.18 : 0;
+          const lateralZ = (dir === 'left' || dir === 'right') ? 0.18 : 0;
+
           // Eyes
-          const eyeGeo = new THREE.SphereGeometry(0.1, 8, 6);
+          const eyeGeo = new THREE.SphereGeometry(0.11, 10, 8);
           const eyeMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+          const pupilGeo = new THREE.SphereGeometry(0.06, 8, 6);
+          const pupilMat = new THREE.MeshStandardMaterial({ color: eyeInt, emissive: eyeInt, emissiveIntensity: 0.35 });
           const e1 = new THREE.Mesh(eyeGeo, eyeMat);
           const e2 = new THREE.Mesh(eyeGeo, eyeMat);
-          e1.position.set(p.x + 0.7, 0.8, p.y + 0.35);
-          e2.position.set(p.x + 0.7, 0.8, p.y + 0.65);
+          e1.position.set(p.x + 0.5 + eyeOffsetX - lateralX, 0.85, p.y + 0.5 + eyeOffsetZ - lateralZ);
+          e2.position.set(p.x + 0.5 + eyeOffsetX + lateralX, 0.85, p.y + 0.5 + eyeOffsetZ + lateralZ);
           this.snakeGroup.add(e1); this.snakeGroup.add(e2);
-          arr.push(e1); arr.push(e2);
+          const p1 = new THREE.Mesh(pupilGeo, pupilMat);
+          const p2 = new THREE.Mesh(pupilGeo, pupilMat);
+          const pupilOffset = 0.06;
+          const pox = dir === 'left' ? -pupilOffset : dir === 'right' ? pupilOffset : 0;
+          const poz = dir === 'up' ? -pupilOffset : dir === 'down' ? pupilOffset : 0;
+          p1.position.set(e1.position.x + pox, 0.85, e1.position.z + poz);
+          p2.position.set(e2.position.x + pox, 0.85, e2.position.z + poz);
+          this.snakeGroup.add(p1); this.snakeGroup.add(p2);
+          arr.push(e1, e2, p1, p2);
 
-          // Spawn trail-ghost (fades over tid)
+          // Tunge — kort stripe i retningen slangen går
+          const tongueGeo = new THREE.BoxGeometry(0.05, 0.05, 0.32);
+          const tongueMat = new THREE.MeshStandardMaterial({ color: 0xE91E63, emissive: 0xE91E63, emissiveIntensity: 0.4 });
+          const tongue = new THREE.Mesh(tongueGeo, tongueMat);
+          const tonguePos = [p.x + 0.5, 0.62, p.y + 0.5];
+          if (dir === 'left'){ tonguePos[0] -= 0.6; tongue.rotation.y = Math.PI/2; }
+          else if (dir === 'right'){ tonguePos[0] += 0.6; tongue.rotation.y = Math.PI/2; }
+          else if (dir === 'up'){ tonguePos[2] -= 0.6; }
+          else if (dir === 'down'){ tonguePos[2] += 0.6; }
+          tongue.position.set(...tonguePos);
+          this.snakeGroup.add(tongue);
+          arr.push(tongue);
+
+          // Tier-badge: liten glow-plate over hodet for legendary/metal/gem
+          if (charVariant.tier !== 'classic'){
+            const badgeColor = charVariant.tier === 'legendary' ? 0xFFD700
+              : charVariant.tier === 'metal' ? 0xFFC107
+              : 0x40C4FF;
+            const badge = new THREE.Mesh(
+              new THREE.TorusGeometry(0.28, 0.04, 6, 16),
+              new THREE.MeshBasicMaterial({ color: badgeColor, transparent: true, opacity: 0.75 })
+            );
+            badge.position.set(p.x + 0.5, 1.15, p.y + 0.5);
+            badge.rotation.x = Math.PI/2;
+            this.snakeGroup.add(badge);
+            arr.push(badge);
+          }
+
+          // Trail-ghost
           const prevHead = this.prevHeadPos.get(s.id);
           if (prevHead && (prevHead.x !== p.x || prevHead.z !== p.y)){
-            this.spawnTrail(prevHead.x, prevHead.z, color);
+            this.spawnTrail(prevHead.x, prevHead.z, bodyInt);
           }
           this.prevHeadPos.set(s.id, { x: p.x, z: p.y });
         }
@@ -284,6 +371,14 @@ export class SnakeRenderer {
         m.scale.set(r, r, 1);
         m.material.opacity = Math.max(0, 0.8 - age * 1.4);
         if (age > 0.7) this.fxGroup.remove(m);
+      }
+    }
+
+    // Animate legendary-tier materials (pulserende emissiv)
+    if (this._animatedMats && this._animatedMats.length){
+      const pulse = 0.25 + 0.35 * (0.5 + 0.5 * Math.sin(t * 0.004));
+      for (const m of this._animatedMats){
+        m.emissiveIntensity = pulse;
       }
     }
 
