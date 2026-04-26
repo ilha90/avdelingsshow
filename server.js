@@ -198,7 +198,8 @@ const game = {
     votesReceived: new Map(),  // voting: totalt antall stemmer fått
     liesCaught: new Map()      // lie: antall løgner gjenkjent
   },
-  lastGame: null  // 'quiz' | 'bomb' | 'snake' | ...
+  lastGame: null,  // 'quiz' | 'bomb' | 'snake' | ...
+  lastCharacters: new Map() // pid -> charId fra siste bomb/snake-runde
 };
 
 function teamForIndex(i){
@@ -295,6 +296,10 @@ function publicState(){
     base.awards = computeAwards();
     base.recap = computeMatchRecap();
     base.lastGame = game.lastGame;
+    // Inkluder karakter-IDs for podium-rendering
+    if (game.lastCharacters && game.lastCharacters.size){
+      base.lastCharacters = Array.from(game.lastCharacters.entries()).map(([pid, cid]) => ({ pid, charId: cid }));
+    }
   }
   return base;
 }
@@ -1453,6 +1458,9 @@ function startSnake(){
   });
   // Nullstill select etter bruk
   game.snakeSelect = null;
+  // Cache karakter-valg for podium-visualisering
+  game.lastCharacters = new Map();
+  for (const [pid, s] of snakes) game.lastCharacters.set(pid, s.character);
   game.snake = {
     snakes,
     food: spawnFood([], snakes, 8),
@@ -1522,10 +1530,25 @@ function snakeTick(){
     // Food?
     const foodIdx = game.snake.food.findIndex(f => f.x === nx && f.y === ny);
     if (foodIdx >= 0){
+      const food = game.snake.food[foodIdx];
       game.snake.food.splice(foodIdx, 1);
-      s.growBy += 1;
-      const p = game.players.get(s.id); if (p) p.score += 10;
+      const p = game.players.get(s.id);
       game.matchStats.apples.set(s.id, (game.matchStats.apples.get(s.id) || 0) + 1);
+      // Effekter basert på food-type
+      if (food.type === 'gold'){
+        // Gull-eple: +100 poeng, ingen vekst
+        if (p) p.score += 100;
+        io.emit('snake:food-fx', { x: nx, y: ny, type: 'gold', pid: s.id });
+      } else if (food.type === 'mega'){
+        // Mega-eple: +3 segmenter, +30 poeng
+        s.growBy += 3;
+        if (p) p.score += 30;
+        io.emit('snake:food-fx', { x: nx, y: ny, type: 'mega', pid: s.id });
+      } else {
+        // Normal: +10 poeng, +1 segment
+        s.growBy += 1;
+        if (p) p.score += 10;
+      }
     }
     if (s.growBy > 0){
       s.growBy--;
@@ -1626,6 +1649,7 @@ function snakeTick(){
   while (game.snake.food.length < 8){
     const f = randomEmptyCell(game.snake);
     if (!f) break;
+    f.type = rollFoodType();
     game.snake.food.push(f);
   }
 
@@ -1721,12 +1745,22 @@ function randomEmptyCell(sn){
   return null;
 }
 
+function rollFoodType(){
+  const r = Math.random();
+  if (r < 0.08) return 'gold';      // 8% gull-eple (+100p, ingen vekst)
+  if (r < 0.16) return 'mega';      // 8% mega-eple (+3 segmenter, +30p)
+  return 'normal';                  // 84% normal (+10p, +1 seg)
+}
+
 function spawnFood(existing, snakes, count){
   const arr = existing.slice();
   const sn = { snakes, food: arr };
   for (let i=0;i<count;i++){
     const c = randomEmptyCell(sn);
-    if (c) arr.push(c);
+    if (c){
+      c.type = rollFoodType();
+      arr.push(c);
+    }
   }
   return arr;
 }
@@ -1839,6 +1873,9 @@ function startBomberman(){
   });
   // Clear select-state nå som vi har startet
   game.bombSelect = null;
+  // Cache karakter-valg for podium-visualisering senere
+  game.lastCharacters = new Map();
+  for (const [pid, bp] of bombPlayers) game.lastCharacters.set(pid, bp.character);
   // Spec says start: just player with no shield. Actually we start with 0 shields. Clear shield:
   for (const bp of bombPlayers.values()) bp.shield = 0;
 

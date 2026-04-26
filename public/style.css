@@ -3323,3 +3323,73 @@ button[data-id],
 }
 .recap-card.color-mint .rc-name,
 .recap-card.color-gold .rc-name { color: #1a1a1a; }
+
+/* ============================================================
+   Karakter-avatar på podium — stor SVG som vinker/feirer
+   ============================================================ */
+.podium-spot .avatar.char-av {
+  font-size: 0;
+  width: 130px;
+  height: 200px;
+  display: flex; align-items: flex-end; justify-content: center;
+  margin-bottom: -8px;
+  position: relative;
+  overflow: visible;
+  filter: drop-shadow(0 10px 20px rgba(0,0,0,.6));
+  animation: podium-char-celebrate 1.2s ease-in-out infinite alternate;
+  transform-origin: center bottom;
+}
+.podium-spot .avatar.char-av svg {
+  width: 100%; height: auto;
+  max-height: 190px;
+}
+.podium-spot .avatar.emoji-av {
+  font-size: 78px;
+  filter: drop-shadow(0 6px 20px rgba(0,0,0,.5));
+}
+@keyframes podium-char-celebrate {
+  0%   { transform: translateY(0) rotate(-2deg); }
+  50%  { transform: translateY(-8px) rotate(3deg); }
+  100% { transform: translateY(0) rotate(-2deg); }
+}
+
+/* 1. plass — ekstra hoppet + gull-glow */
+.podium-spot:has(.podium-bar.gold) .avatar.char-av {
+  animation: podium-char-winner 1s ease-in-out infinite;
+  filter: drop-shadow(0 12px 30px rgba(202,171,81,.7)) drop-shadow(0 0 40px rgba(202,171,81,.4));
+}
+@keyframes podium-char-winner {
+  0%,100% { transform: translateY(0) scale(1); }
+  50%     { transform: translateY(-16px) scale(1.04); }
+}
+
+/* Sølv + bronse — subtil vugg */
+.podium-spot:has(.podium-bar.silver) .avatar.char-av {
+  animation-duration: 1.4s;
+}
+.podium-spot:has(.podium-bar.bronze) .avatar.char-av {
+  animation-duration: 1.6s;
+}
+
+/* Stjerner som sirkulerer rundt 1. plass */
+.podium-spot:has(.podium-bar.gold)::before {
+  content: '✨';
+  position: absolute;
+  top: 20px; left: 50%;
+  font-size: 28px;
+  animation: star-orbit 3s linear infinite;
+  pointer-events: none;
+}
+.podium-spot:has(.podium-bar.gold)::after {
+  content: '⭐';
+  position: absolute;
+  top: 30px; left: 50%;
+  font-size: 22px;
+  animation: star-orbit 3s linear infinite reverse;
+  animation-delay: -1.5s;
+  pointer-events: none;
+}
+@keyframes star-orbit {
+  0%   { transform: translateX(-50%) rotate(0deg) translateX(90px) rotate(0deg); }
+  100% { transform: translateX(-50%) rotate(360deg) translateX(90px) rotate(-360deg); }
+}

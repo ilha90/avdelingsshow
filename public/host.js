@@ -338,6 +338,22 @@ socket.on('snake:milestone', ({ name, length, label }) => {
   confetti.burst({ count: 80 });
 });
 
+socket.on('snake:food-fx', ({ type, pid, x, y }) => {
+  const player = state?.players.find(p => p.id === pid);
+  if (type === 'gold'){
+    fx.toast(`${player?.name || '?'} — Gull-eple! +100`, { icon: '⭐', kind: 'first', ms: 2200 });
+    sfx.pickup();
+    fx.brandPulse('gold');
+    stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 0.8);
+    if (player) fx.halo(pid, 'gold');
+  } else if (type === 'mega'){
+    fx.toast(`${player?.name || '?'} — Mega-eple! +3 segmenter`, { icon: '💎', kind: 'streak', ms: 2200 });
+    sfx.correct();
+    stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 0.7);
+    if (player) fx.halo(pid, 'mint');
+  }
+});
+
 // ====== Phase dispatch ======
 function render(s, prevPhase){
   updatePhaseTag(s.phase);
@@ -1319,14 +1335,49 @@ function renderEnd(s){
   }
   const gameLabel = { quiz: 'Quiz', lightning: 'Lyn-runde', snake: 'Slange-kamp', bomb: 'Bomberman', scatter: 'Kategori-kamp', lie: '2 sannheter 1 løgn' }[s.lastGame] || '';
 
-  // Bygg DOM men skjul podium + awards initiellt (recap først)
+  // Hent karakter-map hvis tilgjengelig (for bomb/snake)
+  const charMap = new Map();
+  if (s.lastCharacters){
+    for (const { pid, charId } of s.lastCharacters) charMap.set(pid, charId);
+  }
+
+  // Render podium-spot: bruk karakter-SVG hvis vi har, ellers emoji
+  const renderAvatar = (player) => {
+    const charId = charMap.get(player.id);
+    if (!charId) return `<div class="avatar emoji-av">${player.emoji}</div>`;
+    // Bestem om det er bomb eller snake-karakter basert på id-prefix
+    const isSnake = charId.startsWith('sn-');
+    try {
+      if (isSnake){
+        const c = SNAKE_CHARS.find(x => x.id === charId);
+        if (c) return `<div class="avatar char-av">${buildSnakePreviewSvg(c, { size: 140 })}</div>`;
+      } else {
+        const c = BOMB_CHARS.find(x => x.id === charId);
+        if (c) return `<div class="avatar char-av">${buildCharSvg(c, { size: 150, walking: false, facing: 'right' })}</div>`;
+      }
+    } catch(e) {}
+    return `<div class="avatar emoji-av">${player.emoji}</div>`;
+  };
+
+  const podiumSpot = (p, rank, delayMs) => {
+    if (!p) return '';
+    const medalClass = rank === 0 ? 'gold' : rank === 1 ? 'silver' : 'bronze';
+    const medal = rank === 0 ? '🥇' : rank === 1 ? '🥈' : '🥉';
+    return `<div class="podium-spot" style="animation-delay:${delayMs}ms">
+      ${renderAvatar(p)}
+      <div class="name">${escapeHtml(p.name)}</div>
+      <div class="score">${p.score}</div>
+      <div class="podium-bar ${medalClass}">${medal}</div>
+    </div>`;
+  };
+
   o.innerHTML = `
     <div class="end-screen hidden-initially">
       <h1 class="end-title">🎉 ${gameLabel ? escapeHtml(gameLabel) + ' — over' : 'Runde over'} 🎉</h1>
       <div class="podium">
-        ${podium[1] ? `<div class="podium-spot"><div class="avatar">${podium[1].emoji}</div><div class="name">${escapeHtml(podium[1].name)}</div><div class="score">${podium[1].score}</div><div class="podium-bar silver">🥈</div></div>` : ''}
-        ${podium[0] ? `<div class="podium-spot"><div class="avatar">${podium[0].emoji}</div><div class="name">${escapeHtml(podium[0].name)}</div><div class="score">${podium[0].score}</div><div class="podium-bar gold">🥇</div></div>` : ''}
-        ${podium[2] ? `<div class="podium-spot"><div class="avatar">${podium[2].emoji}</div><div class="name">${escapeHtml(podium[2].name)}</div><div class="score">${podium[2].score}</div><div class="podium-bar bronze">🥉</div></div>` : ''}
+        ${podiumSpot(podium[1], 1, 200)}
+        ${podiumSpot(podium[0], 0, 0)}
+        ${podiumSpot(podium[2], 2, 400)}
       </div>
       ${awards.length ? `
         <div class="awards-strip">
@@ -1352,7 +1403,6 @@ function renderEnd(s){
   `;
   document.getElementById('end-btn').addEventListener('click', () => socket.emit('host:reset'));
 
-  // Sekvens: recap først, så cinematicEnd
   runMatchRecapThenEnd(recap, podium, awards);
 }
 

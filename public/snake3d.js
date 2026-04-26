@@ -130,12 +130,20 @@ export class SnakeRenderer {
 
     // ===== Mat-meshes =====
     this.foodGroup.clear();
-    const foodGeo = new THREE.SphereGeometry(0.35, 16, 12);
-    const foodMat = new THREE.MeshStandardMaterial({ color: 0xffcf4a, emissive: 0xCAAB51, emissiveIntensity: 0.7, roughness: 0.3 });
+    const foodGeoNormal = new THREE.SphereGeometry(0.35, 16, 12);
+    const foodGeoBig = new THREE.SphereGeometry(0.45, 18, 14);
+    const foodMatNormal = new THREE.MeshStandardMaterial({ color: 0xE53935, emissive: 0x8B0000, emissiveIntensity: 0.4, roughness: 0.4 });
+    const foodMatGold = new THREE.MeshStandardMaterial({ color: 0xFFD700, emissive: 0xFFB300, emissiveIntensity: 0.85, roughness: 0.18, metalness: 0.8 });
+    const foodMatMega = new THREE.MeshStandardMaterial({ color: 0x7D7DD4, emissive: 0x4A148C, emissiveIntensity: 0.7, roughness: 0.25, metalness: 0.3 });
     for (const f of (state.food || [])){
-      const m = new THREE.Mesh(foodGeo, foodMat);
+      const type = f.type || 'normal';
+      let geo = foodGeoNormal, mat = foodMatNormal;
+      if (type === 'gold'){ geo = foodGeoNormal; mat = foodMatGold; }
+      else if (type === 'mega'){ geo = foodGeoBig; mat = foodMatMega; }
+      const m = new THREE.Mesh(geo, mat);
       m.position.set(f.x + 0.5, 0.5 + 0.12 * Math.sin(performance.now()*0.002 + f.x + f.y), f.y + 0.5);
       m.castShadow = true;
+      m.userData.foodType = type;
       this.foodGroup.add(m);
     }
 
@@ -346,6 +354,14 @@ export class SnakeRenderer {
       m.rotation.y += 0.025;
       const pulse = 1 + 0.06 * Math.sin(t * 0.006 + i);
       m.scale.setScalar(pulse);
+      // Gull-eple og mega får ekstra bob + spin
+      if (m.userData.foodType === 'gold'){
+        m.position.y += 0.1 * Math.sin(t * 0.008 + i);
+        m.rotation.y += 0.04;
+      } else if (m.userData.foodType === 'mega'){
+        m.rotation.y += 0.02;
+        m.rotation.x = Math.sin(t * 0.004 + i) * 0.3;
+      }
     });
 
     // Trail fade
