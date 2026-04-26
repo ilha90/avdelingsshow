@@ -236,6 +236,8 @@ socket.on('quiz:reveal', ({ correctIdx, results, allCorrect }) => {
               mascotCelebrate();
               mascotSpeak('🔥 ' + r.name + ' ' + t.n + ' på rad!');
               fx.brandPulse('gold');
+              // Gull-full-skjerm-glow ved streak 5+
+              triggerStreakEscalation(t.n, r.name);
             }
           } else if (t.kind === 'all-correct'){
             fx.halo(r.pid, 'gold');
@@ -268,6 +270,33 @@ socket.on('bomb:kill', ({ victim, x, y, name }) => {
   // Puls på stage-bg
   stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 0.8);
 });
+
+socket.on('bomb:combo', ({ killerName, count, label }) => {
+  const el = document.createElement('div');
+  el.className = 'combo-banner tier-' + Math.min(count, 4);
+  el.innerHTML = `
+    <div class="cb-count">×${count}</div>
+    <div class="cb-label">${escapeHtml(label)}</div>
+    <div class="cb-by">av ${escapeHtml(killerName)}</div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('in'), 20);
+  setTimeout(() => el.classList.add('out'), 2800);
+  setTimeout(() => el.remove(), 3400);
+  sfx.boom(); sfx.bigWin();
+  fx.brandPulse(count >= 3 ? 'gold' : 'danger');
+  confetti.burst({ count: 60 + count * 20 });
+  for (let i = 0; i < count; i++){
+    setTimeout(() => {
+      stageBg.boom(
+        window.innerWidth * (0.3 + Math.random() * 0.4),
+        window.innerHeight * (0.3 + Math.random() * 0.4),
+        i % 2 ? 'gold' : 'mint',
+        1.2
+      );
+    }, i * 120);
+  }
+});
 let _bombChampionShown = false;
 socket.on('bomb:tick', data => {
   if (bombRenderer){
@@ -299,6 +328,14 @@ socket.on('snake:tick', data => {
     snakeRenderer.setState(data);
   }
   renderGameHud(data, 'snake');
+});
+
+socket.on('snake:milestone', ({ name, length, label }) => {
+  fx.toast(`${name} — ${length} segmenter ${label}`, { icon: '🐍', kind: 'first', ms: 2500 });
+  sfx.bigWin();
+  stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.2);
+  fx.brandPulse('gold');
+  confetti.burst({ count: 80 });
 });
 
 // ====== Phase dispatch ======
@@ -1458,6 +1495,38 @@ async function mascotWardrobeChange(){
 }
 
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+// Streak-escalation: full-skjerm gull-glow når noen får 5+ på rad
+function triggerStreakEscalation(n, name){
+  const el = document.createElement('div');
+  el.className = 'streak-flash';
+  el.innerHTML = `
+    <div class="sf-bg"></div>
+    <div class="sf-content">
+      <div class="sf-flames">🔥🔥🔥</div>
+      <div class="sf-number">${n}</div>
+      <div class="sf-label">PÅ RAD!</div>
+      <div class="sf-name">${name}</div>
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('in'), 20);
+  setTimeout(() => el.classList.add('out'), 2500);
+  setTimeout(() => el.remove(), 3100);
+  // Multi-boom
+  for (let i = 0; i < 5; i++){
+    setTimeout(() => {
+      stageBg.boom(
+        window.innerWidth * Math.random(),
+        window.innerHeight * Math.random(),
+        'gold',
+        1.5
+      );
+    }, i * 160);
+  }
+  confetti.shower(180);
+  sfx.fanfare();
+}
 
 // Expose for debugging / testing
 window.mascotWardrobeChange = mascotWardrobeChange;

@@ -89,9 +89,14 @@ export class BombRenderer {
     this.killCam = null;
 
     this.onResize = this.onResize.bind(this);
+    this.onOrientationChange = () => setTimeout(this.onResize, 120);
     window.addEventListener('resize', this.onResize);
-    window.addEventListener('orientationchange', () => setTimeout(this.onResize, 120));
+    window.addEventListener('orientationchange', this.onOrientationChange);
     this.onResize();
+
+    // Flame-group initialiseres nå (ikke conditionally i setFlames)
+    this.flameGroup = new THREE.Group();
+    this.scene.add(this.flameGroup);
 
     this.running = true;
     this.loop = this.loop.bind(this);
@@ -148,10 +153,7 @@ export class BombRenderer {
 
   // Flammer fra fire-bomber — vis som flammende emoji-sprites
   setFlames(flames){
-    if (!this.flameGroup){
-      this.flameGroup = new THREE.Group();
-      this.scene.add(this.flameGroup);
-    }
+    // flameGroup initialiseres i konstruktør
     // Diff: remove dem som ikke er i nye liste
     const activeKeys = new Set(flames.map(f => f.x + ':' + f.y + ':' + f.until));
     const existing = this.flameGroup.children.slice();
@@ -464,6 +466,7 @@ export class BombRenderer {
   dispose(){
     this.running = false;
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('orientationchange', this.onOrientationChange);
     this.renderer.dispose();
   }
 

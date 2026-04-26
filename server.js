@@ -396,6 +396,39 @@ io.on('connection', socket => {
           game.snakeSelect.chosen.delete(rec.id);
           game.snakeSelect.chosen.set(socket.id, c);
         }
+        // Bevar quiz/vote/scatter/lie-svar ved reconnect
+        if (game.quiz && game.quiz.answers.has(rec.id)){
+          const a = game.quiz.answers.get(rec.id);
+          game.quiz.answers.delete(rec.id);
+          game.quiz.answers.set(socket.id, a);
+        }
+        if (game.quiz && game.quiz.streaks.has(rec.id)){
+          const s = game.quiz.streaks.get(rec.id);
+          game.quiz.streaks.delete(rec.id);
+          game.quiz.streaks.set(socket.id, s);
+        }
+        if (game.vote && game.vote.votes.has(rec.id)){
+          const v = game.vote.votes.get(rec.id);
+          game.vote.votes.delete(rec.id);
+          game.vote.votes.set(socket.id, v);
+        }
+        if (game.scatter && game.scatter.entries.has(rec.id)){
+          const e = game.scatter.entries.get(rec.id);
+          game.scatter.entries.delete(rec.id);
+          game.scatter.entries.set(socket.id, e);
+        }
+        if (game.lie){
+          if (game.lie.claims && game.lie.claims.has(rec.id)){
+            const c = game.lie.claims.get(rec.id);
+            game.lie.claims.delete(rec.id);
+            game.lie.claims.set(socket.id, c);
+          }
+          if (game.lie.votes && game.lie.votes.has(rec.id)){
+            const v = game.lie.votes.get(rec.id);
+            game.lie.votes.delete(rec.id);
+            game.lie.votes.set(socket.id, v);
+          }
+        }
         if (game.snake && game.snake.snakes.has(rec.id)){
           const s = game.snake.snakes.get(rec.id);
           s.id = socket.id;
@@ -829,6 +862,7 @@ function startQuiz({ category, isLightning } = {}){
 
 function nextQuizQuestion(){
   if (!game.quiz) return;
+  if (game.phase === 'lobby') return; // reset har skjedd
   game.quiz.index++;
   if (game.quiz.index >= game.quiz.questions.length){
     return finishQuiz();
@@ -924,7 +958,7 @@ function revealQuiz(){
   const N = game.config.lbevery;
   const isLast = game.quiz.index === game.quiz.questions.length - 1;
   const showLb = !isLast && N > 0 && ((game.quiz.index + 1) % N === 0);
-  const delay = showLb ? 4500 : 4500;
+  const delay = 4500;  // reveal varer 4500ms før neste fase (LB-tilstand har egen 6000ms etter)
   setTimeout(() => {
     if (!game.quiz) return;
     if (isLast){
@@ -1324,6 +1358,20 @@ function snakeTick(){
     // Track biggest snake length
     const prevMax = game.matchStats.biggestSnake.get(s.id) || 0;
     if (s.segs.length > prevMax) game.matchStats.biggestSnake.set(s.id, s.segs.length);
+    // Milestone-feiring: hver 10 segments passert → send milestone-event
+    const prevLen = prevMax;
+    const newLen = s.segs.length;
+    if (Math.floor(newLen / 10) > Math.floor(prevLen / 10) && newLen >= 10){
+      const p = game.players.get(s.id);
+      io.emit('snake:milestone', {
+        id: s.id,
+        name: p?.name || '?',
+        length: newLen,
+        label: newLen >= 50 ? 'LEGENDE!' : newLen >= 30 ? 'EPISK!' : 'LANG!'
+      });
+      // Bonus-poeng
+      if (p) p.score += 30;
+    }
     heads.push({ id: s.id, x: nx, y: ny, len: s.segs.length });
   }
 
@@ -1888,6 +1936,28 @@ function bombTick(){
   }
   for (const k of killsThisTick){
     io.emit('bomb:kill', k);
+  }
+  // Combo-kill: hvis >=2 kills samme tick fra SAMME killer → combo-event
+  if (killsThisTick.length >= 2){
+    const byKiller = new Map();
+    for (const k of killsThisTick){
+      if (!k.killer) continue;
+      byKiller.set(k.killer, (byKiller.get(k.killer) || 0) + 1);
+    }
+    for (const [killerId, count] of byKiller){
+      if (count >= 2){
+        const killer = game.players.get(killerId);
+        io.emit('bomb:combo', {
+          killer: killerId,
+          killerName: killer?.name || '?',
+          count,
+          label: count >= 4 ? 'MEGA DRAP!' : count === 3 ? 'TRIPPEL DRAP!' : 'DOBBELT DRAP!'
+        });
+        // Bonus-poeng: 50 per kill i combo, +100 for triple/mega
+        const bonus = count * 50 + (count >= 3 ? 100 : 0);
+        if (killer) killer.score += bonus;
+      }
+    }
   }
   io.emit('bomb:tick', buildBombState());
 

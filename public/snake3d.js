@@ -93,8 +93,9 @@ export class SnakeRenderer {
     this.tickMs = 140;
 
     this.onResize = this.onResize.bind(this);
+    this.onOrientationChange = () => setTimeout(this.onResize, 120);
     window.addEventListener('resize', this.onResize);
-    window.addEventListener('orientationchange', () => setTimeout(this.onResize, 120));
+    window.addEventListener('orientationchange', this.onOrientationChange);
     this.onResize();
 
     this.running = true;
@@ -331,6 +332,7 @@ export class SnakeRenderer {
   dispose(){
     this.running = false;
     window.removeEventListener('resize', this.onResize);
+    window.removeEventListener('orientationchange', this.onOrientationChange);
     this.renderer.dispose();
   }
 
