@@ -105,11 +105,24 @@ function initHostUI(){
     if (confirm('Tilbake til lobby og nullstille alle poeng?')) socket.emit('host:reset');
   });
 
-  // ===== Floating dock (alltid synlig, aldri dekket av overlays) =====
+  // Floating host-dock — alltid synlig, aldri dekket av overlays
   document.getElementById('dock-menu').addEventListener('click', openMenu);
   document.getElementById('dock-reset').addEventListener('click', () => {
     if (confirm('Tilbake til lobby og nullstille alle poeng?')) socket.emit('host:reset');
   });
+  // Long-press på 'Lobby'-knapp = nullstill hele kvelden
+  let dockResetHold = null;
+  const dockResetBtn = document.getElementById('dock-reset');
+  dockResetBtn.addEventListener('pointerdown', () => {
+    dockResetHold = setTimeout(() => {
+      if (confirm('Nullstille hele kveldens stilling?\n\nDette sletter alle akkumulerte poeng på tvers av spill.')){
+        socket.emit('host:reset-session');
+        sfx.wrong();
+      }
+    }, 1200);
+  });
+  dockResetBtn.addEventListener('pointerup', () => { clearTimeout(dockResetHold); });
+  dockResetBtn.addEventListener('pointerleave', () => { clearTimeout(dockResetHold); });
   // Ctx-knapp endrer funksjon per fase
   const dockCtx = document.getElementById('dock-ctx');
   dockCtx.addEventListener('click', () => {
@@ -236,8 +249,10 @@ socket.on('quiz:reveal', ({ correctIdx, results, allCorrect }) => {
               mascotCelebrate();
               mascotSpeak('🔥 ' + r.name + ' ' + t.n + ' på rad!');
               fx.brandPulse('gold');
-              // Gull-full-skjerm-glow ved streak 5+
               triggerStreakEscalation(t.n, r.name);
+              showCommentator(`${r.name} er i FLYTT-sonen! ${t.n} riktige på rad!`, { kind: 'hype', ms: 3800 });
+            } else if (t.n === 3){
+              showCommentator(`${r.name} begynner å varme opp — 3 på rad!`, { kind: 'info' });
             }
           } else if (t.kind === 'all-correct'){
             fx.halo(r.pid, 'gold');
@@ -267,8 +282,8 @@ socket.on('bomb:kill', ({ victim, x, y, name }) => {
   showKillBanner(name);
   fx.ko(name);
   fx.emojiBurst('💥', window.innerWidth/2, window.innerHeight/2 + 40, 8);
-  // Puls på stage-bg
   stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'mint', 0.8);
+  showCommentator(`${name} er ute!`, { kind: 'info', ms: 2500 });
 });
 
 socket.on('bomb:combo', ({ killerName, count, label }) => {
@@ -296,8 +311,13 @@ socket.on('bomb:combo', ({ killerName, count, label }) => {
       );
     }, i * 120);
   }
+  // Kommentator
+  if (count >= 4) showCommentator(`UVIRKELIG! ${killerName} tar fire på én gang!`, { kind: 'hype', ms: 4000 });
+  else if (count === 3) showCommentator(`For en trippel! ${killerName} leverer varene!`, { kind: 'hype' });
+  else showCommentator(`Dobbeldrap av ${killerName}!`, { kind: 'info' });
 });
 let _bombChampionShown = false;
+let _bombSuddenDeathShown = false;
 socket.on('bomb:tick', data => {
   if (bombRenderer){
     bombRenderer.setPlayers(data.players);
@@ -307,10 +327,15 @@ socket.on('bomb:tick', data => {
     if (bombRenderer.setFlames) bombRenderer.setFlames(data.flames || []);
   }
   renderGameHud(data, 'bomb');
-  // Track aktive bomb-karakterer så maskot-garderobe kan velge fra dem
   window._bombPlayerCharacters = data.players.map(p => p.character).filter(Boolean);
-  // Champion-cinematic: akkurat én overlevende + flere hadde startet (>=2)
   const alive = data.players.filter(p => p.alive);
+  // Sudden death kommentar
+  if (!_bombSuddenDeathShown && data.players.length >= 3 && alive.length === 2){
+    _bombSuddenDeathShown = true;
+    showCommentator(`Sudden death! Kun ${alive[0].name} og ${alive[1].name} igjen!`, { kind: 'hype', ms: 4000 });
+    sfx.siren();
+    fx.brandPulse('danger');
+  }
   if (!_bombChampionShown && data.players.length >= 2 && alive.length === 1){
     _bombChampionShown = true;
     const winner = alive[0];
@@ -321,6 +346,7 @@ socket.on('bomb:tick', data => {
     setTimeout(() => confetti.shower(200), 400);
     fx.brandPulse('gold');
     mascotCelebrate(6000);
+    showCommentator(`${winner.name} er CHAMPION!`, { kind: 'hype', ms: 4500 });
   }
 });
 socket.on('snake:tick', data => {
@@ -336,6 +362,8 @@ socket.on('snake:milestone', ({ name, length, label }) => {
   stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 1.2);
   fx.brandPulse('gold');
   confetti.burst({ count: 80 });
+  if (length >= 50) showCommentator(`LEGENDE! ${name} er nå ${length} segmenter!`, { kind: 'hype', ms: 3500 });
+  else if (length >= 30) showCommentator(`${name} er episk lang — ${length} segmenter!`, { kind: 'hype' });
 });
 
 socket.on('snake:food-fx', ({ type, pid, x, y }) => {
@@ -357,6 +385,7 @@ socket.on('snake:food-fx', ({ type, pid, x, y }) => {
 // ====== Phase dispatch ======
 function render(s, prevPhase){
   updatePhaseTag(s.phase);
+  renderSessionTicker(s);
   if (prevPhase !== s.phase){
     mascotForPhase(s.phase);
     if (s.phase !== 'question') stopTimePressureWatcher();
@@ -413,7 +442,7 @@ function render(s, prevPhase){
   if (prevPhase !== s.phase){
     // Specific cleanup
     if (s.phase !== 'snake' && snakeRenderer){ snakeRenderer.dispose(); snakeRenderer = null; overlays.innerHTML=''; }
-    if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; _bombChampionShown = false; }
+    if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; _bombChampionShown = false; _bombSuddenDeathShown = false; }
     overlays.innerHTML = '';
   }
 
@@ -448,6 +477,55 @@ function updatePhaseTag(phase){
     el.classList.remove('flash');
     void el.offsetWidth;
     el.classList.add('flash');
+  }
+}
+
+function renderSessionTicker(s){
+  const sess = s.session;
+  let el = document.getElementById('session-ticker');
+  if (!sess || !sess.scores || sess.scores.length === 0){
+    if (el) el.remove();
+    return;
+  }
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'session-ticker';
+    el.className = 'session-ticker';
+    document.body.appendChild(el);
+  }
+  const top = sess.scores.slice(0, 5);
+  el.innerHTML = `
+    <span class="st-label">🏆 KVELDEN (${sess.games} spill)</span>
+    ${top.map((p, i) => `
+      <span class="st-entry rank-${i+1}">
+        <span class="st-medal">${['🥇','🥈','🥉','4.','5.'][i] || (i+1)+'.'}</span>
+        <span class="st-em">${p.emoji}</span>
+        <span class="st-name">${escapeHtml(p.name)}</span>
+        <span class="st-points">${p.total}</span>
+      </span>
+    `).join('')}
+  `;
+}
+
+// ===== Live kommentator-overlay =====
+// Vises nederst på skjermen under aktive spill — smart tekst basert på events
+let _commentatorEl = null;
+function showCommentator(text, { ms = 3500, kind = 'info' } = {}){
+  if (!_commentatorEl){
+    _commentatorEl = document.createElement('div');
+    _commentatorEl.className = 'commentator';
+    document.body.appendChild(_commentatorEl);
+  }
+  const line = document.createElement('div');
+  line.className = 'comm-line comm-' + kind;
+  line.innerHTML = '<span class="comm-ic">🎙️</span><span class="comm-text">' + text + '</span>';
+  _commentatorEl.appendChild(line);
+  setTimeout(() => line.classList.add('in'), 20);
+  setTimeout(() => { line.classList.remove('in'); line.classList.add('out'); }, ms);
+  setTimeout(() => line.remove(), ms + 400);
+  // Max 3 linjer samtidig
+  while (_commentatorEl.children.length > 3){
+    _commentatorEl.firstChild.remove();
   }
 }
 function renderPlayers(s){
@@ -551,6 +629,9 @@ function renderPlayers(s){
       fx.toast(`${c.name} tar ledelsen!`, { icon: '👑', kind: 'first' });
       mascotCelebrate(2500);
       fx.brandPulse('gold');
+      // Kommentator
+      if (c.from >= 3) showCommentator(`Et drømmebytte! ${c.name} klatrer fra ${c.from}. plass til ledelsen!`, { kind: 'hype' });
+      else showCommentator(`${c.name} tar ledelsen!`, { kind: 'info' });
     }
   }
 
@@ -1397,6 +1478,22 @@ function renderEnd(s){
         <div>Spillere: <b>${s.players.length}</b></div>
         <div>Total poeng: <b>${total}</b></div>
       </div>
+      ${s.session && s.session.games >= 2 ? `
+        <div class="session-podium">
+          <div class="sp-title">🏆 Showet i kveld — ${s.session.games} spill</div>
+          <div class="sp-grid">
+            ${s.session.scores.slice(0, 5).map((p, i) => `
+              <div class="sp-row rank-${i+1}">
+                <span class="sp-rank">${['🥇','🥈','🥉','4.','5.'][i]}</span>
+                <span class="sp-em">${p.emoji}</span>
+                <span class="sp-name">${escapeHtml(p.name)}</span>
+                <span class="sp-total">${p.total}</span>
+                <span class="sp-games">i ${p.gamesPlayed} spill</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
       ${facts.length ? `<div class="fun-facts">${facts.map(f => `<div class="fun-fact">${f}</div>`).join('')}</div>` : ''}
       <button class="btn-primary" id="end-btn" style="margin-top: 24px; opacity:0; transition: opacity .5s;">Tilbake til lobby</button>
     </div>

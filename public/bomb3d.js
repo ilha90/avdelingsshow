@@ -307,12 +307,22 @@ export class BombRenderer {
       }
       rec.mesh.position.set(b.x + 0.5, 0.4, b.y + 0.5);
       if (rec.emojiSprite) rec.emojiSprite.position.set(b.x + 0.5, 0.8, b.y + 0.5);
-      // Pulse
+      // Akselererende puls basert på fuse-progresjon
       const t = performance.now() * 0.007;
-      const s = 1 + 0.08 * Math.sin(t + b.x + b.y);
+      const fuseProgress = (b.fuseLeft == null || b.fuseTotal == null)
+        ? 0  // remote-bomb, konstant
+        : 1 - Math.min(1, b.fuseLeft / b.fuseTotal); // 0→1 (0=fersk, 1=detonerer nå)
+      // Pulser-frekvens akselererer: 1x tidlig, 6x mot slutt
+      const pulseSpeed = 1 + fuseProgress * 5;
+      const pulseMag = 0.08 + fuseProgress * 0.12;
+      const s = 1 + pulseMag * Math.sin(t * pulseSpeed + b.x + b.y);
       rec.mesh.scale.setScalar(s);
-      rec.mesh.material.emissive = new THREE.Color(b.flashing ? 0xff2a2a : (b.type === 'laser' ? 0x2030a0 : b.type === 'fire' ? 0x802010 : 0x550000));
-      rec.mesh.material.emissiveIntensity = b.flashing ? (0.5 + 0.5 * Math.sin(t*4)) : 0.2;
+      // Emissiv intensitet øker også mot slutten
+      const baseEmissive = b.flashing ? 0xff2a2a : (b.type === 'laser' ? 0x2030a0 : b.type === 'fire' ? 0x802010 : 0x550000);
+      rec.mesh.material.emissive = new THREE.Color(baseEmissive);
+      rec.mesh.material.emissiveIntensity = b.flashing
+        ? (0.5 + 0.5 * Math.sin(t*8))
+        : 0.15 + fuseProgress * 0.5;
     }
     for (const [id, rec] of this.bombMeshes){
       if (!seen.has(id)){

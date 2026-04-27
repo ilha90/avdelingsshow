@@ -199,7 +199,9 @@ const game = {
     liesCaught: new Map()      // lie: antall løgner gjenkjent
   },
   lastGame: null,  // 'quiz' | 'bomb' | 'snake' | ...
-  lastCharacters: new Map() // pid -> charId fra siste bomb/snake-runde
+  lastCharacters: new Map(), // pid -> charId fra siste bomb/snake-runde
+  sessionScores: new Map(),  // pid -> { name, emoji, total, gamesPlayed } — akkumulert over hele kvelden
+  sessionGames: 0
 };
 
 function teamForIndex(i){
@@ -300,6 +302,15 @@ function publicState(){
     if (game.lastCharacters && game.lastCharacters.size){
       base.lastCharacters = Array.from(game.lastCharacters.entries()).map(([pid, cid]) => ({ pid, charId: cid }));
     }
+  }
+  // Session-totals (akkumulert over alle spill kvelden)
+  if (game.sessionGames > 0){
+    base.session = {
+      games: game.sessionGames,
+      scores: Array.from(game.sessionScores.entries())
+        .map(([pid, rec]) => ({ pid, name: rec.name, emoji: rec.emoji, total: rec.total, gamesPlayed: rec.gamesPlayed }))
+        .sort((a, b) => b.total - a.total)
+    };
   }
   return base;
 }
@@ -535,6 +546,24 @@ function resetMatchStats(){
   game.matchStats.liesCaught.clear();
 }
 
+// Accumuler scores fra ferdigspilte runde til sesjon-total
+function accumulateSessionScores(){
+  for (const p of game.players.values()){
+    if (!p.score || p.score <= 0) continue;
+    const rec = game.sessionScores.get(p.id) || { name: p.name, emoji: p.emoji, total: 0, gamesPlayed: 0 };
+    rec.name = p.name; rec.emoji = p.emoji;
+    rec.total += p.score;
+    rec.gamesPlayed += 1;
+    game.sessionScores.set(p.id, rec);
+  }
+  game.sessionGames += 1;
+}
+
+function resetSessionScores(){
+  game.sessionScores.clear();
+  game.sessionGames = 0;
+}
+
 function broadcast(){
   io.emit('state', publicState());
 }
@@ -719,6 +748,12 @@ io.on('connection', socket => {
     game.lastGame = null;
     for (const p of game.players.values()) p.score = 0;
     resetMatchStats();
+    // MERK: sessionScores nullstilles IKKE her — det gjøres kun ved host:reset-session
+    broadcast();
+  });
+  socket.on('host:reset-session', () => {
+    if (!game.hosts.has(socket.id)) return;
+    resetSessionScores();
     broadcast();
   });
 
@@ -1167,6 +1202,7 @@ function finishQuiz(){
   const isLightning = game.quiz.isLightning;
   const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
   game.lastGame = isLightning ? 'lightning' : 'quiz';
+  accumulateSessionScores();
   game.phase = 'end';
   game.quiz = null;
   broadcast();
@@ -1483,6 +1519,7 @@ function endSnake(){
   const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
   recordScores('snake', players);
   game.lastGame = 'snake';
+  accumulateSessionScores();
   game.phase = 'end';
   game.snake = null;
   broadcast();
@@ -1919,6 +1956,7 @@ function endBomberman(){
   const players = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
   recordScores('bomb', players);
   game.lastGame = 'bomb';
+  accumulateSessionScores();
   game.phase = 'end';
   game.bomb = null;
   broadcast();
@@ -2445,7 +2483,9 @@ function buildBombState(){
     })),
     bombs: Array.from(game.bomb.bombs.values()).map(b => ({
       id: b.id, x: b.x, y: b.y, owner: b.owner, flashing: b.flashing, remote: b.remote,
-      type: b.type || 'normal'
+      type: b.type || 'normal',
+      fuseLeft: b.remote ? null : b.fuse,
+      fuseTotal: BOMB_FUSE_TICKS
     })),
     flames: (game.bomb.flames || []).map(f => ({ x: f.x, y: f.y, until: f.until })),
     powerups: game.bomb.powerups.slice(),

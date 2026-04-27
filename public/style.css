@@ -3393,3 +3393,201 @@ button[data-id],
   0%   { transform: translateX(-50%) rotate(0deg) translateX(90px) rotate(0deg); }
   100% { transform: translateX(-50%) rotate(360deg) translateX(90px) rotate(-360deg); }
 }
+
+/* ============================================================
+   Sesjon-ticker — kveldens stilling øverst på skjermen
+   ============================================================ */
+.session-ticker {
+  position: fixed;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 18px;
+  background: linear-gradient(90deg, rgba(14,40,29,.95), rgba(20,57,41,.95));
+  border: 1px solid var(--stage-edge);
+  border-radius: var(--r-pill);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 20px rgba(0,0,0,.4), 0 0 30px rgba(71,209,151,.2);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  max-width: calc(100vw - 440px);
+  overflow: hidden;
+  white-space: nowrap;
+  animation: session-ticker-in .5s var(--ease-out-back);
+}
+@keyframes session-ticker-in {
+  from { opacity: 0; transform: translate(-50%, -20px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+.session-ticker .st-label {
+  color: var(--gold);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  font-size: 11px;
+  padding: 4px 8px;
+  background: rgba(202,171,81,.15);
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.session-ticker .st-entry {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  background: rgba(255,255,255,.04);
+  border-radius: var(--r-pill);
+  color: var(--ink);
+}
+.session-ticker .st-entry.rank-1 { background: linear-gradient(90deg, rgba(202,171,81,.2), rgba(202,171,81,.1)); border: 1px solid rgba(202,171,81,.4); }
+.session-ticker .st-entry.rank-2 { background: rgba(192,192,192,.1); border: 1px solid rgba(192,192,192,.3); }
+.session-ticker .st-entry.rank-3 { background: rgba(184,115,51,.1); border: 1px solid rgba(184,115,51,.3); }
+.session-ticker .st-medal { font-size: 16px; }
+.session-ticker .st-em { font-size: 18px; }
+.session-ticker .st-name { font-weight: 700; }
+.session-ticker .st-points {
+  font-family: var(--font-mono);
+  color: var(--accent);
+  font-weight: 800;
+  margin-left: 2px;
+}
+
+@media (max-width: 1100px) {
+  .session-ticker { max-width: calc(100vw - 40px); }
+  .session-ticker .st-entry { font-size: 11px; padding: 2px 6px; }
+}
+
+/* ============================================================
+   Session-podium på end-screen — 'Showet i kveld'
+   ============================================================ */
+.session-podium {
+  margin-top: 20px;
+  max-width: 720px;
+  width: 100%;
+  background:
+    linear-gradient(180deg, rgba(202,171,81,.12) 0%, rgba(202,171,81,.04) 100%);
+  border: 1px solid rgba(202,171,81,.4);
+  border-radius: var(--r-lg);
+  padding: 20px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.4), var(--neon-gold-soft);
+  animation: card-in .55s .9s var(--ease-out-back) backwards;
+}
+.session-podium .sp-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--gold);
+  text-align: center;
+  margin-bottom: 12px;
+  letter-spacing: -0.01em;
+}
+.session-podium .sp-grid {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.session-podium .sp-row {
+  display: grid;
+  grid-template-columns: 40px 28px 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255,255,255,.04);
+  border-radius: var(--r);
+  font-family: var(--font-display);
+}
+.session-podium .sp-row.rank-1 {
+  background: linear-gradient(90deg, rgba(202,171,81,.25) 0%, rgba(202,171,81,.08) 100%);
+  border: 1px solid rgba(202,171,81,.5);
+}
+.session-podium .sp-row.rank-2 {
+  background: linear-gradient(90deg, rgba(192,192,192,.2) 0%, rgba(192,192,192,.05) 100%);
+  border: 1px solid rgba(192,192,192,.4);
+}
+.session-podium .sp-row.rank-3 {
+  background: linear-gradient(90deg, rgba(184,115,51,.2) 0%, rgba(184,115,51,.05) 100%);
+  border: 1px solid rgba(184,115,51,.4);
+}
+.session-podium .sp-rank {
+  font-size: 22px;
+  font-weight: 900;
+  text-align: center;
+}
+.session-podium .sp-em { font-size: 24px; }
+.session-podium .sp-name {
+  font-weight: 800;
+  font-size: 17px;
+  color: var(--ink);
+}
+.session-podium .sp-total {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--accent);
+}
+.session-podium .sp-games {
+  font-family: var(--font-mono);
+  color: var(--ink-muted);
+  font-size: 11px;
+  letter-spacing: .02em;
+}
+
+/* ============================================================
+   Live kommentator-overlay — bunn-stil "🎙️ X"-linjer
+   ============================================================ */
+.commentator {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  display: flex; flex-direction: column; gap: 6px;
+  align-items: center;
+  pointer-events: none;
+  max-width: 90vw;
+}
+.commentator .comm-line {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 10px 20px;
+  background: linear-gradient(90deg, rgba(7,24,15,.92), rgba(20,57,41,.92));
+  border: 1px solid var(--stage-edge);
+  border-radius: var(--r-pill);
+  backdrop-filter: blur(12px);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.005em;
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity .35s, transform .45s var(--ease-out-back);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  max-width: 680px;
+}
+.commentator .comm-line.in {
+  opacity: 1;
+  transform: translateY(0);
+}
+.commentator .comm-line.out {
+  opacity: 0;
+  transform: translateY(-20px);
+}
+.commentator .comm-ic {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.commentator .comm-line.comm-hype {
+  background: linear-gradient(90deg, rgba(202,171,81,.25), rgba(255,118,51,.25));
+  border-color: var(--gold);
+  color: var(--gold);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5), 0 0 30px rgba(202,171,81,.4);
+  animation: comm-hype-pulse .4s ease-in-out infinite alternate;
+}
+@keyframes comm-hype-pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.03); }
+}
+.commentator .comm-line.comm-info {
+  /* default */
+}
+
+/* Skjul kommentator når live-ticker er aktiv (kolliderer) */
+body:has(.live-ticker.visible) .commentator { bottom: 110px; }
