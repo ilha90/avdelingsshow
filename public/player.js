@@ -1010,7 +1010,7 @@ function bindBombControls(){
       }, HOLD_MS);
       return;
     }
-    if (e.key.toLowerCase() === 'x'){
+    if (e.key.toLowerCase() === 'x' || e.key.toLowerCase() === 'f'){
       socket.emit('player:bomb-detonate');
       return;
     }

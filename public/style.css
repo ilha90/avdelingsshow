@@ -740,10 +740,15 @@ body::after {
 
 /* ===== End-screen podium + awards ===== */
 .end-screen {
-  position: fixed; inset: 60px 20px 20px;
+  position: fixed; inset: 52px 0 0 0;
   z-index: var(--z-overlay);
   display: flex; flex-direction: column; align-items: center; gap: 28px;
+  padding: 18px 24px 28px;
   overflow: auto;
+  /* Ugjennomsiktig stage-bakgrunn — skjuler lobby-menyen og sidepanelene
+     bak slutt-skjermen helt (dim-lights var upålitelig pga :has()). Starter
+     under topbaren slik at END/lyd-knappene forblir synlige og klikkbare. */
+  background: radial-gradient(ellipse at 50% 28%, var(--stage-elev) 0%, var(--stage) 48%, var(--stage-deep) 100%);
 }
 .end-screen h1 {
   font-size: 76px;
@@ -2164,10 +2169,11 @@ body.time-pressure .countdown-num {
 @keyframes cb-rays { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 /* ---- Dim lights (end-sequence) ---- */
-body.dim-lights .brand,
-body.dim-lights .topbar-right,
-body.dim-lights .host-main > .panel:not(:has(.end-screen)),
-body.dim-lights #stage-bg { opacity: .08; transition: opacity .8s; }
+/* dim-lights beholdes som tilstandsflagg i JS (undertrykker maskot-klesbytte
+   under cinematic-fasen). Den gamle opacity-regelen brukte :not(:has(...)),
+   men .end-screen ligger i #overlays utenfor .host-main, så unntaket traff
+   aldri — og :has() finnes ikke i eldre Safari, så HELE regelen ble droppet.
+   Okkludering håndteres nå av .end-screen sin egen ugjennomsiktige bakgrunn. */
 body.dim-lights .end-screen { transform: scale(1.02); }
 
 .end-screen.cinematic .podium-spot.hide { opacity: 0; transform: translateY(200px); }

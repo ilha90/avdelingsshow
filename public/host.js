@@ -1,7 +1,7 @@
 // public/host.js — host UI + rendering + socket handlers
 import { QUIZ_CATEGORIES } from './data.js';
 import { avatarFor, colorFor } from './avatars.js';
-import { sfx, setMuted, isMuted, unlock as unlockAudio, startAmbient, stopAmbient } from './sound.js';
+import { sfx, setMuted, isMuted, unlock as unlockAudio, stopAmbient } from './sound.js';
 import * as confetti from './confetti.js';
 import * as ai from './ai.js';
 import * as stageBg from './stage-bg.js';
@@ -388,6 +388,9 @@ function render(s, prevPhase){
   renderSessionTicker(s);
   if (prevPhase !== s.phase){
     mascotForPhase(s.phase);
+    // dim-lights settes i renderEnd; fjern det igjen så snart vi forlater
+    // 'end' (ellers blir det hengende og deaktiverer maskot-klesbytte for godt).
+    if (s.phase !== 'end') document.body.classList.remove('dim-lights');
     if (s.phase !== 'question') stopTimePressureWatcher();
     // Ticker: synlig under snake/bomb
     if (s.phase === 'snake' || s.phase === 'bomb'){
@@ -397,10 +400,9 @@ function render(s, prevPhase){
     } else {
       fx.tickerHide();
     }
-    // Ambient bed under ro-faser (quiz, voting, icebreaker), av ellers
-    const ambientPhases = new Set(['question', 'reveal', 'voting', 'vote-result', 'icebreaker', 'scatter-play', 'lie-play', 'leaderboard']);
-    if (ambientPhases.has(s.phase)) startAmbient();
-    else stopAmbient();
+    // Ambient-droan fjernet — den ga en sjenerende summing mens spillerne
+    // svarte på spørsmål. Sørg for at den aldri kjører.
+    stopAmbient();
   }
   renderPlayers(s);
   updateLobbyConfig(s);
@@ -420,8 +422,8 @@ function render(s, prevPhase){
       'scatter-review': 'Gjennomgang.',
       icebreaker: 'Bli-kjent-kort.',
       wheel: 'Lykkehjulet.',
-      snake: 'Slange-kamp pågår.',
-      'snake-end': 'Slange-kamp slutt.',
+      snake: 'Snake 2.0 pågår.',
+      'snake-end': 'Snake 2.0 slutt.',
       bomb: 'Bomberman pågår.',
       'bomb-end': 'Bomberman slutt.',
       'lie-collect': 'Spillere sender inn påstander...',
@@ -850,7 +852,7 @@ function openMenu(){
     ['🤥', '2 sannheter, 1 løgn', 'Spillere lurer hverandre', () => socket.emit('host:start-lie'), state.config.lietime+'s', (chip) => { const opts=TIME_OPTIONS.lie; menuState.tickIdx.lie=(menuState.tickIdx.lie+1)%opts.length; const v=opts[menuState.tickIdx.lie]; chip.textContent=v+'s'; socket.emit('host:config',{lietime:v}); }],
     ['💬', 'Bli-kjent-kort', 'Samtalestartere', () => socket.emit('host:start-icebreaker'), null, null],
     ['🎡', 'Lykkehjulet', 'Tilfeldig spiller', () => socket.emit('host:start-wheel'), null, null],
-    ['🐍', 'Slange-kamp', '3D Snake multiplayer', () => socket.emit('host:start-snake'), (state.config.snaketime===0?'∞':state.config.snaketime+'s'), (chip) => { const opts=TIME_OPTIONS.snake; menuState.tickIdx.snake=(menuState.tickIdx.snake+1)%opts.length; const v=opts[menuState.tickIdx.snake]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{snaketime:v}); }],
+    ['🐍', 'Snake 2.0', 'Klassisk Snake — raskere for hvert eple', () => socket.emit('host:start-snake'), (state.config.snaketime===0?'∞':state.config.snaketime+'s'), (chip) => { const opts=TIME_OPTIONS.snake; menuState.tickIdx.snake=(menuState.tickIdx.snake+1)%opts.length; const v=opts[menuState.tickIdx.snake]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{snaketime:v}); }],
     ['💣', 'Bomberman', '3D bombe-kamp', () => socket.emit('host:start-bomb'), (state.config.bombtime===0?'∞':state.config.bombtime+'s'), (chip) => { const opts=TIME_OPTIONS.bomb; menuState.tickIdx.bomb=(menuState.tickIdx.bomb+1)%opts.length; const v=opts[menuState.tickIdx.bomb]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{bombtime:v}); }],
   ];
   i = 0;
@@ -1237,7 +1239,7 @@ function renderSnakeSelect(s){
   if (!o.querySelector('.snake-select-host')){
     o.innerHTML = `
       <div class="snake-select-host bomb-select-host">
-        <div class="bsh-title">🐍 Slange-kamp — Velg slange</div>
+        <div class="bsh-title">🐍 Snake 2.0 — Velg slange</div>
         <div class="bsh-sub">Hver spiller velger sin slange. Spillet starter når alle er klare.</div>
         <div class="bsh-grid">${SNAKE_CHARS.map(c => `
           <div class="bsh-char" data-char="${c.id}">
@@ -1273,7 +1275,7 @@ function renderSnakeGame(s){
   const o = document.getElementById('overlays');
   if (!snakeRenderer){
     o.innerHTML = `<canvas class="fullbleed-canvas" id="snake-canvas"></canvas>
-      <div class="game-hud-top"><div class="hud-title">🐍 Slange-kamp</div><div class="hud-timer" id="snake-timer">∞</div></div>
+      <div class="game-hud-top"><div class="hud-title">🐍 Snake 2.0</div><div class="hud-timer" id="snake-timer">∞</div></div>
       <div class="game-hud-right" id="snake-score"><h4>Poeng</h4><div id="snake-score-list"></div></div>`;
     import('./snake3d.js').then(m => {
       snakeRenderer = new m.SnakeRenderer(document.getElementById('snake-canvas'));
@@ -1414,7 +1416,7 @@ function renderEnd(s){
     const diff = podium[0].score - podium[1].score;
     facts.push(`Vinneren hadde <b>${diff}</b> poeng forsprang til andreplassen`);
   }
-  const gameLabel = { quiz: 'Quiz', lightning: 'Lyn-runde', snake: 'Slange-kamp', bomb: 'Bomberman', scatter: 'Kategori-kamp', lie: '2 sannheter 1 løgn' }[s.lastGame] || '';
+  const gameLabel = { quiz: 'Quiz', lightning: 'Lyn-runde', snake: 'Snake 2.0', bomb: 'Bomberman', scatter: 'Kategori-kamp', lie: '2 sannheter 1 løgn' }[s.lastGame] || '';
 
   // Hent karakter-map hvis tilgjengelig (for bomb/snake)
   const charMap = new Map();

@@ -17,6 +17,7 @@ import {
 } from './public/data.js';
 import { BOMB_CHARS, getChar } from './public/bomb-chars.js';
 import { SNAKE_CHARS, getSnakeChar } from './public/snake-chars.js';
+import { sanitizeName, sanitizeEmoji, sanitizeText, clamp, quizPoints } from './lib/scoring.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +25,9 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 const HOST_PASSWORD = process.env.HOST_PASSWORD || 'dnb';
 const SCORES_FILE = path.join(__dirname, 'scores.json');
+const SNAPSHOT_FILE = path.join(__dirname, 'state-snapshot.json');
+// Snapshot eldre enn dette ignoreres ved boot (én kveld = ett event).
+const SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 // ==================== Express setup ====================
 const app = express();
@@ -120,15 +124,8 @@ function recordScores(gameType, playerList){
 }
 
 // ==================== Helpers ====================
-function sanitizeName(s){
-  return String(s || '').replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 20);
-}
-function sanitizeEmoji(s){
-  return String(s || '🦊').trim().slice(0, 6);
-}
-function sanitizeText(s, max = 300){
-  return String(s || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
-}
+// sanitizeName / sanitizeEmoji / sanitizeText / clamp / quizPoints
+// importeres fra ./lib/scoring.js (rene, enhetstestede funksjoner).
 function shuffle(arr){
   const a = arr.slice();
   for (let i=a.length-1;i>0;i--){
@@ -566,6 +563,7 @@ function resetSessionScores(){
 
 function broadcast(){
   io.emit('state', publicState());
+  scheduleSnapshot();
 }
 
 // ==================== Socket handlers ====================
@@ -1009,7 +1007,6 @@ function randColor(){
   const palette = ['#ff5a6b','#ff9d4a','#ffcf4a','#9ae053','#2fbf71','#3cc1d6','#5cc7ff','#7a9bff','#b074ff','#e56bff'];
   return palette[(Math.random()*palette.length)|0];
 }
-function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v|0)); }
 
 function playTutorialThen(gameType, startFn, ms = 5500){
   stopAllTimers();
@@ -1032,9 +1029,21 @@ function stopAllTimers(){
   if (game.quiz && game.quiz.questionTimer){ clearTimeout(game.quiz.questionTimer); game.quiz.questionTimer = null; }
   if (game.scatter && game.scatter.timer){ clearTimeout(game.scatter.timer); game.scatter.timer = null; }
   if (game.lie && game.lie.timer){ clearTimeout(game.lie.timer); game.lie.timer = null; }
+  // Karakter-velg-timere må også ryddes — ellers fyrer de videre hvis vi
+  // bytter spill uten å gå via host:reset (latent zombie-timer-bug).
+  if (game.bombSelect && game.bombSelect.timer){ clearTimeout(game.bombSelect.timer); game.bombSelect.timer = null; }
+  if (game.snakeSelect && game.snakeSelect.timer){ clearTimeout(game.snakeSelect.timer); game.snakeSelect.timer = null; }
 }
 
-// Game logic lives in server-games.js (imported at bottom)
+// Wrapper for tick-loop-funksjoner. En enkelt dårlig tick (uventet null,
+// race ved disconnect midt i loopen) skal logges — ikke ta ned hele
+// Node-prosessen og dermed avbryte showet for alle.
+function safeTick(name, fn){
+  return () => {
+    try { fn(); }
+    catch(e){ console.error(`[tick:${name}]`, e); }
+  };
+}
 
 // ==================== Quiz ====================
 function startQuiz({ category, isLightning } = {}){
@@ -1100,7 +1109,6 @@ function revealQuiz(){
   if (!game.quiz) return;
   const q = game.quiz.question; if (!q) return;
   const secs = game.quiz.isLightning ? game.config.lighttime : game.config.qtime;
-  const mult = game.quiz.isLightning ? 2 : 1;
   // Sorter svar etter tid
   const answersArr = Array.from(game.quiz.answers.entries()); // [pid, {idx,t}]
   answersArr.sort((a,b) => a[1].t - b[1].t);
@@ -1112,8 +1120,7 @@ function revealQuiz(){
     // Totale svar — for nøyaktighet-stats
     game.matchStats.totalAnswers.set(pid, (game.matchStats.totalAnswers.get(pid) || 0) + 1);
     if (correct){
-      const timeLeft = Math.max(0, (game.quiz.deadline - ans.t) / 1000);
-      base = Math.round((500 + Math.min(500, timeLeft / secs * 500)) * mult);
+      base = quizPoints({ deadline: game.quiz.deadline, answeredAt: ans.t, secs, isLightning: game.quiz.isLightning });
       p.score += base;
       // Match stats — correct
       game.matchStats.correctAnswers.set(pid, (game.matchStats.correctAnswers.get(pid) || 0) + 1);
@@ -1433,7 +1440,25 @@ function spinWheel(){
 // ==================== Snake ====================
 const SNAKE_COLS = 40;
 const SNAKE_ROWS = 25;
-const SNAKE_TICK = 140;
+const SNAKE_TICK = 120;            // base-fart (litt snappiere enn klassisk 140)
+const SNAKE_TICK_MIN = 70;         // raskeste fart (gulv)
+const SNAKE_SPEEDUP_EVERY = 4;     // antall spiste epler per fartsøkning
+const SNAKE_SPEEDUP_STEP = 6;      // ms raskere per hakk
+
+// Heftigere, men ekte klassisk: slangene blir raskere jo flere epler som
+// spises totalt i runden (slik original Nokia-Snake gjør).
+function snakeTickMs(){
+  const steps = Math.floor((game.snake?.applesEaten || 0) / SNAKE_SPEEDUP_EVERY);
+  return Math.max(SNAKE_TICK_MIN, SNAKE_TICK - steps * SNAKE_SPEEDUP_STEP);
+}
+function applySnakeSpeed(){
+  if (!game.snake || !game.snake.tickTimer) return;
+  const want = snakeTickMs();
+  if (game.snake.tickMs === want) return;
+  game.snake.tickMs = want;
+  clearInterval(game.snake.tickTimer);
+  game.snake.tickTimer = setInterval(safeTick('snake', snakeTick), want);
+}
 
 function startSnakeCharacterSelect(){
   stopAllTimers();
@@ -1499,7 +1524,9 @@ function startSnake(){
   for (const [pid, s] of snakes) game.lastCharacters.set(pid, s.character);
   game.snake = {
     snakes,
-    food: spawnFood([], snakes, 8),
+    food: spawnFood([], snakes, 1),     // klassisk: ett eple om gangen
+    applesEaten: 0,
+    tickMs: SNAKE_TICK,
     endAt: game.config.snaketime > 0 ? Date.now() + game.config.snaketime * 1000 : 0,
     tickTimer: null
   };
@@ -1509,7 +1536,8 @@ function startSnake(){
     if (!game.snake) return;
     game.phase = 'snake';
     broadcast();
-    game.snake.tickTimer = setInterval(snakeTick, SNAKE_TICK);
+    game.snake.tickMs = SNAKE_TICK;
+    game.snake.tickTimer = setInterval(safeTick('snake', snakeTick), SNAKE_TICK);
   }, 3000);
 }
 
@@ -1567,25 +1595,15 @@ function snakeTick(){
     // Food?
     const foodIdx = game.snake.food.findIndex(f => f.x === nx && f.y === ny);
     if (foodIdx >= 0){
-      const food = game.snake.food[foodIdx];
       game.snake.food.splice(foodIdx, 1);
       const p = game.players.get(s.id);
       game.matchStats.apples.set(s.id, (game.matchStats.apples.get(s.id) || 0) + 1);
-      // Effekter basert på food-type
-      if (food.type === 'gold'){
-        // Gull-eple: +100 poeng, ingen vekst
-        if (p) p.score += 100;
-        io.emit('snake:food-fx', { x: nx, y: ny, type: 'gold', pid: s.id });
-      } else if (food.type === 'mega'){
-        // Mega-eple: +3 segmenter, +30 poeng
-        s.growBy += 3;
-        if (p) p.score += 30;
-        io.emit('snake:food-fx', { x: nx, y: ny, type: 'mega', pid: s.id });
-      } else {
-        // Normal: +10 poeng, +1 segment
-        s.growBy += 1;
-        if (p) p.score += 10;
-      }
+      // Klassisk: ett eple = +1 segment, +10 poeng. Ingen spesial-epler.
+      s.growBy += 1;
+      if (p) p.score += 10;
+      // Heftigere: hele runden går raskere jo flere epler som spises totalt.
+      game.snake.applesEaten++;
+      applySnakeSpeed();
     }
     if (s.growBy > 0){
       s.growBy--;
@@ -1606,8 +1624,7 @@ function snakeTick(){
         length: newLen,
         label: newLen >= 50 ? 'LEGENDE!' : newLen >= 30 ? 'EPISK!' : 'LANG!'
       });
-      // Bonus-poeng
-      if (p) p.score += 30;
+      // Ren visuell feiring — ingen bonuspoeng (poeng kommer kun fra epler).
     }
     heads.push({ id: s.id, x: nx, y: ny, len: s.segs.length });
   }
@@ -1634,26 +1651,8 @@ function snakeTick(){
   // Head-to-head
   for (const [k, arr] of headMap){
     if (arr.length < 2) continue;
-    const maxLen = Math.max(...arr.map(s => s.segs.length));
-    const winners = arr.filter(s => s.segs.length === maxLen);
-    if (winners.length === arr.length){
-      // All same length: all die
-      for (const s of arr) killSnake(s);
-    } else {
-      // Longest survives. He eats all shorter
-      const winner = winners[0];
-      let eaten = 0, totalLen = 0;
-      for (const s of arr){
-        if (s === winner) continue;
-        totalLen += s.segs.length;
-        killSnake(s);
-        eaten++;
-      }
-      const grow = Math.min(50 - winner.segs.length, totalLen);
-      if (grow > 0) winner.growBy += grow;
-      const bonus = 20 + totalLen * 3;
-      const p = game.players.get(winner.id); if (p) p.score += bonus;
-    }
+    // Klassisk: hoder i samme rute = alle dør. Ingen "lengste spiser".
+    for (const s of arr) killSnake(s);
   }
   // Head-to-body
   const bodyMap = new Map(); // "x:y" -> snakeId (for non-head body)
@@ -1668,22 +1667,14 @@ function snakeTick(){
     const k = s.segs[0].x + ':' + s.segs[0].y;
     const victim = bodyMap.get(k);
     if (victim && victim !== s){
-      if (s.segs.length > victim.segs.length){
-        // Attacker wins
-        const grow = Math.min(50 - s.segs.length, victim.segs.length);
-        if (grow > 0) s.growBy += grow;
-        const p = game.players.get(s.id); if (p) p.score += 20 + victim.segs.length * 3;
-        killSnake(victim);
-      } else if (s.segs.length < victim.segs.length){
-        killSnake(s);
-      } else {
-        killSnake(s); killSnake(victim);
-      }
+      // Klassisk: kjører du hodet inn i en annen slanges kropp, dør DU.
+      // Kroppens eier er uberørt. Ingen absorbering / bonuspoeng.
+      killSnake(s);
     }
   }
 
-  // Replenish food
-  while (game.snake.food.length < 8){
+  // Replenish food — klassisk: alltid nøyaktig ett eple på brettet
+  while (game.snake.food.length < 1){
     const f = randomEmptyCell(game.snake);
     if (!f) break;
     f.type = rollFoodType();
@@ -1783,10 +1774,7 @@ function randomEmptyCell(sn){
 }
 
 function rollFoodType(){
-  const r = Math.random();
-  if (r < 0.08) return 'gold';      // 8% gull-eple (+100p, ingen vekst)
-  if (r < 0.16) return 'mega';      // 8% mega-eple (+3 segmenter, +30p)
-  return 'normal';                  // 84% normal (+10p, +1 seg)
+  return 'normal';   // klassisk: kun vanlige epler (ingen gull/mega)
 }
 
 function spawnFood(existing, snakes, count){
@@ -1940,7 +1928,7 @@ function startBomberman(){
     if (!game.bomb) return;
     game.phase = 'bomb';
     broadcast();
-    game.bomb.tickTimer = setInterval(bombTick, BOMB_TICK);
+    game.bomb.tickTimer = setInterval(safeTick('bomb', bombTick), BOMB_TICK);
   }, 3000);
 }
 
@@ -2494,7 +2482,89 @@ function buildBombState(){
   };
 }
 
+// ==================== Crash-recovery snapshot ====================
+// Den levende spilltilstanden ligger kun i minnet. Restarter prosessen midt i
+// et event (Render-redeploy, krasj, dyno-søvn) mister vi den aktive runden —
+// men vi skal IKKE miste spillerne, kveldens akkumulerte poeng eller config.
+// Vi snapshotter den gjenopprettbare lobby-tilstanden til disk (debounced via
+// broadcast) og gjenoppretter den ved boot. Pågående runder gjenopptas
+// bevisst ikke — det er for skjørt; vi lander trygt i lobby med poeng intakt.
+
+function serializeState(){
+  return {
+    savedAt: Date.now(),
+    config: game.config,
+    sessionGames: game.sessionGames,
+    sessionScores: Array.from(game.sessionScores.entries()),
+    players: Array.from(game.players.values()).map(p => ({
+      token: p.token, name: p.name, emoji: p.emoji, color: p.color,
+      score: p.score | 0, team: p.team || null
+    }))
+  };
+}
+
+let _snapTimer = null;
+function scheduleSnapshot(){
+  if (_snapTimer) return;            // debounce: maks én skriving per 2s
+  _snapTimer = setTimeout(() => {
+    _snapTimer = null;
+    try { fs.writeFileSync(SNAPSHOT_FILE, JSON.stringify(serializeState())); }
+    catch(e){ console.error('[snapshot] write failed:', e.message); }
+  }, 2000);
+}
+
+function flushSnapshotSync(){
+  try { fs.writeFileSync(SNAPSHOT_FILE, JSON.stringify(serializeState())); }
+  catch(e){ /* siste utvei ved shutdown — ignorer */ }
+}
+
+function restoreSnapshot(){
+  try {
+    if (!fs.existsSync(SNAPSHOT_FILE)) return;
+    const snap = JSON.parse(fs.readFileSync(SNAPSHOT_FILE, 'utf8'));
+    if (!snap || !snap.savedAt) return;
+    const age = Date.now() - snap.savedAt;
+    if (age > SNAPSHOT_MAX_AGE_MS) return;   // for gammelt — annet event
+    if (snap.config) Object.assign(game.config, snap.config);
+    game.sessionGames = snap.sessionGames || 0;
+    if (Array.isArray(snap.sessionScores)) game.sessionScores = new Map(snap.sessionScores);
+    if (Array.isArray(snap.players)){
+      for (const p of snap.players){
+        if (!p || !p.token) continue;
+        // Opak placeholder-id (IKKE token — den sendes i publicState og er en
+        // reconnect-hemmelighet). Spilleren re-bindes til ekte socket-id når
+        // de kobler til igjen med token sin via player:hello.
+        const id = 'restored:' + Math.random().toString(36).slice(2);
+        game.players.set(id, {
+          id, token: p.token, name: p.name, emoji: p.emoji,
+          color: p.color || randColor(), score: p.score | 0, team: p.team || null
+        });
+      }
+    }
+    game.phase = 'lobby';
+    console.log(`[snapshot] gjenopprettet ${game.players.size} spillere, ${game.sessionScores.size} sesjonspoeng (alder ${Math.round(age/1000)}s)`);
+  } catch(e){
+    console.error('[snapshot] restore failed:', e.message);
+  }
+}
+
+// ==================== Prosess-vakter ====================
+// For et live event er det alltid bedre å halte videre enn å dø. Vi logger,
+// lagrer en siste snapshot, og holder prosessen i live ved uventede feil.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+  flushSnapshotSync();
+});
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err);
+});
+// Render sender SIGTERM ved redeploy/shutdown — fang siste tilstand.
+function gracefulExit(){ flushSnapshotSync(); process.exit(0); }
+process.on('SIGTERM', gracefulExit);
+process.on('SIGINT', gracefulExit);
+
 // ==================== Start server ====================
+restoreSnapshot();
 server.listen(PORT, () => {
   console.log(`Avdelingsshow lytter på http://localhost:${PORT}`);
   console.log(`Host-passord: ${HOST_PASSWORD}`);

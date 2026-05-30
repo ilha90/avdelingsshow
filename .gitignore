@@ -1,5 +1,6 @@
 node_modules/
 scores.json
+state-snapshot.json
 .DS_Store
 .env
 *.log
