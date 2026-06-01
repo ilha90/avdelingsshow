@@ -3611,7 +3611,7 @@ body:has(.live-ticker.visible) .commentator { bottom: 110px; }
 .worms-score .hud-row.dead { opacity: .42; text-decoration: line-through; }
 
 /* ----- Spiller: scene (speil-canvas for ALLE + kontroller) ----- */
-.worms-stage { display: flex; flex-direction: column; height: 100%; }
+.worms-stage { position: fixed; inset: 0; display: flex; flex-direction: column; touch-action: none; background: var(--stage-deep); user-select: none; -webkit-user-select: none; }
 .worms-top {
   flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
   gap: 8px; padding: 8px 12px; font-size: 14px; font-weight: 700;
