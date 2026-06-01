@@ -298,6 +298,7 @@ function publicState(){
       active: game.worms.active,
       turnIdx: game.worms.turnIdx,
       teams: game.worms.teams,
+      seed: game.worms.seed,
       deadline: game.worms.turnDeadline,
       worms: Array.from(game.worms.worms.values()).map(w => ({
         pid: w.pid, name: w.name, team: w.team, lives: w.lives, alive: w.alive, kills: w.kills,

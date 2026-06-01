@@ -1213,7 +1213,7 @@ function showWormsGame(s){
   const w = s.worms;
   if (!w){ showWaitScreen('Romkrig laster...'); return; }
   if (!document.getElementById('worms-canvas')){
-    buildWormsStage();
+    buildWormsStage(s);
   }
   const amActive = w.active === me.id;
   const key = amActive ? 'active' : ('spec:' + w.active);
@@ -1231,7 +1231,7 @@ function wormTurnText(w){
   return `<span style="color:${active.color}">${escapeHtml(w.teams[active.team].name)} — ${escapeHtml(active.name)}</span>`;
 }
 
-function buildWormsStage(){
+function buildWormsStage(s){
   app.innerHTML = `
     <div class="worms-stage">
       <div class="worms-top" id="worms-top"></div>
@@ -1239,16 +1239,19 @@ function buildWormsStage(){
       <div class="worms-ctrl" id="worms-ctrl"></div>
     </div>
   `;
+  // Bygg speilet fra STATE (alltid tilgjengelig) — robust mot tapt worms:init
+  // ved reconnect/refresh. Fallback til worms:init-eventet om state mangler seed.
+  const w = (s && s.worms) || wormsInit;
   import('./worms-engine.js').then(m => {
     const cv = document.getElementById('worms-canvas');
     if (!cv) return;
     wormsEngine = m.createWormsEngine({ canvas: cv, mode: 'mirror' });
-    if (wormsInit){
+    if (w && w.teams && w.worms){
       wormsEngine.start({
         coins: false,
-        seed: wormsInit.seed,
-        teams: wormsInit.teams,
-        worms: wormsInit.worms.map(x => ({ pid: x.pid, name: x.name, team: x.team, lives: x.lives }))
+        seed: w.seed,
+        teams: w.teams,
+        worms: w.worms.map(x => ({ pid: x.pid, name: x.name, team: x.team, lives: x.lives }))
       });
     }
     if (wormsLastFrame) wormsEngine.applySnapshot(wormsLastFrame);

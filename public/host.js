@@ -1400,12 +1400,14 @@ function renderWormsGame(s){
         onTurnEnd: (hits) => socket.emit('host:worms-result', { hits }),
         onCarve: (cx, cy, r) => socket.emit('host:worms-carve', { cx, cy, r })
       });
-      if (wormsInit){
+      // Bygg fra state (robust mot host-refresh midt i runden), fallback til worms:init
+      const wi = (s && s.worms) || wormsInit;
+      if (wi && wi.teams && wi.worms){
         wormsEngine.start({
           coins: false,
-          seed: wormsInit.seed,
-          teams: wormsInit.teams,
-          worms: wormsInit.worms.map(w => ({ pid: w.pid, name: w.name, team: w.team, lives: w.lives }))
+          seed: wi.seed,
+          teams: wi.teams,
+          worms: wi.worms.map(w => ({ pid: w.pid, name: w.name, team: w.team, lives: w.lives }))
         });
       }
       // Hvis første tur allerede ankom mens motoren lastet — bruk den nå.
