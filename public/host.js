@@ -28,6 +28,7 @@ let wormsInit = null;
 let wormsLastTurn = null;
 let wormsLoading = false;
 let wormsHudTimer = null;
+let wormsFrameTimer = null;
 
 // ====== Password gate ======
 const pwGate = document.getElementById('pw-gate');
@@ -481,7 +482,7 @@ function render(s, prevPhase){
     // Specific cleanup
     if (s.phase !== 'snake' && snakeRenderer){ snakeRenderer.dispose(); snakeRenderer = null; overlays.innerHTML=''; }
     if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; _bombChampionShown = false; _bombSuddenDeathShown = false; }
-    if (s.phase !== 'worms' && wormsEngine){ wormsEngine.dispose(); wormsEngine = null; wormsLoading = false; if (wormsHudTimer){ clearInterval(wormsHudTimer); wormsHudTimer = null; } overlays.innerHTML=''; }
+    if (s.phase !== 'worms' && wormsEngine){ wormsEngine.dispose(); wormsEngine = null; wormsLoading = false; if (wormsHudTimer){ clearInterval(wormsHudTimer); wormsHudTimer = null; } if (wormsFrameTimer){ clearInterval(wormsFrameTimer); wormsFrameTimer = null; } overlays.innerHTML=''; }
     overlays.innerHTML = '';
   }
 
@@ -1396,7 +1397,8 @@ function renderWormsGame(s){
       wormsEngine = m.createWormsEngine({
         canvas: cv,
         mode: 'network',
-        onTurnEnd: (hits) => socket.emit('host:worms-result', { hits })
+        onTurnEnd: (hits) => socket.emit('host:worms-result', { hits }),
+        onCarve: (cx, cy, r) => socket.emit('host:worms-carve', { cx, cy, r })
       });
       if (wormsInit){
         wormsEngine.start({
@@ -1413,6 +1415,11 @@ function renderWormsGame(s){
       }
       if (wormsHudTimer) clearInterval(wormsHudTimer);
       wormsHudTimer = setInterval(() => renderWormsHud(state), 500);
+      // Strøm kompakte snapshots til spillernes speil-canvas (~25fps)
+      if (wormsFrameTimer) clearInterval(wormsFrameTimer);
+      wormsFrameTimer = setInterval(() => {
+        if (wormsEngine){ const snap = wormsEngine.snapshot(); if (snap) socket.emit('host:worms-frame', snap); }
+      }, 40);
       wormsLoading = false;
     });
   }

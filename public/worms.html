@@ -209,8 +209,11 @@ function gameOver(winnerTeam){
 }
 
 /* ---------- Local input ---------- */
-function mpos(e){ const r = cv.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; }
-function mposT(t){ const r = cv.getBoundingClientRect(); return { x:t.clientX-r.left, y:t.clientY-r.top }; }
+// Canvas rendrer i fast 1280×720; skaler skjerm-koords til motorens koordinatrom.
+function sx(){ const r = cv.getBoundingClientRect(); return engine ? engine.VW / (r.width||1) : 1; }
+function sy(){ const r = cv.getBoundingClientRect(); return engine ? engine.VH / (r.height||1) : 1; }
+function mpos(e){ const r = cv.getBoundingClientRect(); return { x:(e.clientX-r.left)*sx(), y:(e.clientY-r.top)*sy() }; }
+function mposT(t){ const r = cv.getBoundingClientRect(); return { x:(t.clientX-r.left)*sx(), y:(t.clientY-r.top)*sy() }; }
 
 window.addEventListener('keydown', e => {
   if (!engine) return;

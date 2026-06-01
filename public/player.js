@@ -13,6 +13,9 @@ let bombInit = null;
 let bombZoom = 1.2;
 let wormsView = null;   // 'active' | 'spec:<pid>' — for å unngå rebuild hver state
 let wormsKeyDown = null, wormsKeyUp = null;
+let wormsEngine = null;     // speil-motor (mode:'mirror')
+let wormsInit = null;       // {seed, teams, worms}
+let wormsLastFrame = null;  // siste snapshot
 
 const app = document.getElementById('app');
 
@@ -253,6 +256,16 @@ socket.on('snake:tick', d => {
   }
 });
 
+// ====== Worms speil-sync (host streamer snapshots) ======
+socket.on('worms:init', d => { wormsInit = d; wormsLastFrame = null; });
+socket.on('worms:frame', snap => {
+  wormsLastFrame = snap;
+  if (wormsEngine) wormsEngine.applySnapshot(snap);
+});
+socket.on('worms:carve', ({ cx, cy, r }) => {
+  if (wormsEngine) wormsEngine.applyCarve(cx, cy, r);
+});
+
 // Start
 showLogin();
 
@@ -265,7 +278,10 @@ function render(s){
   if (s.phase !== 'bomb' && s.phase !== 'countdown' && bombRenderer){
     bombRenderer.dispose(); bombRenderer = null;
   }
-  if (s.phase !== 'worms') wormsView = null;
+  if (s.phase !== 'worms'){
+    wormsView = null;
+    if (wormsEngine){ wormsEngine.dispose(); wormsEngine = null; }
+  }
   // Reset quiz-rebuild-key når vi forlater quiz-faser
   if (s.phase !== 'question' && s.phase !== 'reveal') resetQuizKey();
   if (s.phase !== 'lie-play') lastLiePid = null;
@@ -1192,19 +1208,20 @@ function updateBombHeader(d){
   }
 }
 
-// ====== Worms (Romkrig) ======
+// ====== Worms (Romkrig) — speil-canvas for alle + kontroll-overlay for aktiv ======
 function showWormsGame(s){
   const w = s.worms;
   if (!w){ showWaitScreen('Romkrig laster...'); return; }
+  if (!document.getElementById('worms-canvas')){
+    buildWormsStage();
+  }
   const amActive = w.active === me.id;
   const key = amActive ? 'active' : ('spec:' + w.active);
   if (wormsView !== key){
     wormsView = key;
-    if (amActive) buildWormsActive(s);
-    else buildWormsSpectator(s);
-  } else {
-    updateWormsHud(s);
+    renderWormsControls(s, amActive);
   }
+  updateWormsTopHud(s);
 }
 
 function myWorm(w){ return w.worms.find(x => x.pid === me.id); }
@@ -1214,75 +1231,65 @@ function wormTurnText(w){
   return `<span style="color:${active.color}">${escapeHtml(w.teams[active.team].name)} — ${escapeHtml(active.name)}</span>`;
 }
 
-function buildWormsActive(s){
-  const w = s.worms;
-  const mine = myWorm(w);
+function buildWormsStage(){
   app.innerHTML = `
-    <div class="worms-active">
-      <div class="worms-hd">
-        <div class="worms-turn">🪱 Din tur!</div>
-        <div class="worms-meta"><span id="worms-lives">${mine?('❤'+mine.lives):''}</span> · <span id="worms-timer"></span></div>
-      </div>
-      <div class="worms-hint">📺 Se storskjermen — sikt der!</div>
-      <div class="worms-aim" id="worms-aim">
-        <div class="worms-aim-ring"></div>
-        <div class="worms-aim-core">SIKT</div>
-        <div class="worms-thumb" id="worms-thumb"></div>
-        <div class="worms-power" id="worms-power"></div>
-      </div>
-      <div class="worms-move">
+    <div class="worms-stage">
+      <div class="worms-top" id="worms-top"></div>
+      <div class="worms-canvas-wrap"><canvas id="worms-canvas"></canvas></div>
+      <div class="worms-ctrl" id="worms-ctrl"></div>
+    </div>
+  `;
+  import('./worms-engine.js').then(m => {
+    const cv = document.getElementById('worms-canvas');
+    if (!cv) return;
+    wormsEngine = m.createWormsEngine({ canvas: cv, mode: 'mirror' });
+    if (wormsInit){
+      wormsEngine.start({
+        coins: false,
+        seed: wormsInit.seed,
+        teams: wormsInit.teams,
+        worms: wormsInit.worms.map(x => ({ pid: x.pid, name: x.name, team: x.team, lives: x.lives }))
+      });
+    }
+    if (wormsLastFrame) wormsEngine.applySnapshot(wormsLastFrame);
+  });
+}
+
+function updateWormsTopHud(s){
+  const w = s.worms; if (!w) return;
+  const top = document.getElementById('worms-top'); if (!top) return;
+  const mine = myWorm(w);
+  const left = w.deadline ? Math.max(0, Math.round((w.deadline - Date.now())/1000)) : 0;
+  const teamPills = w.teams.map(t => {
+    const members = w.worms.filter(x => x.team === t.id);
+    const aliveN = members.filter(x => x.alive).length;
+    return `<span class="worms-pill" style="color:${t.col}">${'🪱'.repeat(aliveN) || '☠'} ${aliveN}/${members.length}</span>`;
+  }).join('');
+  top.innerHTML = `
+    <div class="worms-top-l">${wormTurnText(w)} sin tur · <b>${left}s</b></div>
+    <div class="worms-top-r">${mine ? (mine.alive ? ('Du: ❤'+mine.lives) : '💀') : '👀'} ${teamPills}</div>
+  `;
+}
+
+function renderWormsControls(s, amActive){
+  const ctrl = document.getElementById('worms-ctrl'); if (!ctrl) return;
+  if (amActive){
+    ctrl.innerHTML = `
+      <div class="worms-ctrl-row">
         <button class="worms-mbtn" id="worms-left">◀</button>
-        <div class="worms-move-label">Flytt</div>
+        <div class="worms-aim" id="worms-aim">
+          <div class="worms-aim-ring"></div>
+          <div class="worms-aim-core">SIKT</div>
+          <div class="worms-thumb" id="worms-thumb"></div>
+          <div class="worms-power" id="worms-power"></div>
+        </div>
         <button class="worms-mbtn" id="worms-right">▶</button>
       </div>
-      <div class="worms-fire-hint">Dra bakover i sikteflaten og <b>slipp</b> for å skyte 🚀</div>
-    </div>
-    ${reactionBarHTML()}
-  `;
-  bindReactions();
-  bindWormsControls();
-  updateWormsHud(s);
-}
-
-function buildWormsSpectator(s){
-  const w = s.worms;
-  const mine = myWorm(w);
-  const myStatus = mine
-    ? (mine.alive ? `Din orm: ❤${mine.lives}` : '💀 Din orm er ute')
-    : 'Du ser på';
-  app.innerHTML = `
-    <div class="worms-spec">
-      <div class="worms-spec-icon">🪱</div>
-      <div class="worms-spec-turn">${wormTurnText(w)} sin tur</div>
-      <div class="worms-spec-sub">📺 Se storskjermen!</div>
-      <div class="worms-spec-me">${myStatus}</div>
-      <div class="worms-teams" id="worms-teams"></div>
-    </div>
-    ${reactionBarHTML()}
-  `;
-  bindReactions();
-  updateWormsHud(s);
-}
-
-function updateWormsHud(s){
-  const w = s.worms; if (!w) return;
-  const mine = myWorm(w);
-  const lv = document.getElementById('worms-lives');
-  if (lv && mine) lv.textContent = mine.alive ? ('❤'+mine.lives) : '💀';
-  const tm = document.getElementById('worms-timer');
-  if (tm){
-    const left = w.deadline ? Math.max(0, Math.round((w.deadline - Date.now())/1000)) : 0;
-    tm.textContent = left + 's';
-  }
-  const teams = document.getElementById('worms-teams');
-  if (teams){
-    teams.innerHTML = w.teams.map(t => {
-      const members = w.worms.filter(x => x.team === t.id);
-      const aliveN = members.filter(x => x.alive).length;
-      return `<div class="worms-team-row" style="color:${t.col}">
-        <b>${escapeHtml(t.name)}</b> ${aliveN}/${members.length} ${'🪱'.repeat(aliveN)}
-      </div>`;
-    }).join('');
+      <div class="worms-fire-hint">Flytt med pilene · dra <b>bakover</b> i sikteflaten og slipp for å skyte 🚀</div>
+    `;
+    bindWormsControls();
+  } else {
+    ctrl.innerHTML = `<div class="worms-spec-note">👀 ${wormTurnText(s.worms)} spiller — følg med!</div>`;
   }
 }
 
@@ -1315,6 +1322,7 @@ function bindWormsControls(){
   const pad = document.getElementById('worms-aim');
   const thumb = document.getElementById('worms-thumb');
   const powerEl = document.getElementById('worms-power');
+  if (!pad) return;
   let padId = null, curAim = null, lastEmit = 0;
 
   const onAim = e => {
@@ -1327,7 +1335,6 @@ function bindWormsControls(){
     // Slingshot: skyt motsatt av dra-retningen
     const angle = Math.atan2(-dy, -dx);
     curAim = { angle, power };
-    // Visuell thumb (begrenset til ringen)
     const cl = Math.min(mag, R);
     const tx = (mag>0 ? dx/mag : 0) * cl, ty = (mag>0 ? dy/mag : 0) * cl;
     thumb.style.transform = `translate(${tx}px, ${ty}px)`;
@@ -1346,7 +1353,7 @@ function bindWormsControls(){
     powerEl.style.opacity = '0';
     if (curAim && curAim.power > 0.05){
       socket.emit('player:worms-fire', { angle: curAim.angle, power: curAim.power });
-      haptic.buzz(); sfx.boom && sfx.boom();
+      haptic.buzz(); if (sfx.boom) sfx.boom();
     }
     curAim = null;
   };
@@ -1359,6 +1366,7 @@ function bindWormsControls(){
   pad.addEventListener('pointerup', e => { if (e.pointerId === padId){ padId = null; endAim(); } });
   pad.addEventListener('pointercancel', e => { if (e.pointerId === padId){ padId = null; endAim(); } });
 }
+
 
 
 // ====== Reaction bar ======

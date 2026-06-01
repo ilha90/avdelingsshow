@@ -86,5 +86,19 @@ b1.lives = 0; b1.alive = false;
 const at = engine.aliveTeams();
 check(at[0] === true && at[1] === false, 'aliveTeams=[true,false] når lag 1 er ute: ' + JSON.stringify(at));
 
+// ---- Mirror-modus: snapshot fra host → applySnapshot på speil-motor ----
+const snap = engine.snapshot();
+check(snap && Array.isArray(snap.w) && snap.w.length === 4, 'snapshot har 4 ormer');
+const mirror = createWormsEngine({ canvas: makeCanvas(1200, 600), mode: 'mirror' });
+mirror.start({ coins:false, teams, worms, seed: 42 });
+pump(2);
+mirror.applySnapshot(snap);
+mirror.applyCarve(100, 100, 40);   // skal ikke kaste
+pump(3);
+const mb0 = mirror.getPlayers().find(p => p.pid === 'b0');
+check(mb0 && mb0.lives === b0.lives, 'speil-motor synket b0.lives fra snapshot: ' + (mb0 && mb0.lives));
+check(mirror.VW === 1280 && mirror.VH === 720, 'fast oppløsning 1280×720 eksponert');
+mirror.dispose();
+
 console.log(ok ? '\nSMOKE OK ✅' : '\nSMOKE FEILET ❌');
 process.exit(ok ? 0 : 1);

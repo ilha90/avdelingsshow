@@ -69,7 +69,11 @@ async function main(){
   let alive = new Set();
   let initSeen = false, controlsToHost = 0, gameover = null;
   let lastEndState = null;
+  let framesToPlayers = 0, carvesToPlayers = 0;
   host.on('state', s => { if (s.phase === 'end') lastEndState = s; });
+  // En spiller verifiserer at host-stream relayes til spillere
+  players[0].sock.on('worms:frame', () => { framesToPlayers++; });
+  players[0].sock.on('worms:carve', () => { carvesToPlayers++; });
 
   host.on('worms:init', data => {
     initSeen = true;
@@ -98,6 +102,9 @@ async function main(){
     const enemy = [...alive].find(pid => wormTeam.get(pid) !== myTeam);
     const hits = enemy ? [{ pid: enemy, dmg: 4 }] : [];
     if (enemy) alive.delete(enemy);
+    // Simuler at host strømmer render-snapshot + terreng-carve til spillerne
+    host.emit('host:worms-frame', { ph: 'flight', cur: activePid, w: [], pr: [{ x: 100, y: 100, t: 'rocket' }], ex: [] });
+    host.emit('host:worms-carve', { cx: 100, cy: 100, r: 40 });
     setTimeout(() => host.emit('host:worms-result', { hits }), 10);
   });
   let lastActive = null;
@@ -123,6 +130,8 @@ async function main(){
   await new Promise(r => setTimeout(r, 300));
   check(lastEndState && lastEndState.phase === 'end', 'server-state nådde phase=end etter runden');
   check(lastEndState && lastEndState.lastGame === 'worms', 'lastGame=worms i sluttstate');
+  check(framesToPlayers > 0, 'worms:frame relayet til spiller (' + framesToPlayers + ')');
+  check(carvesToPlayers > 0, 'worms:carve relayet til spiller (' + carvesToPlayers + ')');
 
   console.log('\n' + (fails.length ? ('FEILET ❌ (' + fails.length + ')') : 'INTEGRASJON OK ✅'));
   cleanup(fails.length ? 1 : 0);

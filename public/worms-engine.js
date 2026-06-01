@@ -19,6 +19,13 @@ export function createWormsEngine(opts){
   const onRefresh  = opts.onRefresh  || function(){}; // () => {}        hotbar/shop
   const onGameOver = opts.onGameOver || function(){}; // (winnerTeamId|null) => {}
   const onPhase    = opts.onPhase    || function(){}; // (phase) => {}
+  const onCarve    = opts.onCarve    || function(){}; // (cx,cy,r) => {}   nettverk: stream destruksjon
+
+  /* ================= Fast virtuell oppløsning =================
+     Alle klienter (host + speilende telefoner) bruker SAMME interne
+     koordinatrom, slik at snapshot-koordinater og seed-generert terreng
+     matcher på tvers av skjermstørrelser. Canvas-elementet CSS-skaleres. */
+  const VW = 1280, VH = 720;
 
   /* ================= Constants ================= */
   const GRAV = 0.27;
@@ -192,6 +199,10 @@ export function createWormsEngine(opts){
   }
 
   function carveTerrain(cx,cy,r){
+    carveTerrainLocal(cx,cy,r);
+    if (mode !== 'mirror') onCarve(Math.round(cx), Math.round(cy), Math.round(r));
+  }
+  function carveTerrainLocal(cx,cy,r){
     const x0=clamp(cx-r|0,0,W-1), x1=clamp(cx+r|0,0,W-1);
     const y0=clamp(cy-r|0,0,H-1), y1=clamp(cy+r|0,0,H-1);
     const r2=r*r;
@@ -763,14 +774,14 @@ export function createWormsEngine(opts){
   function frame(t){
     const dt=Math.min(2.5, (t-lastT)/16.667 || 1);
     lastT=t;
-    if (G){ update(dt); render(); }
+    if (G){ if (mode!=='mirror') update(dt); render(); }
     raf=requestAnimationFrame(frame);
   }
 
   /* ================= Sizing ================= */
+  // Fast intern oppløsning (VW×VH). Canvas-elementet skaleres via CSS.
   function resize(){
-    W = cv.clientWidth || cv.width || window.innerWidth;
-    H = cv.clientHeight || cv.height || window.innerHeight;
+    W = VW; H = VH;
     cv.width = W; cv.height = H;
   }
 
@@ -866,14 +877,52 @@ export function createWormsEngine(opts){
   function setGameOver(){ if (G){ setPhase('gameover'); } }
   function dispose(){ if (raf){ cancelAnimationFrame(raf); raf=0; } G=null; }
 
+  /* ================= Snapshot / mirror (nettverk → telefoner) ================= */
+  // Host produserer en kompakt snapshot per frame; speilende klienter rendrer den.
+  function aimSnapshot(){
+    if (!G || !G.aim.net) return null;
+    const p=cur(); if(!p||!p.alive) return null;
+    return { on:1, a:G.aim.angle, p:G.aim.power };
+  }
+  function snapshot(){
+    if (!G) return null;
+    const c = cur();
+    return {
+      ph: G.phase,
+      cur: c ? c.pid : null,
+      w: G.players.map(p => ({ p:p.pid, x:Math.round(p.x), y:Math.round(p.y), l:p.lives, a:p.alive?1:0, f:p.face })),
+      pr: G.projectiles.map(o => ({ x:Math.round(o.x), y:Math.round(o.y), t:o.w, fu:o.fuse|0 })),
+      ex: G.explosions.map(o => ({ x:Math.round(o.x), y:Math.round(o.y), r:Math.round(o.r), lf:+o.life.toFixed(2) })),
+      aim: aimSnapshot(),
+      bn: bannerText, bt: Math.round(bannerTimer)
+    };
+  }
+  function applySnapshot(s){
+    if (!G || !s) return;
+    if (s.ph) G.phase = s.ph;
+    if (s.cur != null){ const i = G.players.findIndex(p => p.pid === s.cur); if (i >= 0) G.cur = i; }
+    if (s.w) for (const ws of s.w){
+      const p = G.players.find(x => x.pid === ws.p);
+      if (p){ p.x = ws.x; p.y = ws.y; p.lives = ws.l; p.alive = !!ws.a; p.face = ws.f; }
+    }
+    G.projectiles = (s.pr || []).map(o => ({ x:o.x, y:o.y, w:o.t, raygun:o.t==='raygun', trail:[], fuse:o.fu||0, sub:false }));
+    G.explosions = (s.ex || []).map(o => ({ x:o.x, y:o.y, r:o.r, maxR:o.r, life:o.lf }));
+    if (s.aim && s.aim.on){ G.aim.net = true; G.aim.dragging = true; G.aim.angle = s.aim.a; G.aim.power = s.aim.p; }
+    else { G.aim.net = false; G.aim.dragging = false; }
+    if (s.bn != null){ bannerText = s.bn; bannerTimer = s.bt || 0; }
+  }
+  function applyCarve(cx,cy,r){ if (G) carveTerrainLocal(cx,cy,r); }
+
   const api = {
     start, beginTurn, beginTurnLocal, closeShopToMove, input,
     localKey, localMouse, spacePressed, setLives,
     selectWeapon, buyWeapon, setGameOver, dispose,
     aliveTeams, resize,
+    snapshot, applySnapshot, applyCarve,
     getCurrent: () => cur(),
     getPlayers: () => G ? G.players : [],
     getPhase: () => G ? G.phase : 'idle',
+    VW, VH,
     WEAPONS, WEAPON_ORDER, DEBUFFS, MAX_DRAG
   };
   return api;

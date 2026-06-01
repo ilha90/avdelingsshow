@@ -929,6 +929,15 @@ io.on('connection', socket => {
     applyWormsResult(hits);
     wormsNextTurn();
   });
+  // Host strømmer render-snapshots + terreng-carve til spillernes speil-canvas.
+  socket.on('host:worms-frame', (snap) => {
+    if (!game.hosts.has(socket.id) || !game.worms) return;
+    socket.broadcast.emit('worms:frame', snap);
+  });
+  socket.on('host:worms-carve', (c) => {
+    if (!game.hosts.has(socket.id) || !game.worms) return;
+    socket.broadcast.emit('worms:carve', c);
+  });
   socket.on('host:end-quiz', () => {
     if (!game.hosts.has(socket.id)) return;
     if (!game.quiz) return;
