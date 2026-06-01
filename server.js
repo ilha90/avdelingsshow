@@ -2483,12 +2483,18 @@ function buildBombState(){
 }
 
 // ==================== Crash-recovery snapshot ====================
-// Den levende spilltilstanden ligger kun i minnet. Restarter prosessen midt i
-// et event (Render-redeploy, krasj, dyno-søvn) mister vi den aktive runden —
-// men vi skal IKKE miste spillerne, kveldens akkumulerte poeng eller config.
-// Vi snapshotter den gjenopprettbare lobby-tilstanden til disk (debounced via
-// broadcast) og gjenoppretter den ved boot. Pågående runder gjenopptas
-// bevisst ikke — det er for skjørt; vi lander trygt i lobby med poeng intakt.
+// Den levende spilltilstanden ligger kun i minnet. Faller prosessen midt i et
+// event mister vi den aktive runden — men vi skal IKKE miste spillerne,
+// kveldens akkumulerte poeng eller config. Vi snapshotter den gjenopprettbare
+// lobby-tilstanden til disk (debounced via broadcast) og gjenoppretter den ved
+// boot. Pågående runder gjenopptas bevisst ikke — det er for skjørt; vi lander
+// trygt i lobby med poeng intakt.
+//
+// MERK om Render free tier: disken er efemer. Snapshotten overlever en in-place
+// prosess-restart (uventet exit der Render starter prosessen på nytt i samme
+// container) — det vanligste blip-tilfellet. Den overlever IKKE en redeploy
+// eller cold-start-fra-søvn, for da får den nye containeren frisk disk og fila
+// er borte. Vil man dekke det også kreves persistent lager (betalt disk/KV/DB).
 
 function serializeState(){
   return {
