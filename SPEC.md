@@ -47,6 +47,7 @@ server.js                    Game-state, socket handlers, API
 public/
   host.html                  Host entry-point (importmap for three)
   player.html                Player entry-point (importmap for three)
+  worms.html                 Selvstendig 1v1 Worms-spill (hot-seat, ingen server)
   style.css                  All styling
   host.js                    Host-UI + rendering + socket-handlers
   player.js                  Spiller-UI + socket-handlers
@@ -151,6 +152,19 @@ render.yaml                  Render deploy-konfig
 - Screen shake + shockwave-ringer + bloom på eksplosjoner
 - Respawn 5s med 1 shield + 1.5s grace
 - Konfigurerbar varighet 30-300s + ∞-modus
+
+### 5.10 Romkrig 1v1 (🪱) — Worms, hot-seat
+- **Selvstendig** `public/worms.html` — ingen server/Socket.io, ingen avhengigheter. Lanseres fra host-menyen i ny fane (`window.open('worms.html')`). Spilles hot-seat (2 spillere bytter på tastatur/mus).
+- Canvas i full skjermbredde + 68px DOM-hotbar under. Mørk romhimmel med blinkende stjerner.
+- **Destruerbart terreng:** prosedyrisk sinusbølge-terreng + per-piksel kollisjonsmaske (`Uint8Array W*H`). Eksplosjoner graver hull i både maske og offscreen render-canvas. Flat spawn-sone på hver side.
+- 2 spillere (rød/blå), 8 liv (hjerter over ormen), 0 kr start. Liten ormefigur med øyne/munn/lue.
+- **Turflyt:** SHOP (kjøp/velg våpen) → MOVE (90px budsjett, ← →, SPACE for å sikte) → TURN (slingshot-sikting) → FLIGHT → TRANSITION (settling + neste spiller).
+- **Slingshot:** dra musa BAKOVER fra skuddretning (maks 160px = full kraft). Alltid synlig fysikk-siktebue (55% kraft mot mus); under drag gul bue + oransje gummistrikk + kraft%. Wobble-kjegle viser presisjonsspredning per våpen.
+- **9 våpen:** Rakett (gratis/∞), Granat (sprett 2×+lunte), Hagle (5 pelleter), Sniper (presis/rask), Bazooka (massiv radius), Luftangrep (3 fra toppen), Kluster (5 sub-bomber), Ray Gun (ingen gravitasjon, gjennom bakken), Forbannelse (lander som cursed coin). Skade i hjerter [direkte, splash].
+- **Myntøkonomi:** 12 flytende mynter (25% store: r21, verdi 50/60/80; 75% vanlige: r13, verdi 10/20/30). Skyt mynt → pengene legges til umiddelbart. Respawn til 12 når < 6 igjen.
+- **Forbannelse:** cursed coin → motstander som skyter den får tilfeldig debuff på sitt neste skudd (no_aim / random_power / mirrored / steal_coins). Vises som blinkende varsel øverst-høyre.
+- **Hotbar:** alltid synlig, viser penger + alle våpen, klikk for å velge (eid) eller kjøpe direkte (gråes ut uten råd).
+- **Game over:** overlay med vinner + "🔄 Nytt spill" (resetter terreng/spillere/mynter/debuffs — ikke F5).
 
 ## 6. Klient-UI — Host
 

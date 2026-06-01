@@ -854,6 +854,7 @@ function openMenu(){
     ['🎡', 'Lykkehjulet', 'Tilfeldig spiller', () => socket.emit('host:start-wheel'), null, null],
     ['🐍', 'Snake 2.0', 'Klassisk Snake — raskere for hvert eple', () => socket.emit('host:start-snake'), (state.config.snaketime===0?'∞':state.config.snaketime+'s'), (chip) => { const opts=TIME_OPTIONS.snake; menuState.tickIdx.snake=(menuState.tickIdx.snake+1)%opts.length; const v=opts[menuState.tickIdx.snake]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{snaketime:v}); }],
     ['💣', 'Bomberman', '3D bombe-kamp', () => socket.emit('host:start-bomb'), (state.config.bombtime===0?'∞':state.config.bombtime+'s'), (chip) => { const opts=TIME_OPTIONS.bomb; menuState.tickIdx.bomb=(menuState.tickIdx.bomb+1)%opts.length; const v=opts[menuState.tickIdx.bomb]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{bombtime:v}); }],
+    ['🪱', 'Romkrig 1v1', 'Worms-duell — hot-seat for 2', () => window.open('worms.html', '_blank', 'noopener'), null, null],
   ];
   i = 0;
   for (const [ic, ti, de, fn, chipText, onChip] of social){
