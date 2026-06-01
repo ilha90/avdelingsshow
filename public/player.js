@@ -16,6 +16,8 @@ let wormsKeyDown = null, wormsKeyUp = null;
 let wormsEngine = null;     // speil-motor (mode:'mirror')
 let wormsInit = null;       // {seed, teams, worms}
 let wormsLastFrame = null;  // siste snapshot
+let wormsBuilding = false;  // hindrer dobbel-bygging mens import laster
+let wormsFrameCount = 0;    // mottatte frames (debug)
 
 const app = document.getElementById('app');
 
@@ -259,6 +261,7 @@ socket.on('snake:tick', d => {
 // ====== Worms speil-sync (host streamer snapshots) ======
 socket.on('worms:init', d => { wormsInit = d; wormsLastFrame = null; });
 socket.on('worms:frame', snap => {
+  wormsFrameCount++;
   wormsLastFrame = snap;
   if (wormsEngine) wormsEngine.applySnapshot(snap);
 });
@@ -281,6 +284,8 @@ function render(s){
   if (s.phase !== 'worms'){
     wormsView = null;
     if (wormsEngine){ wormsEngine.dispose(); wormsEngine = null; }
+    wormsBuilding = false;
+    const dbg = document.getElementById('worms-dbg'); if (dbg) dbg.remove();
   }
   // Reset quiz-rebuild-key når vi forlater quiz-faser
   if (s.phase !== 'question' && s.phase !== 'reveal') resetQuizKey();
@@ -1212,7 +1217,10 @@ function updateBombHeader(d){
 function showWormsGame(s){
   const w = s.worms;
   if (!w){ showWaitScreen('Romkrig laster...'); return; }
-  if (!document.getElementById('worms-canvas')){
+  if (!me){ showWaitScreen('Kobler til...'); return; }
+  // Bygg (eller bygg på nytt) når motoren mangler — robust mot stale DOM mellom
+  // runder, tapt worms:init og reconnect. Loading-flagg hindrer dobbelbygging.
+  if (!wormsEngine && !wormsBuilding){
     buildWormsStage(s);
   }
   const amActive = w.active === me.id;
@@ -1222,6 +1230,21 @@ function showWormsGame(s){
     renderWormsControls(s, amActive);
   }
   updateWormsTopHud(s);
+  wormsDebug(s);
+}
+
+function wormsDebug(s){
+  let el = document.getElementById('worms-dbg');
+  if (!el){
+    el = document.createElement('div');
+    el.id = 'worms-dbg';
+    el.style.cssText = 'position:fixed;top:2px;left:2px;z-index:99999;font:10px/1.3 monospace;color:#6f6;background:rgba(0,0,0,.78);padding:3px 6px;border-radius:5px;pointer-events:none;white-space:pre';
+    document.body.appendChild(el);
+  }
+  const eng = wormsEngine ? wormsEngine.getPhase() : (wormsBuilding ? 'laster…' : 'NULL');
+  const meId = me ? me.id.slice(0,5) : '?';
+  const act = (s.worms && s.worms.active || '').slice(0,5);
+  el.textContent = `ph:${s.phase} eng:${eng} fr:${wormsFrameCount}\nme:${meId} aktiv:${act} ${meId===act?'(DU)':''}`;
 }
 
 function myWorm(w){ return w.worms.find(x => x.pid === me.id); }
@@ -1232,6 +1255,7 @@ function wormTurnText(w){
 }
 
 function buildWormsStage(s){
+  wormsBuilding = true;
   app.innerHTML = `
     <div class="worms-stage">
       <div class="worms-top" id="worms-top"></div>
@@ -1240,11 +1264,11 @@ function buildWormsStage(s){
     </div>
   `;
   // Bygg speilet fra STATE (alltid tilgjengelig) — robust mot tapt worms:init
-  // ved reconnect/refresh. Fallback til worms:init-eventet om state mangler seed.
+  // ved reconnect/refresh. Fallback til worms:init-eventet om state mangler.
   const w = (s && s.worms) || wormsInit;
   import('./worms-engine.js').then(m => {
     const cv = document.getElementById('worms-canvas');
-    if (!cv) return;
+    if (!cv){ wormsBuilding = false; return; }
     wormsEngine = m.createWormsEngine({ canvas: cv, mode: 'mirror' });
     if (w && w.teams && w.worms){
       wormsEngine.start({
@@ -1253,8 +1277,13 @@ function buildWormsStage(s){
         teams: w.teams,
         worms: w.worms.map(x => ({ pid: x.pid, name: x.name, team: x.team, lives: x.lives }))
       });
+      if (wormsLastFrame) wormsEngine.applySnapshot(wormsLastFrame);
     }
-    if (wormsLastFrame) wormsEngine.applySnapshot(wormsLastFrame);
+    wormsBuilding = false;
+  }).catch(err => {
+    wormsBuilding = false;
+    const wrap = document.querySelector('.worms-canvas-wrap');
+    if (wrap) wrap.innerHTML = `<div style="color:#f88;font:13px monospace;padding:20px;text-align:center">Klarte ikke laste spillet:<br>${escapeHtml(String(err && err.message || err))}</div>`;
   });
 }
 

@@ -3630,10 +3630,10 @@ body:has(.live-ticker.visible) .commentator { bottom: 110px; }
 .worms-wchip.cur { box-shadow: 0 0 0 2px var(--gold) inset; font-weight: 900; }
 .worms-wchip.dead { opacity: .4; text-decoration: line-through; }
 .worms-canvas-wrap {
-  flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center;
+  flex: 1 1 auto; min-height: 38vh; position: relative; display: block;
   background: #05060f;
 }
-#worms-canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+#worms-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 
 /* Kontroll-område under canvas */
 .worms-ctrl {
