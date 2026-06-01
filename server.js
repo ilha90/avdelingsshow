@@ -18,6 +18,7 @@ import {
 import { BOMB_CHARS, getChar } from './public/bomb-chars.js';
 import { SNAKE_CHARS, getSnakeChar } from './public/snake-chars.js';
 import { sanitizeName, sanitizeEmoji, sanitizeText, clamp, quizPoints } from './lib/scoring.js';
+import { buildTurnOrder, aliveTeams as wormsAliveTeamsOf, winnerFromAlive, nextAliveIdx } from './lib/worms.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -170,6 +171,8 @@ const game = {
   bomb: null,   // { players: Map, bombs: Map, hard: [], soft: [], powerups: [], tickTimer, endAt, explosions }
   bombSelect: null, // { chosen: Map<pid, charId>, deadline, timer }
   snakeSelect: null, // { chosen: Map<pid, charId>, deadline, timer }
+  // Worms (Romkrig) — nettverk, host-autoritativ
+  worms: null,  // { worms: Map<pid,{pid,name,team,lives,alive,kills}>, order, turnIdx, active, teams, seed, turnTimer, resultTimer, awaitingResult, turnDeadline }
   // AI questions
   customQuestions: [],
   customMostLikely: [],
@@ -288,6 +291,18 @@ function publicState(){
     base.snakeSelect = {
       chosen: Array.from(game.snakeSelect.chosen.entries()).map(([pid, cid]) => ({ pid, charId: cid })),
       deadline: game.snakeSelect.deadline
+    };
+  }
+  if (game.worms){
+    base.worms = {
+      active: game.worms.active,
+      turnIdx: game.worms.turnIdx,
+      teams: game.worms.teams,
+      deadline: game.worms.turnDeadline,
+      worms: Array.from(game.worms.worms.values()).map(w => ({
+        pid: w.pid, name: w.name, team: w.team, lives: w.lives, alive: w.alive, kills: w.kills,
+        color: (game.players.get(w.pid) || {}).color || game.worms.teams[w.team].col
+      }))
     };
   }
   // Awards — kun når vi er på end-phase
@@ -643,6 +658,15 @@ io.on('connection', socket => {
           game.bomb.players.delete(rec.id);
           game.bomb.players.set(socket.id, bp);
         }
+        if (game.worms && game.worms.worms.has(rec.id)){
+          const w = game.worms.worms.get(rec.id);
+          w.pid = socket.id;
+          game.worms.worms.delete(rec.id);
+          game.worms.worms.set(socket.id, w);
+          const oi = game.worms.order.indexOf(rec.id);
+          if (oi >= 0) game.worms.order[oi] = socket.id;
+          if (game.worms.active === rec.id) game.worms.active = socket.id;
+        }
       }
       rec.name = n; rec.emoji = e;
     } else {
@@ -692,6 +716,11 @@ io.on('connection', socket => {
         const still = game.players.get(socket.id);
         if (still && still.id === socket.id && !io.sockets.sockets.get(socket.id)){
           game.players.delete(socket.id);
+          if (game.worms && game.worms.worms.has(socket.id)){
+            const w = game.worms.worms.get(socket.id);
+            w.alive = false; w.lives = 0;
+            if (game.worms.active === socket.id && !game.worms.awaitingResult) wormsNextTurn();
+          }
           broadcast();
         }
       }, 60000);
@@ -739,6 +768,7 @@ io.on('connection', socket => {
     game.quiz = null; game.vote = null; game.scatter = null; game.lie = null;
     game.icebreaker = null; game.wheel = null;
     game.snake = null; game.bomb = null;
+    game.worms = null;
     if (game.bombSelect && game.bombSelect.timer) clearTimeout(game.bombSelect.timer);
     game.bombSelect = null;
     if (game.snakeSelect && game.snakeSelect.timer) clearTimeout(game.snakeSelect.timer);
@@ -860,6 +890,45 @@ io.on('connection', socket => {
     if (!game.hosts.has(socket.id)) return;
     endBomberman();
   });
+  // ===== Romkrig (Worms) =====
+  socket.on('host:start-worms', () => {
+    if (!game.hosts.has(socket.id)) return;
+    playTutorialThen('worms', () => startWorms());
+  });
+  socket.on('host:end-worms', () => {
+    if (!game.hosts.has(socket.id)) return;
+    if (game.worms) endWorms(null);
+  });
+  function relayWormsControl(type, payload){
+    if (!game.worms) return;
+    if (game.worms.active !== socket.id) return;
+    if (game.worms.awaitingResult) return;
+    for (const hid of game.hosts) io.to(hid).emit('worms:control', { type, payload });
+  }
+  socket.on('player:worms-move', ({ dir, on } = {}) => {
+    relayWormsControl('move', { dir: dir < 0 ? -1 : 1, on: !!on });
+  });
+  socket.on('player:worms-aim', ({ angle, power, dragging } = {}) => {
+    if (typeof angle !== 'number' || typeof power !== 'number') return;
+    relayWormsControl('aim', { angle, power: clamp(power, 0, 1), dragging: !!dragging });
+  });
+  socket.on('player:worms-fire', ({ angle, power } = {}) => {
+    if (typeof angle !== 'number' || typeof power !== 'number') return;
+    if (!game.worms || game.worms.active !== socket.id || game.worms.awaitingResult) return;
+    // Vent på resultat fra host; pause tur-timer
+    game.worms.awaitingResult = true;
+    if (game.worms.turnTimer){ clearTimeout(game.worms.turnTimer); game.worms.turnTimer = null; }
+    for (const hid of game.hosts) io.to(hid).emit('worms:control', { type: 'fire', payload: { angle, power: clamp(power, 0, 1) } });
+    game.worms.resultTimer = setTimeout(() => {
+      if (game.worms && game.worms.awaitingResult) wormsNextTurn();
+    }, WORMS_RESULT_TIMEOUT_MS);
+  });
+  socket.on('host:worms-result', ({ hits } = {}) => {
+    if (!game.hosts.has(socket.id)) return;
+    if (!game.worms || !game.worms.awaitingResult) return;
+    applyWormsResult(hits);
+    wormsNextTurn();
+  });
   socket.on('host:end-quiz', () => {
     if (!game.hosts.has(socket.id)) return;
     if (!game.quiz) return;
@@ -888,6 +957,11 @@ io.on('connection', socket => {
     // Hvis spillet er aktivt, rydd ut referanser i tilhørende Map
     if (game.snake && game.snake.snakes.has(pid)) game.snake.snakes.delete(pid);
     if (game.bomb && game.bomb.players.has(pid)) game.bomb.players.delete(pid);
+    if (game.worms && game.worms.worms.has(pid)){
+      const w = game.worms.worms.get(pid);
+      w.alive = false; w.lives = 0;
+      if (game.worms.active === pid && !game.worms.awaitingResult) wormsNextTurn();
+    }
     broadcast();
   });
 
@@ -1033,6 +1107,10 @@ function stopAllTimers(){
   // bytter spill uten å gå via host:reset (latent zombie-timer-bug).
   if (game.bombSelect && game.bombSelect.timer){ clearTimeout(game.bombSelect.timer); game.bombSelect.timer = null; }
   if (game.snakeSelect && game.snakeSelect.timer){ clearTimeout(game.snakeSelect.timer); game.snakeSelect.timer = null; }
+  if (game.worms){
+    if (game.worms.turnTimer){ clearTimeout(game.worms.turnTimer); game.worms.turnTimer = null; }
+    if (game.worms.resultTimer){ clearTimeout(game.worms.resultTimer); game.worms.resultTimer = null; }
+  }
 }
 
 // Wrapper for tick-loop-funksjoner. En enkelt dårlig tick (uventet null,
@@ -2480,6 +2558,160 @@ function buildBombState(){
     soft: game.bomb.soft,
     endAt: game.bomb.endAt
   };
+}
+
+// ==================== Romkrig (Worms) — nettverk, host-autoritativ fysikk ====================
+// Host kjører fysikken (gjenbruker worms-engine.js). Serveren er kanonisk for
+// turorden + liv + scoring og ruter spillernes input til host. Posisjoner/terreng
+// finnes kun på host (regenereres fra seed) — derfor gjenopptas ikke en runde.
+const WORMS_LIVES = 4;
+const WORMS_TURN_MS = 45000;
+const WORMS_RESULT_TIMEOUT_MS = 14000;   // sikkerhet hvis host aldri rapporterer
+const WORMS_COUNTDOWN_MS = 3000;
+const WORMS_TEAMS = [
+  { id: 0, name: 'Rødt lag',  col: '#ff4d5e', dark: '#b3303d', cap: '#ffd34d' },
+  { id: 1, name: 'Blått lag', col: '#4d9bff', dark: '#2f63b3', cap: '#7dffea' }
+];
+
+function startWorms(){
+  stopAllTimers();
+  const players = Array.from(game.players.values());
+  if (players.length < 2){
+    game.phase = 'lobby';
+    broadcast();
+    return;
+  }
+  // Split alle spillere balansert i nøyaktig 2 lag (uavhengig av lobby-lagmodus).
+  // Stokk først, så bygg interleavet turorden r0,b0,r1,b1,... (lib/worms.js).
+  const ordered = buildTurnOrder(shuffle(players));
+  const playerById = new Map(players.map(p => [p.id, p]));
+  const wormsMap = new Map();
+  const wormList = ordered.map(({ pid, team }) => {
+    const p = playerById.get(pid);
+    const w = { pid, name: p.name, team, lives: WORMS_LIVES, alive: true, kills: 0 };
+    wormsMap.set(pid, w);
+    p.score = 0;
+    return w;
+  });
+  const seed = (Math.random() * 1e9) | 0;
+  game.worms = {
+    worms: wormsMap,
+    order: wormList.map(w => w.pid),
+    turnIdx: -1,
+    active: null,
+    teams: WORMS_TEAMS,
+    seed,
+    turnTimer: null,
+    resultTimer: null,
+    awaitingResult: false,
+    turnDeadline: 0
+  };
+  game.phase = 'countdown';
+  broadcast();
+  // Host bygger terreng + ormer fra seed
+  io.emit('worms:init', {
+    seed,
+    teams: WORMS_TEAMS,
+    worms: wormList.map(w => ({
+      pid: w.pid, name: w.name, team: w.team, lives: w.lives,
+      color: (game.players.get(w.pid) || {}).color || WORMS_TEAMS[w.team].col
+    }))
+  });
+  setTimeout(() => {
+    if (!game.worms || game.phase !== 'countdown') return;
+    game.phase = 'worms';
+    broadcast();
+    wormsNextTurn();
+  }, WORMS_COUNTDOWN_MS);
+}
+
+function wormsLivesMap(){
+  const m = {};
+  if (game.worms) for (const w of game.worms.worms.values()) m[w.pid] = w.lives;
+  return m;
+}
+function clearWormsTurnTimers(){
+  if (!game.worms) return;
+  if (game.worms.turnTimer){ clearTimeout(game.worms.turnTimer); game.worms.turnTimer = null; }
+  if (game.worms.resultTimer){ clearTimeout(game.worms.resultTimer); game.worms.resultTimer = null; }
+}
+
+function wormsNextTurn(){
+  if (!game.worms) return;
+  clearWormsTurnTimers();
+  game.worms.awaitingResult = false;
+  // Seier?
+  const at = wormsAliveTeamsOf(game.worms.worms);
+  const winner = winnerFromAlive(at);
+  if (winner !== undefined){
+    return endWorms(winner);
+  }
+  // Neste levende orm i turorden
+  const order = game.worms.order;
+  const idx = nextAliveIdx(order, game.worms.turnIdx, pid => ((game.worms.worms.get(pid) || {}).alive));
+  if (idx < 0) return endWorms(null);
+  game.worms.turnIdx = idx;
+  game.worms.active = order[idx];
+  game.worms.turnDeadline = Date.now() + WORMS_TURN_MS;
+  broadcast();
+  io.emit('worms:turn', {
+    active: game.worms.active,
+    turnIdx: idx,
+    lives: wormsLivesMap(),
+    deadline: game.worms.turnDeadline
+  });
+  // Tur-timer: ingen handling innen tiden → hopp over
+  game.worms.turnTimer = setTimeout(() => {
+    if (game.worms && !game.worms.awaitingResult) wormsNextTurn();
+  }, WORMS_TURN_MS);
+}
+
+function applyWormsResult(hits){
+  if (!game.worms) return;
+  const shooter = game.worms.worms.get(game.worms.active);
+  for (const h of (hits || [])){
+    if (!h) continue;
+    const w = game.worms.worms.get(h.pid);
+    if (!w || !w.alive) continue;
+    const dmg = Math.max(0, Math.min(20, h.dmg | 0));
+    if (dmg <= 0) continue;
+    w.lives -= dmg;
+    if (w.lives <= 0){
+      w.lives = 0; w.alive = false;
+      // Kill-attribusjon (ingen selvmål/lagdrap-bonus)
+      if (shooter && shooter.pid !== w.pid && shooter.team !== w.team){
+        shooter.kills = (shooter.kills || 0) + 1;
+        const sp = game.players.get(shooter.pid);
+        if (sp) sp.score += 100;
+        game.matchStats.kills.set(shooter.pid, (game.matchStats.kills.get(shooter.pid) || 0) + 1);
+      }
+    }
+  }
+}
+
+function endWorms(winnerTeam){
+  if (!game.worms) return;
+  clearWormsTurnTimers();
+  if (winnerTeam != null){
+    for (const w of game.worms.worms.values()){
+      if (w.team === winnerTeam && w.alive){
+        const p = game.players.get(w.pid);
+        if (p) p.score += 200;
+        game.matchStats.survived.set(w.pid, (game.matchStats.survived.get(w.pid) || 0) + 1);
+      }
+    }
+  }
+  io.emit('worms:gameover', {
+    winnerTeam,
+    winnerName: winnerTeam != null ? WORMS_TEAMS[winnerTeam].name : null
+  });
+  const playersArr = Array.from(game.players.values()).map(p => ({ name: p.name, score: p.score }));
+  recordScores('worms', playersArr);
+  game.lastGame = 'worms';
+  accumulateSessionScores();
+  game.phase = 'end';
+  game.worms = null;
+  broadcast();
 }
 
 // ==================== Crash-recovery snapshot ====================

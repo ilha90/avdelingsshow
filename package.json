@@ -1,6 +1,6 @@
 {
   "name": "avdelings-show",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Live multiplayer show-plattform for avdelingssamlinger",
   "main": "server.js",
   "type": "module",

@@ -69,18 +69,6 @@
   .btn-big{ font-size:20px; padding:15px 40px; }
   .center{ text-align:center; }
   .win-emoji{ font-size:64px; }
-  #banner{ position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:30;
-    padding:9px 26px; border-radius:30px; font-weight:900; font-size:18px; pointer-events:none;
-    background:rgba(8,12,40,.85); border:1px solid #2c3a7d; opacity:0; transition:opacity .25s; }
-  #banner.show{ opacity:1; }
-  #debuff-warn{ position:fixed; top:16px; right:18px; z-index:31; padding:8px 16px; border-radius:12px;
-    font-weight:900; font-size:14px; background:rgba(120,30,160,.9); border:1px solid #d36bff;
-    color:#fff; display:none; box-shadow:0 0 18px rgba(180,80,255,.6); }
-  #debuff-warn.show{ display:block; animation:blink .7s steps(2,start) infinite; }
-  @keyframes blink{ 50%{ opacity:.35; } }
-  #help{ position:fixed; bottom:78px; left:50%; transform:translateX(-50%); z-index:20;
-    font-size:12.5px; color:var(--muted); background:rgba(8,12,40,.7); padding:6px 16px;
-    border-radius:20px; pointer-events:none; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -94,10 +82,6 @@
     <div id="hb-slots"></div>
   </div>
 </div>
-
-<div id="banner"></div>
-<div id="debuff-warn"></div>
-<div id="help"></div>
 
 <!-- Shop modal -->
 <div id="shop" class="overlay hidden">
@@ -119,849 +103,137 @@
   </div>
 </div>
 
-<script>
-(function(){
-'use strict';
+<script type="module">
+import { createWormsEngine } from './worms-engine.js';
 
-/* ================= Constants ================= */
-const GRAV = 0.27;          // px/frame^2
-const HOTBAR_H = 68;
-const MOVE_BUDGET = 90;     // px horizontal per turn
-const MOVE_SPEED = 1.9;     // px/frame while holding arrow
-const MAX_DRAG = 160;       // px slingshot pull -> full power
-const PREVIEW_POWER = 0.55; // always-on aim preview power
-const SPEED_MAX = 17;       // px/frame at full power (baseline)
-const GRACE = 12;           // steps before projectile collides
-const WORM_R = 11;          // worm body radius
-const MAX_LIVES = 8;
-const COIN_TARGET = 12;     // floating coins on field
-const COIN_MIN = 6;         // respawn threshold
-
-const TEAMS = [
-  { name:'Spiller 1', col:'#ff4d5e', dark:'#b3303d', cap:'#ffd34d' },
-  { name:'Spiller 2', col:'#4d9bff', dark:'#2f63b3', cap:'#7dffea' }
-];
-
-/* ================= Weapons ================= */
-// dmg:[direct, splash] in hearts. radius = explosion radius.
-// speed = multiplier on SPEED_MAX. wobble = aim spread (radians scale).
-const WEAPONS = {
-  rocket:   { id:'rocket',   name:'Rakett',      icon:'🚀', price:0,  dmg:[2,1], radius:38, speed:1.0,  wobble:0.30, free:true,  desc:'Allsidig. Bred spredning – vanskelig å sikte.' },
-  grenade:  { id:'grenade',  name:'Granat',      icon:'💣', price:35, dmg:[3,1], radius:44, speed:0.95, wobble:0.12, bounces:2, fuse:95, desc:'Spretter 2× før timer-eksplosjon.' },
-  shotgun:  { id:'shotgun',  name:'Hagle',       icon:'🔫', price:28, dmg:[1,0], radius:17, speed:1.05, wobble:0.18, pellets:5, desc:'5 pelleter i spredning.' },
-  sniper:   { id:'sniper',   name:'Sniper',      icon:'🎯', price:50, dmg:[2,1], radius:22, speed:2.0,  wobble:0.02, desc:'Lynrask, lang rekkevidde, presis.' },
-  bazooka:  { id:'bazooka',  name:'Bazooka',     icon:'💥', price:75, dmg:[3,2], radius:70, speed:0.95, wobble:0.10, desc:'Massiv eksplosjonsradius.' },
-  airstrike:{ id:'airstrike',name:'Luftangrep',  icon:'✈️', price:85, dmg:[2,1], radius:36, speed:1.0,  wobble:0.08, airstrike:3, desc:'3 raketter fra toppen.' },
-  cluster:  { id:'cluster',  name:'Kluster',     icon:'🌀', price:60, dmg:[1,0], radius:26, speed:1.0,  wobble:0.12, cluster:5, desc:'Deles i 5 småbomber ved landing.' },
-  raygun:   { id:'raygun',   name:'Ray Gun',     icon:'⚡', price:65, dmg:[3,1], radius:24, speed:2.4,  wobble:0.04, raygun:true, desc:'Ingen gravitasjon. Skyter gjennom bakken!' },
-  curse:    { id:'curse',    name:'Forbannelse', icon:'💀', price:50, dmg:[0,0], radius:0,  speed:0.95, wobble:0.10, curse:true, desc:'Lander som forbannet mynt → debuff.' }
-};
-const WEAPON_ORDER = ['rocket','grenade','shotgun','sniper','bazooka','airstrike','cluster','raygun','curse'];
-
-const DEBUFFS = [
-  { id:'no_aim',       label:'🚫 Blindskudd — siktelinjen er skjult!' },
-  { id:'random_power', label:'🎲 Skjelven hånd — tilfeldig kraft!' },
-  { id:'mirrored',     label:'🪞 Speilvendt sikte!' },
-  { id:'steal_coins',  label:'🩸 Tyvgods — mynter du treffer går til motstander!' }
-];
-
-/* ================= DOM ================= */
 const cv = document.getElementById('cv');
-const ctx = cv.getContext('2d');
 const hbName = document.getElementById('hb-name');
 const hbMoney = document.getElementById('hb-money');
 const hbSlots = document.getElementById('hb-slots');
-const elBanner = document.getElementById('banner');
-const elDebuff = document.getElementById('debuff-warn');
-const elHelp = document.getElementById('help');
 const shopEl = document.getElementById('shop');
 
-/* ================= Runtime size / terrain buffers ================= */
-let W = 0, H = 0;
-let terrainCv, terrainCtx;   // offscreen terrain canvas (rendering)
-let solid;                   // Uint8Array W*H, 1 = solid ground (collision)
-let stars = [];
+const TEAMS = [
+  { id:0, name:'Spiller 1', col:'#ff4d5e', dark:'#b3303d', cap:'#ffd34d' },
+  { id:1, name:'Spiller 2', col:'#4d9bff', dark:'#2f63b3', cap:'#7dffea' }
+];
 
-/* ================= Game state ================= */
-let G = null;
-function freshState(){
-  return {
-    phase:'shop',          // shop | move | turn | flight | transition | gameover
-    cur:0,                 // current player index
-    round:0,
-    players:[],
-    coins:[],
-    projectiles:[],
-    particles:[],
-    floaters:[],
-    explosions:[],
-    aim:{ dragging:false, ax:0, ay:0, mx:0, my:0 }, // ax/ay = drag anchor
-    transTimer:0,
-    bannerTimer:0,
-    over:false
-  };
-}
+let engine = null;
 
-/* ================= Utilities ================= */
-function rnd(a,b){ return a + Math.random()*(b-a); }
-function rint(a,b){ return (a + Math.random()*(b-a+1))|0; }
-function pick(arr){ return arr[(Math.random()*arr.length)|0]; }
-function clamp(v,lo,hi){ return v<lo?lo:(v>hi?hi:v); }
-function lerp(a,b,t){ return a+(b-a)*t; }
-function dist(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return Math.hypot(dx,dy); }
-function cur(){ return G.players[G.cur]; }
-function foe(){ return G.players[G.cur^1]; }
-
-function isSolid(x,y){
-  x|=0; y|=0;
-  if (x<0||x>=W||y<0||y>=H) return false;
-  return solid[y*W+x]===1;
-}
-// topmost solid y at column x (surface). Returns H if none.
-function surfaceAt(x){
-  x=clamp(x|0,0,W-1);
-  for (let y=0;y<H;y++) if (solid[y*W+x]===1) return y;
-  return H;
-}
-
-function drawHeart(x,y,s,filled){
-  ctx.save();
-  ctx.translate(x,y);
-  ctx.beginPath();
-  ctx.moveTo(0, s*0.32);
-  ctx.bezierCurveTo(0,-s*0.05, -s*0.5,-s*0.05, -s*0.5,-s*0.32);
-  ctx.bezierCurveTo(-s*0.5,-s*0.62, 0,-s*0.62, 0,-s*0.28);
-  ctx.bezierCurveTo(0,-s*0.62, s*0.5,-s*0.62, s*0.5,-s*0.32);
-  ctx.bezierCurveTo(s*0.5,-s*0.05, 0,-s*0.05, 0, s*0.32);
-  ctx.closePath();
-  if (filled){ ctx.fillStyle='#ff4d6a'; ctx.fill(); ctx.strokeStyle='#7a1024'; ctx.lineWidth=1; ctx.stroke(); }
-  else { ctx.fillStyle='#2a2f48'; ctx.fill(); ctx.strokeStyle='#4a5170'; ctx.lineWidth=1; ctx.stroke(); }
-  ctx.restore();
-}
-
-function banner(text, ms){
-  elBanner.textContent = text;
-  elBanner.classList.add('show');
-  G.bannerTimer = ms||1600;
-}
-
-/* ================= Main loop ================= */
-let lastT = 0;
-function frame(t){
-  const dt = Math.min(2.5, (t-lastT)/16.667 || 1); // normalized to ~60fps steps
-  lastT = t;
-  if (G){ update(dt); render(); }
-  requestAnimationFrame(frame);
-}
-
-/* ================= Stars (night sky) ================= */
-function makeStars(){
-  stars = [];
-  const n = Math.round(W*H/9000);
-  for (let i=0;i<n;i++){
-    stars.push({ x:Math.random()*W, y:Math.random()*H*0.8, r:rnd(0.4,1.7),
-      tw:rnd(0,6.28), sp:rnd(0.5,2.0) });
-  }
-}
-function drawSky(t){
-  const g = ctx.createLinearGradient(0,0,0,H);
-  g.addColorStop(0,'#07071e'); g.addColorStop(0.6,'#0b1138'); g.addColorStop(1,'#0d1640');
-  ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
-  for (const s of stars){
-    const a = 0.35 + 0.65*Math.abs(Math.sin(t*0.001*s.sp + s.tw));
-    ctx.globalAlpha = a;
-    ctx.fillStyle = '#dfe7ff';
-    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,7); ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-}
-
-/* ================= Terrain ================= */
-let spawnX = [0,0];
-function genTerrain(){
-  solid = new Uint8Array(W*H);
-  const gy = new Float32Array(W);
-  const base = H*0.50;
-  const a1=rnd(34,58), f1=rnd(0.0035,0.0075), p1=rnd(0,6.28);
-  const a2=rnd(14,28), f2=rnd(0.011,0.02),   p2=rnd(0,6.28);
-  const a3=rnd(5,12),  f3=rnd(0.03,0.055),   p3=rnd(0,6.28);
-  for (let x=0;x<W;x++){
-    gy[x] = base + a1*Math.sin(x*f1+p1) + a2*Math.sin(x*f2+p2) + a3*Math.sin(x*f3+p3);
-  }
-  // Flat spawn zones each side
-  const zw = 150;
-  const lx0=60, lx1=lx0+zw, rx1=W-60, rx0=rx1-zw;
-  spawnX = [ (lx0+lx1)/2|0, (rx0+rx1)/2|0 ];
-  const flatL = gy[spawnX[0]], flatR = gy[spawnX[1]];
-  for (let x=lx0;x<=lx1;x++) gy[x] = lerp(gy[x], flatL, smoothZone(x,lx0,lx1));
-  for (let x=rx0;x<=rx1;x++) gy[x] = lerp(gy[x], flatR, smoothZone(x,rx0,rx1));
-  // Fill collision mask
-  for (let x=0;x<W;x++){
-    const top = clamp(gy[x]|0, 24, H-2);
-    for (let y=top;y<H;y++) solid[y*W+x]=1;
-  }
-  renderTerrain(gy);
-}
-function smoothZone(x,a,b){ const t=(x-a)/(b-a); return t<0.5? t*2 : (1-t)*2; } // 0 at edges, 1 mid
-
-function renderTerrain(gy){
-  terrainCtx.clearRect(0,0,W,H);
-  const grad = terrainCtx.createLinearGradient(0,H*0.35,0,H);
-  grad.addColorStop(0,'#2e7d3c'); grad.addColorStop(0.18,'#236b2f');
-  grad.addColorStop(0.5,'#194f24'); grad.addColorStop(1,'#0c2c14');
-  terrainCtx.beginPath();
-  terrainCtx.moveTo(0,H);
-  for (let x=0;x<W;x++) terrainCtx.lineTo(x, gy[x]);
-  terrainCtx.lineTo(W,H); terrainCtx.closePath();
-  terrainCtx.fillStyle = grad; terrainCtx.fill();
-  // grass edge
-  terrainCtx.beginPath();
-  terrainCtx.moveTo(0,gy[0]);
-  for (let x=1;x<W;x++) terrainCtx.lineTo(x, gy[x]);
-  terrainCtx.lineWidth = 5; terrainCtx.strokeStyle = '#62e07d';
-  terrainCtx.lineJoin = 'round'; terrainCtx.stroke();
-  terrainCtx.lineWidth = 2; terrainCtx.strokeStyle = '#9bffb0'; terrainCtx.stroke();
-}
-
-function carveTerrain(cx,cy,r){
-  const x0=clamp(cx-r|0,0,W-1), x1=clamp(cx+r|0,0,W-1);
-  const y0=clamp(cy-r|0,0,H-1), y1=clamp(cy+r|0,0,H-1);
-  const r2=r*r;
-  for (let y=y0;y<=y1;y++) for (let x=x0;x<=x1;x++){
-    const dx=x-cx, dy=y-cy;
-    if (dx*dx+dy*dy<=r2) solid[y*W+x]=0;
-  }
-  terrainCtx.save();
-  terrainCtx.globalCompositeOperation='destination-out';
-  terrainCtx.beginPath(); terrainCtx.arc(cx,cy,r,0,7); terrainCtx.fill();
-  terrainCtx.restore();
-  // scorched rim
-  terrainCtx.save();
-  terrainCtx.globalCompositeOperation='source-atop';
-  terrainCtx.beginPath(); terrainCtx.arc(cx,cy,r+3,0,7); terrainCtx.lineWidth=6;
-  terrainCtx.strokeStyle='rgba(20,12,4,.4)'; terrainCtx.stroke();
-  terrainCtx.restore();
-}
-
-/* ================= Worms / players ================= */
-function makePlayer(i){
-  const t = TEAMS[i];
-  return {
-    idx:i, name:t.name, col:t.col, dark:t.dark, cap:t.cap,
-    x:spawnX[i], y:0, vy:0, settled:true,
-    lives:MAX_LIVES, money:0, alive:true,
-    owned:new Set(['rocket']), sel:'rocket',
-    moveLeft:MOVE_BUDGET, face:(i===0?1:-1),
-    debuff:null,            // active debuff applied for THIS player's next shot
-    blink:0
-  };
-}
-function placeWormOnSurface(p){
-  const s = surfaceAt(p.x);
-  p.y = (s>=H? H-WORM_R-1 : s-WORM_R);
-  p.vy = 0; p.settled = true;
-}
-// returns true when settled
-function stepWormGravity(p){
-  if (!p.alive){ return true; }
-  const feetY = p.y + WORM_R;
-  if (isSolid(p.x, feetY+1)){ p.vy=0; p.settled=true; return true; }
-  p.settled = false;
-  p.vy = Math.min(p.vy + GRAV, 10);
-  let ny = p.y + p.vy;
-  // stop at first solid under feet
-  let steps = Math.ceil(p.vy);
-  for (let s=1;s<=steps;s++){
-    if (isSolid(p.x, p.y+WORM_R+s)){ p.y = p.y+s-1; p.vy=0; p.settled=true; return true; }
-  }
-  p.y = ny;
-  if (p.y+WORM_R >= H){ p.y = H-WORM_R-1; p.vy=0; p.settled=true; return true; }
-  return false;
-}
-
-function drawWorm(p, t){
-  if (!p.alive) return;
-  const x=p.x, y=p.y;
-  // shadow
-  ctx.fillStyle='rgba(0,0,0,.25)';
-  ctx.beginPath(); ctx.ellipse(x, y+WORM_R+2, WORM_R*0.9, 4, 0,0,7); ctx.fill();
-  // body
-  const grad = ctx.createRadialGradient(x-3,y-4,2, x,y,WORM_R+2);
-  grad.addColorStop(0, p.col); grad.addColorStop(1, p.dark);
-  ctx.fillStyle = grad;
-  ctx.beginPath(); ctx.arc(x,y,WORM_R,0,7); ctx.fill();
-  ctx.lineWidth=2; ctx.strokeStyle='rgba(0,0,0,.35)'; ctx.stroke();
-  // cap
-  ctx.fillStyle=p.cap;
-  ctx.beginPath();
-  ctx.arc(x, y-WORM_R*0.5, WORM_R*0.85, Math.PI, 0); ctx.fill();
-  ctx.fillRect(x-WORM_R*0.95, y-WORM_R*0.55, WORM_R*1.9, 3);
-  // eyes (look toward face dir)
-  const ex=p.face*3;
-  ctx.fillStyle='#fff';
-  ctx.beginPath(); ctx.arc(x-4+ex, y-1, 3.3, 0,7); ctx.arc(x+4+ex*0.4, y-1, 3.3,0,7); ctx.fill();
-  ctx.fillStyle='#111';
-  ctx.beginPath(); ctx.arc(x-4+ex+p.face, y-1, 1.6,0,7); ctx.arc(x+4+ex*0.4+p.face, y-1,1.6,0,7); ctx.fill();
-  // mouth
-  ctx.strokeStyle='#3a0a12'; ctx.lineWidth=1.6;
-  ctx.beginPath(); ctx.arc(x+ex*0.5, y+4, 3, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
-  // hearts
-  const hs=9, gap=2, total=MAX_LIVES*(hs+gap)-gap, hx=x-total/2+hs/2, hy=y-WORM_R-13;
-  for (let i=0;i<MAX_LIVES;i++) drawHeart(hx+i*(hs+gap), hy, hs, i<p.lives);
-  // turn highlight
-  if (G.phase!=='gameover' && G.players[G.cur]===p && (G.phase==='move'||G.phase==='turn')){
-    ctx.strokeStyle='rgba(255,255,255,'+(0.4+0.3*Math.sin(t*0.006))+')';
-    ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x,y,WORM_R+6,0,7); ctx.stroke();
-    // little arrow above
-    ctx.fillStyle='#ffcf4d';
-    const ay=y-WORM_R-26+Math.sin(t*0.006)*3;
-    ctx.beginPath(); ctx.moveTo(x,ay+8); ctx.lineTo(x-6,ay); ctx.lineTo(x+6,ay); ctx.closePath(); ctx.fill();
-  }
-}
-
-/* ================= Start / reset ================= */
 function startGame(){
-  G = freshState();
-  genTerrain();
-  G.players = [makePlayer(0), makePlayer(1)];
-  placeWormOnSurface(G.players[0]);
-  placeWormOnSurface(G.players[1]);
-  spawnCoins(COIN_TARGET);
+  if (engine) engine.dispose();
+  engine = createWormsEngine({
+    canvas: cv,
+    mode: 'local',
+    onRefresh: refresh,
+    onGameOver: gameOver
+  });
+  engine.start({
+    coins: true,
+    teams: TEAMS,
+    seed: (Math.random()*1e9)|0,
+    worms: [
+      { pid:'p0', name:'Spiller 1', team:0, lives:8 },
+      { pid:'p1', name:'Spiller 2', team:1, lives:8 }
+    ]
+  });
   document.getElementById('gameover').classList.add('hidden');
-  G.cur = 0; G.round = 1;
-  beginTurn();
+  engine.beginTurnLocal();   // åpner shop for spiller 1
 }
 
-/* ================= Input ================= */
-let keyL=false, keyR=false;
-function mpos(e){ const r=cv.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; }
-function bindInput(){
-  window.addEventListener('keydown', e=>{
-    if (e.key==='ArrowLeft'){ keyL=true; }
-    else if (e.key==='ArrowRight'){ keyR=true; }
-    else if (e.code==='Space'){ if (G.phase==='move'){ e.preventDefault(); toTurn(); } }
-  });
-  window.addEventListener('keyup', e=>{
-    if (e.key==='ArrowLeft') keyL=false;
-    else if (e.key==='ArrowRight') keyR=false;
-  });
-  cv.addEventListener('mousedown', e=>{
-    const m=mpos(e); G.aim.mx=m.x; G.aim.my=m.y;
-    if (G.phase==='move') toTurn();
-    if (G.phase==='turn'){ G.aim.dragging=true; G.aim.ax=m.x; G.aim.ay=m.y; }
-  });
-  window.addEventListener('mousemove', e=>{ const m=mpos(e); G.aim.mx=m.x; G.aim.my=m.y; });
-  window.addEventListener('mouseup', ()=>{
-    if (G.phase==='turn' && G.aim.dragging){ G.aim.dragging=false; releaseFire(); }
-  });
-  // touch (hot-seat on touchscreens)
-  cv.addEventListener('touchstart', e=>{ e.preventDefault(); const t=e.touches[0]; const m=mposT(t);
-    G.aim.mx=m.x; G.aim.my=m.y; if (G.phase==='move') toTurn();
-    if (G.phase==='turn'){ G.aim.dragging=true; G.aim.ax=m.x; G.aim.ay=m.y; } }, {passive:false});
-  cv.addEventListener('touchmove', e=>{ e.preventDefault(); const t=e.touches[0]; const m=mposT(t); G.aim.mx=m.x; G.aim.my=m.y; }, {passive:false});
-  cv.addEventListener('touchend', e=>{ e.preventDefault(); if (G.phase==='turn'&&G.aim.dragging){ G.aim.dragging=false; releaseFire(); } }, {passive:false});
-}
-function mposT(t){ const r=cv.getBoundingClientRect(); return { x:t.clientX-r.left, y:t.clientY-r.top }; }
-function toTurn(){ if (G.phase==='move'){ G.phase='turn'; showHelp(); } }
-
-/* ================= Aiming ================= */
-function aimVector(){
-  const p=cur();
-  let dir, power;
-  if (G.aim.dragging){
-    let dx=G.aim.ax-G.aim.mx, dy=G.aim.ay-G.aim.my;        // opposite of pull
-    const len=Math.hypot(dx,dy)||1; dir={x:dx/len,y:dy/len};
-    power=clamp(Math.hypot(G.aim.ax-G.aim.mx,G.aim.ay-G.aim.my),0,MAX_DRAG)/MAX_DRAG;
+/* ---------- Hotbar + shop UI ---------- */
+function refresh(){
+  if (!engine) return;
+  const p = engine.getCurrent(); if (!p) return;
+  hbName.textContent = p.name; hbName.style.color = p.col;
+  hbMoney.textContent = p.money + ' kr';
+  buildSlots(p);
+  if (engine.getPhase() === 'shop'){
+    shopEl.classList.remove('hidden');
+    syncShop(p);
   } else {
-    let dx=G.aim.mx-p.x, dy=G.aim.my-p.y;
-    const len=Math.hypot(dx,dy)||1; dir={x:dx/len,y:dy/len};
-    power=PREVIEW_POWER;
-  }
-  if (p.debuff==='mirrored') dir={x:-dir.x,y:dir.y};
-  return {dir,power};
-}
-function simPath(sx,sy,ang,sp,w,maxSteps){
-  const pts=[]; let x=sx,y=sy, vx=Math.cos(ang)*sp, vy=Math.sin(ang)*sp;
-  const grav = w.raygun?0:GRAV;
-  for (let i=0;i<maxSteps;i++){
-    vy+=grav; x+=vx; y+=vy;
-    if (x<-20||x>W+20||y>H+20) break;
-    if (!w.raygun && i>2 && isSolid(x,y)){ pts.push({x,y}); break; }
-    if ((i%2)===0) pts.push({x,y});
-  }
-  return pts;
-}
-function drawDots(pts,color,r){ ctx.fillStyle=color; for(const pt of pts){ ctx.beginPath(); ctx.arc(pt.x,pt.y,r,0,7); ctx.fill(); } }
-function drawAim(t){
-  if (G.phase!=='turn' && G.phase!=='move') return;
-  const p=cur(); if(!p||!p.alive) return;
-  const w=WEAPONS[p.sel];
-  const av=aimVector();
-  const ang=Math.atan2(av.dir.y,av.dir.x);
-  const sp=av.power*SPEED_MAX*w.speed;
-  const sx=p.x+Math.cos(ang)*(WORM_R+4), sy=p.y+Math.sin(ang)*(WORM_R+4);
-  const hide = p.debuff==='no_aim';
-  if (!hide){
-    if (w.wobble>0.03){
-      for (const s of [-1,1]){
-        const pts=simPath(sx,sy, ang+s*w.wobble, sp, w, 240);
-        drawDots(pts, 'rgba(255,255,255,.10)', 2);
-      }
-    }
-    const main=simPath(sx,sy, ang, sp, w, 340);
-    drawDots(main, G.aim.dragging?'rgba(255,210,70,.95)':'rgba(170,200,255,.6)', G.aim.dragging?3:2.3);
-    if (main.length){
-      const e=main[main.length-1];
-      ctx.strokeStyle=G.aim.dragging?'#ffd24a':'#9ac0ff'; ctx.lineWidth=2;
-      const rr = w.radius>0?Math.min(w.radius,46): (w.raygun?10:8);
-      ctx.beginPath(); ctx.arc(e.x,e.y,rr,0,7); ctx.stroke();
-    }
-  } else if (G.aim.dragging){
-    ctx.fillStyle='rgba(200,120,255,.9)'; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
-    ctx.fillText('🚫 sikte skjult', p.x, p.y-WORM_R-30);
-  }
-  if (G.aim.dragging){
-    ctx.setLineDash([]); ctx.strokeStyle='rgba(255,140,40,.92)'; ctx.lineWidth=4;
-    ctx.beginPath(); ctx.moveTo(G.aim.ax,G.aim.ay); ctx.lineTo(G.aim.mx,G.aim.my); ctx.stroke();
-    ctx.fillStyle='rgba(255,140,40,.92)'; ctx.beginPath(); ctx.arc(G.aim.ax,G.aim.ay,5,0,7); ctx.fill();
-    const pct=Math.round(av.power*100);
-    ctx.fillStyle='#ffd24a'; ctx.font='bold 15px sans-serif'; ctx.textAlign='center';
-    ctx.fillText(pct+'%', G.aim.mx, G.aim.my-14);
+    shopEl.classList.add('hidden');
   }
 }
-
-/* ================= Firing ================= */
-function wob(w){ return rnd(-w.wobble,w.wobble); }
-function spawnProjectile(owner, x,y, vx,vy, w){
-  G.projectiles.push({
-    owner, x, y, vx, vy, w:w.id, steps:0, grace:GRACE, trail:[],
-    bounces:w.bounces||0, fuse:w.fuse||0,
-    gravity:!w.raygun, raygun:!!w.raygun, curse:!!w.curse,
-    radius:w.radius, dmg:w.dmg, cluster:w.cluster||0, sub:false
-  });
-}
-function launch(p, ang, sp, w){
-  const mx=p.x+Math.cos(ang)*(WORM_R+5), my=p.y+Math.sin(ang)*(WORM_R+5);
-  spawnProjectile(p.idx, mx,my, Math.cos(ang)*sp, Math.sin(ang)*sp, w);
-}
-function fireWeapon(p, dir, power){
-  const w=WEAPONS[p.sel];
-  const sp=Math.max(power,0.12)*SPEED_MAX*w.speed;
-  if (w.airstrike){ fireAirstrike(p,w); return; }
-  if (w.pellets){
-    for (let i=0;i<w.pellets;i++){
-      const ang=Math.atan2(dir.y,dir.x) + (i-(w.pellets-1)/2)*0.07 + wob(w);
-      launch(p, ang, sp, w);
-    }
-    return;
-  }
-  launch(p, Math.atan2(dir.y,dir.x)+wob(w), sp, w);
-}
-function fireAirstrike(p, w){
-  const tx=clamp(G.aim.mx, 40, W-40);
-  for (let i=-1;i<=1;i++){
-    spawnProjectile(p.idx, tx+i*55, 2, rnd(-0.6,0.6), rnd(5,7), w);
+function buildSlots(p){
+  const W = engine.WEAPONS, ORDER = engine.WEAPON_ORDER;
+  hbSlots.innerHTML = '';
+  for (const id of ORDER){
+    const w = W[id], owned = p.owned.has(id), afford = p.money >= w.price;
+    const div = document.createElement('div');
+    div.className = 'slot' + (owned?' owned':'') + (p.sel===id?' sel':'') + ((!owned&&!afford)?' cant':'');
+    div.title = w.name + ' — ' + w.desc;
+    div.innerHTML = `<div class="ic">${w.icon}</div><div class="nm">${w.name}</div>`
+      + (owned ? (w.free?'<div class="inf">∞</div>':'<div class="px">Eid</div>')
+               : `<div class="px">${w.price} kr</div>`);
+    div.addEventListener('click', () => {
+      if (owned) engine.selectWeapon(null, id);
+      else engine.buyWeapon(null, id);
+    });
+    hbSlots.appendChild(div);
   }
 }
-function releaseFire(){
-  const p=cur();
-  const dragLen=Math.hypot(G.aim.ax-G.aim.mx, G.aim.ay-G.aim.my);
-  if (dragLen<8) return; // cancelled
-  const av=aimVector();
-  let power=av.power;
-  if (p.debuff==='random_power') power=rnd(0.4,1);
-  p._stealing = (p.debuff==='steal_coins');
-  p.debuff=null; updateDebuffUI();
-  fireWeapon(p, av.dir, power);
-  G.phase='flight'; hideHelp();
-}
-
-/* ================= Projectiles ================= */
-function updateProjectiles(dt){
-  for (let i=G.projectiles.length-1;i>=0;i--){
-    const pr=G.projectiles[i];
-    if (pr.gravity) pr.vy += GRAV*dt;
-    const speed=Math.hypot(pr.vx,pr.vy);
-    const sub=Math.max(1, Math.ceil(speed/4));
-    let done=false;
-    for (let s=0;s<sub && !done;s++){
-      pr.x += pr.vx/sub; pr.y += pr.vy/sub;
-      // collect coins along path (cosmetic, doesn't stop projectile)
-      collectCoinsAt(pr);
-      // worm hits (after grace)
-      if (pr.steps>GRACE){
-        for (const w of G.players){
-          if (w.alive && dist(pr.x,pr.y,w.x,w.y) < WORM_R+3){ resolveHit(pr, i); done=true; break; }
-        }
-        if (done) break;
-      }
-      // terrain (non-raygun)
-      if (!pr.raygun && pr.steps>GRACE && isSolid(pr.x,pr.y)){
-        if (pr.w==='grenade' && pr.bounces>0){
-          // bounce off ground
-          pr.x -= pr.vx/sub; pr.y -= pr.vy/sub;
-          pr.vy = -Math.abs(pr.vy)*0.5; pr.vx *= 0.6; pr.bounces--;
-          spawnParticles(pr.x,pr.y,5,['#cfe'],{ spread:2, life:14 });
-        } else if (pr.w==='grenade'){
-          pr.vx*=0.4; pr.vy=0; pr.x -= pr.vx/sub; // rest, wait for fuse
-        } else { resolveHit(pr, i); done=true; }
-        break;
-      }
-    }
-    if (done) continue;
-    pr.steps++;
-    if (pr.gravity || pr.raygun){ pr.trail.push({x:pr.x,y:pr.y}); if (pr.trail.length>16) pr.trail.shift(); }
-    // grenade fuse
-    if (pr.w==='grenade'){ pr.fuse--; if (pr.fuse<=0){ resolveHit(pr,i); continue; } }
-    // out of bounds
-    if (pr.x<-40||pr.x>W+40||pr.y>H+50||(pr.raygun&&pr.y<-40)){ G.projectiles.splice(i,1); }
-  }
-}
-function resolveHit(pr, idx){
-  G.projectiles.splice(idx,1);
-  if (pr.curse){ createCurseCoin(pr.x, pr.y); return; }
-  if (pr.cluster){
-    explode(pr.x,pr.y,pr,false);
-    for (let k=0;k<pr.cluster;k++){
-      const ang=-Math.PI/2 + rnd(-1.1,1.1);
-      const sp=rnd(3,6);
-      const sub={ owner:pr.owner, x:pr.x, y:pr.y-2, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp,
-        w:'cluster_sub', steps:0, grace:6, trail:[], bounces:0, fuse:0, gravity:true, raygun:false,
-        curse:false, radius:22, dmg:[1,0], cluster:0, sub:true };
-      G.projectiles.push(sub);
-    }
-    return;
-  }
-  explode(pr.x,pr.y,pr,true);
-}
-function explode(x,y,pr,carve){
-  const r=pr.radius;
-  if (r>0 && carve!==false){ carveTerrain(x,y,r); }
-  if (r>0){
-    spawnExplosion(x,y,r);
-    spawnParticles(x,y, r>45?36:18, ['#ffffff','#ffe08a','#ff8a3a','#ff3b2f'], { spread:r>45?7:4.5, life:r>45?34:24 });
-  } else {
-    spawnParticles(x,y,10,['#ff7a2f','#fff'],{spread:3,life:18});
-  }
-  applyDamage(x,y,pr);
-}
-function applyDamage(x,y,pr){
-  const r=Math.max(pr.radius,12);
-  for (const w of G.players){
-    if (!w.alive) continue;
-    const d=dist(x,y,w.x,w.y);
-    if (d>r+WORM_R) continue;
-    let dmg = d<=r*0.55 ? pr.dmg[0] : pr.dmg[1];
-    if (dmg<=0) continue;
-    w.lives -= dmg;
-    addFloater(w.x, w.y-WORM_R-20, '-'+dmg+'❤', '#ff6a7a');
-    // knockback
-    const ang=Math.atan2(w.y-y, w.x-x);
-    const push=clamp((r-d)/r,0,1)*16;
-    w.x = clamp(w.x+Math.cos(ang)*push, WORM_R, W-WORM_R);
-    w.vy = -Math.abs(Math.sin(ang))*4 - 1.5; w.settled=false;
-    if (w.lives<=0){
-      w.lives=0; w.alive=false;
-      addFloater(w.x, w.y-WORM_R-20, '💀', '#fff');
-      spawnParticles(w.x,w.y,28,[w.col,'#fff','#ffd24a'],{spread:6,life:40});
-    }
-  }
-}
-
-/* ================= Explosions / particles / floaters ================= */
-function spawnExplosion(x,y,r){ G.explosions.push({x,y,r:r*0.3,maxR:r,life:1}); }
-function spawnParticles(x,y,n,colors,o){ o=o||{}; const spread=o.spread||4, life=o.life||26;
-  for (let i=0;i<n;i++){ const a=rnd(0,6.28), sp=rnd(1,spread);
-    G.particles.push({ x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - rnd(0,1.5),
-      life:life+rint(-6,6), maxLife:life, size:rnd(1.5,4), color:pick(colors), grav:o.grav==null?0.18:o.grav }); } }
-function addFloater(x,y,text,color){ G.floaters.push({x,y,text,color,life:60,maxLife:60}); }
-
-function updateEffects(dt){
-  for (let i=G.explosions.length-1;i>=0;i--){ const e=G.explosions[i];
-    e.r=lerp(e.r,e.maxR,0.4); e.life-=0.05*dt; if (e.life<=0) G.explosions.splice(i,1); }
-  for (let i=G.particles.length-1;i>=0;i--){ const p=G.particles[i];
-    p.vy+=p.grav*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.life-=dt; if (p.life<=0) G.particles.splice(i,1); }
-  for (let i=G.floaters.length-1;i>=0;i--){ const f=G.floaters[i];
-    f.y-=0.7*dt; f.life-=dt; if (f.life<=0) G.floaters.splice(i,1); }
-}
-
-/* ================= Coins ================= */
-function spawnCoins(target){
-  let guard=0;
-  while (G.coins.filter(c=>!c.cursed).length < target && guard++<200){
-    const x=rnd(50,W-50);
-    const surf=surfaceAt(x);
-    const baseY=rnd(H*0.16, Math.max(H*0.22, surf-46));
-    const big=Math.random()<0.25;
-    G.coins.push({ x, baseY, y:baseY, r:big?21:13, big,
-      value: big?pick([50,60,80]):pick([10,20,30]), ph:rnd(0,6.28), cursed:false });
-  }
-}
-function maybeRespawnCoins(){ if (G.coins.filter(c=>!c.cursed).length < COIN_MIN) spawnCoins(COIN_TARGET); }
-function createCurseCoin(x,y){
-  x=clamp(x,30,W-30);
-  const surf=surfaceAt(x);
-  G.coins.push({ x, baseY:Math.min(y, surf-22), y, r:16, big:false, value:0, ph:rnd(0,6.28), cursed:true });
-  addFloater(x,y-24,'💀 Forbannelse lagt!','#c78bff');
-}
-function updateCoins(t){ for (const c of G.coins){ c.y = c.baseY + Math.sin(t*0.002+c.ph)*(c.cursed?3:5); } }
-function collectCoinsAt(pr){
-  for (let i=G.coins.length-1;i>=0;i--){
-    const c=G.coins[i];
-    if (dist(pr.x,pr.y,c.x,c.y) < c.r+3){
-      const shooter=G.players[pr.owner];
-      if (c.cursed){
-        const d=pick(DEBUFFS); shooter.debuff=d.id;
-        addFloater(c.x,c.y-10, d.label, '#c78bff');
-        spawnParticles(c.x,c.y,18,['#b06bff','#7a3bff','#fff'],{spread:4,life:30});
-        G.coins.splice(i,1); updateDebuffUI();
-      } else {
-        const recip = shooter._stealing ? G.players[pr.owner^1] : shooter;
-        recip.money += c.value;
-        addFloater(c.x,c.y-8, (shooter._stealing?'🩸 ':'+')+c.value+' kr', shooter._stealing? recip.col : '#ffd24a');
-        spawnParticles(c.x,c.y, c.big?20:12, ['#ffd24a','#fff','#ffe9a8'],{spread:c.big?5:3.5,life:26});
-        G.coins.splice(i,1); updateHotbar();
-      }
-    }
-  }
-}
-
-/* ================= Draw: world entities ================= */
-function drawCoins(t){
-  for (const c of G.coins){
-    ctx.save();
-    if (c.cursed){
-      const pul=0.6+0.4*Math.sin(t*0.006+c.ph);
-      ctx.shadowColor='#b06bff'; ctx.shadowBlur=18*pul;
-      ctx.fillStyle='#3a1457'; ctx.beginPath(); ctx.arc(c.x,c.y,c.r,0,7); ctx.fill();
-      ctx.shadowBlur=0; ctx.strokeStyle='#c78bff'; ctx.lineWidth=2; ctx.stroke();
-      ctx.font=(c.r+4)+'px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText('💀', c.x, c.y+1);
-    } else {
-      if (c.big){ ctx.shadowColor='#ffcf4d'; ctx.shadowBlur=16; }
-      const g=ctx.createRadialGradient(c.x-c.r*0.3,c.y-c.r*0.3,1,c.x,c.y,c.r);
-      g.addColorStop(0,'#fff3c0'); g.addColorStop(0.5,'#ffcf4d'); g.addColorStop(1,'#c98a17');
-      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(c.x,c.y,c.r,0,7); ctx.fill();
-      ctx.shadowBlur=0; ctx.strokeStyle='#8a5e0f'; ctx.lineWidth=1.5; ctx.stroke();
-      ctx.fillStyle='#9a6a12'; ctx.font='bold '+(c.big?13:9)+'px sans-serif';
-      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(c.value, c.x, c.y+1);
-    }
-    ctx.restore();
-  }
-}
-function drawProjectiles(){
-  for (const pr of G.projectiles){
-    if (pr.raygun){
-      for (let i=0;i<pr.trail.length;i++){ const tp=pr.trail[i], a=i/pr.trail.length;
-        ctx.fillStyle='rgba(80,230,255,'+(a*0.6)+')'; ctx.beginPath(); ctx.arc(tp.x,tp.y,4*a+1,0,7); ctx.fill(); }
-      ctx.shadowColor='#5fe6ff'; ctx.shadowBlur=16; ctx.fillStyle='#bff6ff';
-      ctx.beginPath(); ctx.arc(pr.x,pr.y,5,0,7); ctx.fill();
-      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(pr.x,pr.y,2.4,0,7); ctx.fill(); ctx.shadowBlur=0;
-      continue;
-    }
-    for (let i=0;i<pr.trail.length;i++){ const tp=pr.trail[i], a=i/pr.trail.length;
-      ctx.fillStyle='rgba(255,150,60,'+(a*0.45)+')'; ctx.beginPath(); ctx.arc(tp.x,tp.y,3*a+1,0,7); ctx.fill(); }
-    if (pr.w==='grenade'){ const blink=pr.fuse<40&&((pr.fuse>>2)&1); ctx.fillStyle=blink?'#ff3b2f':'#2b3a22';
-      ctx.beginPath(); ctx.arc(pr.x,pr.y,5,0,7); ctx.fill(); ctx.strokeStyle='#8aff6a'; ctx.lineWidth=1; ctx.stroke(); }
-    else if (pr.w==='cluster'||pr.w==='cluster_sub'){ ctx.fillStyle='#a06bff'; ctx.beginPath(); ctx.arc(pr.x,pr.y,pr.sub?3:5,0,7); ctx.fill(); }
-    else { ctx.fillStyle='#ffd24a'; ctx.beginPath(); ctx.arc(pr.x,pr.y,4,0,7); ctx.fill();
-      ctx.fillStyle='#ff5a2f'; ctx.beginPath(); ctx.arc(pr.x,pr.y,2,0,7); ctx.fill(); }
-  }
-}
-function drawExplosions(){
-  for (const e of G.explosions){
-    const g=ctx.createRadialGradient(e.x,e.y,1,e.x,e.y,e.r);
-    g.addColorStop(0,'rgba(255,255,255,'+e.life+')');
-    g.addColorStop(0.4,'rgba(255,180,60,'+(e.life*0.9)+')');
-    g.addColorStop(0.8,'rgba(255,60,40,'+(e.life*0.6)+')');
-    g.addColorStop(1,'rgba(255,60,40,0)');
-    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(e.x,e.y,e.r,0,7); ctx.fill();
-  }
-}
-function drawParticles(){
-  for (const p of G.particles){ ctx.globalAlpha=clamp(p.life/p.maxLife,0,1);
-    ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(p.x,p.y,p.size,0,7); ctx.fill(); }
-  ctx.globalAlpha=1;
-}
-function drawFloaters(){
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  for (const f of G.floaters){ ctx.globalAlpha=clamp(f.life/f.maxLife,0,1);
-    ctx.font='bold 16px sans-serif'; ctx.fillStyle='rgba(0,0,0,.5)'; ctx.fillText(f.text,f.x+1,f.y+1);
-    ctx.fillStyle=f.color; ctx.fillText(f.text,f.x,f.y); }
-  ctx.globalAlpha=1;
-}
-
-/* ================= Turn flow ================= */
-function beginTurn(){
-  const p=cur();
-  p.moveLeft=MOVE_BUDGET; p.face=(p.idx===0?1:-1);
-  placeWormOnSurface(p);
-  updateHotbar(); updateDebuffUI();
-  openShop();
-}
-function closeShop(){
-  shopEl.classList.add('hidden');
-  const p=cur(); p.moveLeft=MOVE_BUDGET;
-  G.phase='move'; updateDebuffUI(); showHelp();
-  banner(p.name+' sin tur!', 1300);
-}
-function moveWorm(p, dir, dt){
-  p.face=dir;
-  const budget=Math.min(MOVE_SPEED*dt, p.moveLeft);
-  if (budget<=0) return;
-  const nx=clamp(p.x+dir*budget, WORM_R, W-WORM_R);
-  const surfN=surfaceAt(nx);
-  if (surfN >= p.y+WORM_R-16){            // climbable / downhill
-    const moved=Math.abs(nx-p.x);
-    p.x=nx; p.moveLeft-=moved;
-    p.y = (surfN>=H? H-WORM_R-1 : surfN-WORM_R);
-  }
-}
-function endFlight(){ for (const p of G.players) p._stealing=false; G.phase='transition'; G.transTimer=0; }
-function finishTransition(){
-  const dead=G.players.find(p=>!p.alive);
-  if (dead){ showGameOver(G.players.find(p=>p.alive)); return; }
-  maybeRespawnCoins();
-  G.cur ^= 1; G.round++;
-  beginTurn();
-}
-function showGameOver(winner){
-  G.phase='gameover'; hideHelp();
-  elDebuff.classList.remove('show'); elBanner.classList.remove('show');
-  document.getElementById('go-emoji').textContent = winner?'🏆':'🤝';
-  const tt=document.getElementById('go-title');
-  tt.textContent = winner? winner.name+' vant!' : 'Uavgjort!';
-  tt.style.color = winner?winner.col:'#fff';
-  document.getElementById('go-sub').textContent = winner
-    ? ('Knuste motstanderen med '+winner.lives+' ❤ igjen.') : 'Begge falt samtidig.';
-  document.getElementById('gameover').classList.remove('hidden');
-}
-
-/* ================= Shop modal ================= */
-function openShop(){
-  const p=cur();
-  const tt=document.getElementById('shop-title');
-  tt.textContent='🛒 '+p.name+' — Våpenbutikk'; tt.style.color=p.col;
-  syncShop(); shopEl.classList.remove('hidden'); G.phase='shop';
-}
-function syncShop(){
-  const p=cur();
-  document.getElementById('shop-money').textContent=p.money+' kr';
-  const grid=document.getElementById('shop-grid'); grid.innerHTML='';
-  for (const id of WEAPON_ORDER){
-    const w=WEAPONS[id], owned=p.owned.has(id), afford=p.money>=w.price;
-    const c=document.createElement('div');
-    c.className='shop-card'+(owned?' owned':'')+(p.sel===id?' sel':'')+((!owned&&!afford)?' cant':'');
-    c.innerHTML=`<div class="ic">${w.icon}</div><div class="nm">${w.name}</div>`
-      +`<div class="de">${w.desc}</div>`
-      +`<div class="px">${owned?(w.free?'∞ gratis':'✓ Eid')+(p.sel===id?' · valgt':''):w.price+' kr'}</div>`;
-    c.addEventListener('click', ()=>{
-      if (owned){ p.sel=id; }
-      else if (p.money>=w.price){ p.money-=w.price; p.owned.add(id); p.sel=id; }
-      syncShop(); updateHotbar();
+function syncShop(p){
+  const W = engine.WEAPONS, ORDER = engine.WEAPON_ORDER;
+  const tt = document.getElementById('shop-title');
+  tt.textContent = '🛒 ' + p.name + ' — Våpenbutikk'; tt.style.color = p.col;
+  document.getElementById('shop-money').textContent = p.money + ' kr';
+  const grid = document.getElementById('shop-grid'); grid.innerHTML = '';
+  for (const id of ORDER){
+    const w = W[id], owned = p.owned.has(id), afford = p.money >= w.price;
+    const c = document.createElement('div');
+    c.className = 'shop-card' + (owned?' owned':'') + (p.sel===id?' sel':'') + ((!owned&&!afford)?' cant':'');
+    c.innerHTML = `<div class="ic">${w.icon}</div><div class="nm">${w.name}</div>`
+      + `<div class="de">${w.desc}</div>`
+      + `<div class="px">${owned?(w.free?'∞ gratis':'✓ Eid')+(p.sel===id?' · valgt':''):w.price+' kr'}</div>`;
+    c.addEventListener('click', () => {
+      if (owned) engine.selectWeapon(null, id);
+      else engine.buyWeapon(null, id);
     });
     grid.appendChild(c);
   }
 }
 
-/* ================= Hotbar ================= */
-function updateHotbar(){
-  const p=cur(); if(!p) return;
-  hbName.textContent=p.name; hbName.style.color=p.col;
-  hbMoney.textContent=p.money+' kr';
-  hbSlots.innerHTML='';
-  for (const id of WEAPON_ORDER){
-    const w=WEAPONS[id], owned=p.owned.has(id), afford=p.money>=w.price;
-    const div=document.createElement('div');
-    div.className='slot'+(owned?' owned':'')+(p.sel===id?' sel':'')+((!owned&&!afford)?' cant':'');
-    div.title=w.name+' — '+w.desc;
-    div.innerHTML=`<div class="ic">${w.icon}</div><div class="nm">${w.name}</div>`
-      + (owned ? (w.free?'<div class="inf">∞</div>':'<div class="px">Eid</div>')
-               : `<div class="px">${w.price} kr</div>`);
-    div.addEventListener('click', ()=>{
-      if (owned){ p.sel=id; }
-      else if (p.money>=w.price){ p.money-=w.price; p.owned.add(id); p.sel=id;
-        addFloater(p.x,p.y-WORM_R-32,'-'+w.price+' kr','#ff6a7a'); }
-      updateHotbar(); if (!shopEl.classList.contains('hidden')) syncShop();
-    });
-    hbSlots.appendChild(div);
-  }
+/* ---------- Game over ---------- */
+function gameOver(winnerTeam){
+  const players = engine.getPlayers();
+  const winner = (winnerTeam!=null) ? players.find(p => p.team===winnerTeam && true) : null;
+  document.getElementById('go-emoji').textContent = winner ? '🏆' : '🤝';
+  const tt = document.getElementById('go-title');
+  tt.textContent = winner ? winner.name + ' vant!' : 'Uavgjort!';
+  tt.style.color = winner ? winner.col : '#fff';
+  const survivor = players.find(p => p.team===winnerTeam && p.alive);
+  document.getElementById('go-sub').textContent = winner
+    ? ('Knuste motstanderen med ' + (survivor?survivor.lives:winner.lives) + ' ❤ igjen.')
+    : 'Begge falt samtidig.';
+  document.getElementById('gameover').classList.remove('hidden');
 }
 
-/* ================= Debuff / help HUD ================= */
-function updateDebuffUI(){
-  const p=cur();
-  const d = (p&&p.debuff)? DEBUFFS.find(x=>x.id===p.debuff) : null;
-  if (d && (G.phase==='shop'||G.phase==='move'||G.phase==='turn')){
-    elDebuff.textContent='⚠ '+d.label; elDebuff.classList.add('show');
-  } else elDebuff.classList.remove('show');
-}
-function showHelp(){
-  if (G.phase==='move') elHelp.textContent='← → flytt · SPACE for å sikte';
-  else if (G.phase==='turn') elHelp.textContent='Dra musa BAKOVER fra skuddretningen og slipp for å skyte';
-  elHelp.style.display='block';
-}
-function hideHelp(){ elHelp.style.display='none'; }
+/* ---------- Local input ---------- */
+function mpos(e){ const r = cv.getBoundingClientRect(); return { x:e.clientX-r.left, y:e.clientY-r.top }; }
+function mposT(t){ const r = cv.getBoundingClientRect(); return { x:t.clientX-r.left, y:t.clientY-r.top }; }
 
-/* ================= update / render dispatch ================= */
-function update(dt){
-  const t=performance.now();
-  if (G.bannerTimer>0){ G.bannerTimer-=dt*16.67; if (G.bannerTimer<=0) elBanner.classList.remove('show'); }
-  updateCoins(t);
-  updateEffects(dt);
-  if (G.phase==='move'){
-    const p=cur();
-    if (keyL||keyR) moveWorm(p, keyL?-1:1, dt);
-    elHelp.textContent='← → flytt ('+Math.max(0,Math.round(p.moveLeft))+'px) · SPACE for å sikte';
-  } else if (G.phase==='flight'){
-    updateProjectiles(dt);
-    if (G.projectiles.length===0) endFlight();
-  } else if (G.phase==='transition'){
-    let settled=true;
-    for (const w of G.players){ if (w.alive && !stepWormGravity(w)) settled=false; }
-    if (settled){ G.transTimer+=dt; if (G.transTimer>26) finishTransition(); }
-  }
-}
-function render(){
-  const t=performance.now();
-  drawSky(t);
-  ctx.drawImage(terrainCv,0,0);
-  drawCoins(t);
-  for (const p of G.players) drawWorm(p,t);
-  drawProjectiles();
-  drawExplosions();
-  drawParticles();
-  drawAim(t);
-  drawFloaters();
-}
-
-/* ================= UI button bindings ================= */
-document.getElementById('shop-go').addEventListener('click', closeShop);
-document.getElementById('go-again').addEventListener('click', ()=>{
-  document.getElementById('gameover').classList.add('hidden'); startGame();
+window.addEventListener('keydown', e => {
+  if (!engine) return;
+  if (e.key === 'ArrowLeft') engine.localKey(-1, true);
+  else if (e.key === 'ArrowRight') engine.localKey(1, true);
+  else if (e.code === 'Space'){ e.preventDefault(); engine.spacePressed(); }
 });
+window.addEventListener('keyup', e => {
+  if (!engine) return;
+  if (e.key === 'ArrowLeft') engine.localKey(-1, false);
+  else if (e.key === 'ArrowRight') engine.localKey(1, false);
+});
+cv.addEventListener('mousedown', e => { if (engine){ const m=mpos(e); engine.localMouse('down', m.x, m.y); } });
+window.addEventListener('mousemove', e => { if (engine){ const m=mpos(e); engine.localMouse('move', m.x, m.y); } });
+window.addEventListener('mouseup', () => { if (engine) engine.localMouse('up'); });
+cv.addEventListener('touchstart', e => { e.preventDefault(); if(engine){ const m=mposT(e.touches[0]); engine.localMouse('down', m.x, m.y); } }, {passive:false});
+cv.addEventListener('touchmove', e => { e.preventDefault(); if(engine){ const m=mposT(e.touches[0]); engine.localMouse('move', m.x, m.y); } }, {passive:false});
+cv.addEventListener('touchend', e => { e.preventDefault(); if(engine) engine.localMouse('up'); }, {passive:false});
 
-/* ================= Boot ================= */
-function resize(){
-  W = window.innerWidth;
-  H = window.innerHeight - HOTBAR_H;
-  cv.width = W; cv.height = H;
-}
-window.addEventListener('resize', ()=>{ /* fixed at load; ignore live resize to preserve terrain */ });
+document.getElementById('shop-go').addEventListener('click', () => { if (engine) engine.closeShopToMove(); });
+document.getElementById('go-again').addEventListener('click', startGame);
 
-function boot(){
-  resize();
-  terrainCv = document.createElement('canvas');
-  terrainCv.width = W; terrainCv.height = H;
-  terrainCtx = terrainCv.getContext('2d');
-  makeStars();
-  bindInput();
-  startGame();
-  requestAnimationFrame(frame);
-}
-boot();
-
-})();
+startGame();
 </script>
 </body>
 </html>

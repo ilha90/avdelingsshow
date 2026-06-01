@@ -22,6 +22,12 @@ let phasePrev = null;
 let snakeRenderer = null;
 let bombRenderer = null;
 let bombInit = null;
+// Worms (Romkrig)
+let wormsEngine = null;
+let wormsInit = null;
+let wormsLastTurn = null;
+let wormsLoading = false;
+let wormsHudTimer = null;
 
 // ====== Password gate ======
 const pwGate = document.getElementById('pw-gate');
@@ -134,6 +140,7 @@ function initHostUI(){
       case 'scatter-end': socket.emit('host:scatter-end'); break;
       case 'end-snake': socket.emit('host:end-snake'); break;
       case 'end-bomb': socket.emit('host:end-bomb'); break;
+      case 'end-worms': socket.emit('host:end-worms'); break;
       case 'end-quiz': socket.emit('host:end-quiz'); break;
       case 'next-vote': socket.emit('host:next-vote'); break;
       case 'next-icebreaker': socket.emit('host:next-icebreaker'); break;
@@ -382,6 +389,34 @@ socket.on('snake:food-fx', ({ type, pid, x, y }) => {
   }
 });
 
+// ====== Worms (Romkrig) ======
+socket.on('worms:init', data => { wormsInit = data; wormsLastTurn = null; });
+socket.on('worms:turn', t => {
+  wormsLastTurn = t;
+  if (wormsEngine){
+    if (t.lives) wormsEngine.setLives(t.lives);
+    wormsEngine.beginTurn(t.active);
+  }
+  renderWormsHud(state);
+});
+socket.on('worms:control', ({ type, payload }) => {
+  if (wormsEngine) wormsEngine.input(type, payload);
+});
+socket.on('worms:gameover', ({ winnerTeam, winnerName }) => {
+  if (wormsEngine) wormsEngine.setGameOver();
+  if (winnerName){
+    fx.championBanner(winnerName, winnerTeam === 0 ? '🔴' : '🔵');
+    sfx.fanfare();
+    stageBg.boom(window.innerWidth/2, window.innerHeight/2, 'gold', 2);
+    setTimeout(() => confetti.shower(180), 400);
+    fx.brandPulse('gold');
+    mascotCelebrate(6000);
+    showCommentator(`${winnerName} vinner Romkrig! 🪱`, { kind: 'hype', ms: 4500 });
+  } else {
+    showCommentator('Uavgjort — begge lag falt!', { kind: 'info', ms: 3500 });
+  }
+});
+
 // ====== Phase dispatch ======
 function render(s, prevPhase){
   updatePhaseTag(s.phase);
@@ -393,7 +428,7 @@ function render(s, prevPhase){
     if (s.phase !== 'end') document.body.classList.remove('dim-lights');
     if (s.phase !== 'question') stopTimePressureWatcher();
     // Ticker: synlig under snake/bomb
-    if (s.phase === 'snake' || s.phase === 'bomb'){
+    if (s.phase === 'snake' || s.phase === 'bomb' || s.phase === 'worms'){
       const ticker = s.players.slice().sort((a,b) => b.score - a.score).slice(0, 10)
         .map(p => ({ emoji: p.emoji, name: p.name, score: p.score }));
       fx.tickerShow(ticker);
@@ -426,6 +461,7 @@ function render(s, prevPhase){
       'snake-end': 'Snake 2.0 slutt.',
       bomb: 'Bomberman pågår.',
       'bomb-end': 'Bomberman slutt.',
+      worms: 'Romkrig pågår.',
       'lie-collect': 'Spillere sender inn påstander...',
       'lie-play': 'Gjetter løgnen.',
       'lie-reveal': 'Avsløring!',
@@ -445,6 +481,7 @@ function render(s, prevPhase){
     // Specific cleanup
     if (s.phase !== 'snake' && snakeRenderer){ snakeRenderer.dispose(); snakeRenderer = null; overlays.innerHTML=''; }
     if (s.phase !== 'bomb' && bombRenderer){ bombRenderer.dispose(); bombRenderer = null; overlays.innerHTML=''; _bombChampionShown = false; _bombSuddenDeathShown = false; }
+    if (s.phase !== 'worms' && wormsEngine){ wormsEngine.dispose(); wormsEngine = null; wormsLoading = false; if (wormsHudTimer){ clearInterval(wormsHudTimer); wormsHudTimer = null; } overlays.innerHTML=''; }
     overlays.innerHTML = '';
   }
 
@@ -465,6 +502,7 @@ function render(s, prevPhase){
     case 'snake': renderSnakeGame(s); break;
     case 'bomb-select': renderBombSelect(s); break;
     case 'bomb': renderBombGame(s); break;
+    case 'worms': renderWormsGame(s); break;
     case 'lie-collect': renderLieCollect(s); break;
     case 'lie-play': renderLiePlay(s); break;
     case 'lie-reveal': renderLieReveal(s); break;
@@ -731,6 +769,10 @@ function renderCenterControls(s){
       add('Avslutt runde', () => socket.emit('host:end-bomb'), 'btn danger');
       setDock('Avslutt runde', '⏹', 'end-bomb', true);
       break;
+    case 'worms':
+      add('Avslutt runde', () => socket.emit('host:end-worms'), 'btn danger');
+      setDock('Avslutt runde', '⏹', 'end-worms', true);
+      break;
     case 'lie-collect':
       add('Start runde (hopp inn)', () => socket.emit('host:lie-next'), 'btn gold');
       setDock('Start runde', '▶', 'lie-next');
@@ -854,7 +896,7 @@ function openMenu(){
     ['🎡', 'Lykkehjulet', 'Tilfeldig spiller', () => socket.emit('host:start-wheel'), null, null],
     ['🐍', 'Snake 2.0', 'Klassisk Snake — raskere for hvert eple', () => socket.emit('host:start-snake'), (state.config.snaketime===0?'∞':state.config.snaketime+'s'), (chip) => { const opts=TIME_OPTIONS.snake; menuState.tickIdx.snake=(menuState.tickIdx.snake+1)%opts.length; const v=opts[menuState.tickIdx.snake]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{snaketime:v}); }],
     ['💣', 'Bomberman', '3D bombe-kamp', () => socket.emit('host:start-bomb'), (state.config.bombtime===0?'∞':state.config.bombtime+'s'), (chip) => { const opts=TIME_OPTIONS.bomb; menuState.tickIdx.bomb=(menuState.tickIdx.bomb+1)%opts.length; const v=opts[menuState.tickIdx.bomb]; chip.textContent=(v===0?'∞':v+'s'); socket.emit('host:config',{bombtime:v}); }],
-    ['🪱', 'Romkrig 1v1', 'Worms-duell — hot-seat for 2', () => window.open('worms.html', '_blank', 'noopener'), null, null],
+    ['🪱', 'Romkrig', 'Lag-basert Worms — alle spiller etter tur', () => socket.emit('host:start-worms'), null, null],
   ];
   i = 0;
   for (const [ic, ti, de, fn, chipText, onChip] of social){
@@ -933,7 +975,7 @@ function renderTutorial(s){
 }
 
 function tutorialIconFor(g){
-  return { quiz:'🧠', lightning:'⚡', voting:'🗳️', scatter:'📝', lie:'🤥', icebreaker:'💬', wheel:'🎡', snake:'🐍', bomb:'💣' }[g] || '🎉';
+  return { quiz:'🧠', lightning:'⚡', voting:'🗳️', scatter:'📝', lie:'🤥', icebreaker:'💬', wheel:'🎡', snake:'🐍', bomb:'💣', worms:'🪱' }[g] || '🎉';
 }
 
 function renderCountdown(s){
@@ -1341,6 +1383,63 @@ function renderBombGame(s){
   }
 }
 
+function renderWormsGame(s){
+  const o = document.getElementById('overlays');
+  if (!wormsEngine && !wormsLoading){
+    wormsLoading = true;
+    o.innerHTML = `<canvas class="fullbleed-canvas" id="worms-canvas"></canvas>
+      <div class="game-hud-top"><div class="hud-title">🪱 Romkrig</div><div class="hud-timer" id="worms-turn-label"></div></div>
+      <div class="game-hud-right worms-score" id="worms-score"><h4>Lag</h4><div id="worms-score-list"></div></div>`;
+    import('./worms-engine.js').then(m => {
+      const cv = document.getElementById('worms-canvas');
+      if (!cv){ wormsLoading = false; return; }
+      wormsEngine = m.createWormsEngine({
+        canvas: cv,
+        mode: 'network',
+        onTurnEnd: (hits) => socket.emit('host:worms-result', { hits })
+      });
+      if (wormsInit){
+        wormsEngine.start({
+          coins: false,
+          seed: wormsInit.seed,
+          teams: wormsInit.teams,
+          worms: wormsInit.worms.map(w => ({ pid: w.pid, name: w.name, team: w.team, lives: w.lives }))
+        });
+      }
+      // Hvis første tur allerede ankom mens motoren lastet — bruk den nå.
+      if (wormsLastTurn){
+        if (wormsLastTurn.lives) wormsEngine.setLives(wormsLastTurn.lives);
+        wormsEngine.beginTurn(wormsLastTurn.active);
+      }
+      if (wormsHudTimer) clearInterval(wormsHudTimer);
+      wormsHudTimer = setInterval(() => renderWormsHud(state), 500);
+      wormsLoading = false;
+    });
+  }
+  renderWormsHud(s);
+}
+
+function renderWormsHud(s){
+  const w = s && s.worms; if (!w) return;
+  const label = document.getElementById('worms-turn-label');
+  if (label){
+    const active = w.worms.find(x => x.pid === w.active);
+    const left = w.deadline ? Math.max(0, Math.round((w.deadline - Date.now())/1000)) : 0;
+    label.innerHTML = active
+      ? `<span style="color:${active.color}">${escapeHtml(w.teams[active.team].name)} — ${escapeHtml(active.name)}</span> sin tur · ${left}s`
+      : '';
+  }
+  const list = document.getElementById('worms-score-list');
+  if (list){
+    list.innerHTML = w.teams.map(t => {
+      const members = w.worms.filter(x => x.team === t.id);
+      const aliveN = members.filter(x => x.alive).length;
+      return `<div class="hud-row worms-team" style="color:${t.col}">${escapeHtml(t.name)} <span class="n">${aliveN}/${members.length}</span></div>`
+        + members.map(x => `<div class="hud-row ${x.alive?'':'dead'}"><span>${x.pid===w.active?'▶ ':''}${escapeHtml(x.name)}</span><span class="n">${x.alive?('❤'+x.lives):'☠'}</span></div>`).join('');
+    }).join('');
+  }
+}
+
 function renderGameHud(data, type){
   const timerEl = document.getElementById(type + '-timer');
   if (timerEl && data.endAt){
@@ -1645,7 +1744,7 @@ scheduleBlink();
 // Phase-baserte uttrykk
 function mascotForPhase(phase){
   if (phase === 'question' || phase === 'reveal') mascotEmotion('happy');
-  else if (phase === 'bomb') mascotEmotion('excited');
+  else if (phase === 'bomb' || phase === 'worms') mascotEmotion('excited');
   else if (phase === 'wheel' || phase === 'end') mascotEmotion('dancing');
   else mascotEmotion(null);
 }

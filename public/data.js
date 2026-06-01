@@ -510,5 +510,6 @@ export const TUTORIAL_TEXT = {
   icebreaker: 'Bli-kjent-kort! En tilfeldig blir trukket for å svare. Ingen poeng — bare hygge.',
   wheel: 'Lykkehjulet snurrer og lander på én spiller. Host klikker for å snurre igjen.',
   snake: '🐍 Snake 2.0! Bruk piler/WASD eller swipe. Spis eplet for å vokse — og hele brettet blir raskere jo mer som spises! Krasj i vegg, deg selv eller en annen slange = død. Du gjenoppstår etter 3s. Lykke til!',
-  bomb: '💣 Bomberman! Plant bomber, sprekk vegger, unngå eksplosjoner. Samle powerups: 💣 fler bomber, 🔥 lenger rekkevidde, 👟 kick, 🥊 punch, 📡 remote (trykk F for å detonere), 🛡️ shield.'
+  bomb: '💣 Bomberman! Plant bomber, sprekk vegger, unngå eksplosjoner. Samle powerups: 💣 fler bomber, 🔥 lenger rekkevidde, 👟 kick, 🥊 punch, 📡 remote (trykk F for å detonere), 🛡️ shield.',
+  worms: '🪱 Romkrig! To lag — Rødt mot Blått. Alle får en orm og spiller etter tur. På din tur: flytt litt, sikt med slingshot på telefonen og fyr. Treff motstanderne og spreng terrenget under dem. Siste lag med ormer igjen vinner!'
 };
