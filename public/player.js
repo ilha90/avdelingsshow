@@ -1260,14 +1260,25 @@ function updateWormsTopHud(s){
   const top = document.getElementById('worms-top'); if (!top) return;
   const mine = myWorm(w);
   const left = w.deadline ? Math.max(0, Math.round((w.deadline - Date.now())/1000)) : 0;
-  const teamPills = w.teams.map(t => {
+  // Full lag-roster — samme info som host-tavlen (hver orm: navn + liv, aktiv markert, død dimmet)
+  const roster = w.teams.map(t => {
     const members = w.worms.filter(x => x.team === t.id);
     const aliveN = members.filter(x => x.alive).length;
-    return `<span class="worms-pill" style="color:${t.col}">${'🪱'.repeat(aliveN) || '☠'} ${aliveN}/${members.length}</span>`;
+    const chips = members.map(x => `
+      <span class="worms-wchip ${x.pid===w.active?'cur':''} ${x.alive?'':'dead'}" style="border-color:${t.col}">
+        ${x.pid===w.active?'▶ ':''}${escapeHtml(x.name)} <b style="color:${t.col}">${x.alive?('❤'+x.lives):'☠'}</b>
+      </span>`).join('');
+    return `<div class="worms-rteam-row">
+      <span class="worms-rteam" style="color:${t.col}">${escapeHtml(t.name)} ${aliveN}/${members.length}</span>
+      <span class="worms-rchips">${chips}</span>
+    </div>`;
   }).join('');
   top.innerHTML = `
-    <div class="worms-top-l">${wormTurnText(w)} sin tur · <b>${left}s</b></div>
-    <div class="worms-top-r">${mine ? (mine.alive ? ('Du: ❤'+mine.lives) : '💀') : '👀'} ${teamPills}</div>
+    <div class="worms-top-line">
+      <span class="worms-turn-txt">${wormTurnText(w)} sin tur · <b>${left}s</b></span>
+      <span class="worms-me">${mine ? (mine.alive ? ('Du: ❤'+mine.lives) : '💀 ute') : '👀'}</span>
+    </div>
+    <div class="worms-roster">${roster}</div>
   `;
 }
 
@@ -1357,14 +1368,26 @@ function bindWormsControls(){
     }
     curAim = null;
   };
+  // Robust drag: lytt på window mens dra pågår, slik at "slipp" alltid fanges
+  // selv når fingeren dras langt utenfor den lille sikteflaten (pointer-capture
+  // er upålitelig på touch — var årsaken til at raketten ikke ble sluppet).
+  const winMove = e => { if (e.pointerId === padId) onAim(e); };
+  const winUp = e => {
+    if (e.pointerId !== padId) return;
+    padId = null;
+    window.removeEventListener('pointermove', winMove);
+    window.removeEventListener('pointerup', winUp);
+    window.removeEventListener('pointercancel', winUp);
+    endAim();
+  };
   pad.addEventListener('pointerdown', e => {
-    e.preventDefault(); padId = e.pointerId;
-    try { pad.setPointerCapture(padId); } catch(_){}
+    e.preventDefault();
+    padId = e.pointerId;
+    window.addEventListener('pointermove', winMove);
+    window.addEventListener('pointerup', winUp);
+    window.addEventListener('pointercancel', winUp);
     onAim(e);
   });
-  pad.addEventListener('pointermove', e => { if (e.pointerId === padId) onAim(e); });
-  pad.addEventListener('pointerup', e => { if (e.pointerId === padId){ padId = null; endAim(); } });
-  pad.addEventListener('pointercancel', e => { if (e.pointerId === padId){ padId = null; endAim(); } });
 }
 
 
