@@ -17,6 +17,7 @@ let wormsEngine = null;     // speil-motor (mode:'mirror')
 let wormsInit = null;       // {seed, teams, worms}
 let wormsLastFrame = null;  // siste snapshot
 let wormsBuilding = false;  // hindrer dobbel-bygging mens import laster
+let wormsBuildErr = '';     // feilmelding hvis motoren ikke kunne bygges/startes
 let wormsFrameCount = 0;    // mottatte frames (debug)
 
 const app = document.getElementById('app');
@@ -284,7 +285,7 @@ function render(s){
   if (s.phase !== 'worms'){
     wormsView = null;
     if (wormsEngine){ wormsEngine.dispose(); wormsEngine = null; }
-    wormsBuilding = false;
+    wormsBuilding = false; wormsBuildErr = '';
     const dbg = document.getElementById('worms-dbg'); if (dbg) dbg.remove();
   }
   // Reset quiz-rebuild-key når vi forlater quiz-faser
@@ -1219,8 +1220,9 @@ function showWormsGame(s){
   if (!w){ showWaitScreen('Romkrig laster...'); return; }
   if (!me){ showWaitScreen('Kobler til...'); return; }
   // Bygg (eller bygg på nytt) når motoren mangler — robust mot stale DOM mellom
-  // runder, tapt worms:init og reconnect. Loading-flagg hindrer dobbelbygging.
-  if (!wormsEngine && !wormsBuilding){
+  // runder, tapt worms:init og reconnect. Loading-flagg + feil-flagg hindrer
+  // uendelig rebuild-loop (som tidligere skjulte oppstartsfeil).
+  if (!wormsEngine && !wormsBuilding && !wormsBuildErr){
     buildWormsStage(s);
   }
   const amActive = w.active === me.id;
@@ -1241,10 +1243,11 @@ function wormsDebug(s){
     el.style.cssText = 'position:fixed;top:2px;left:2px;z-index:99999;font:10px/1.3 monospace;color:#6f6;background:rgba(0,0,0,.78);padding:3px 6px;border-radius:5px;pointer-events:none;white-space:pre';
     document.body.appendChild(el);
   }
-  const eng = wormsEngine ? wormsEngine.getPhase() : (wormsBuilding ? 'laster…' : 'NULL');
+  const eng = wormsEngine ? wormsEngine.getPhase() : (wormsBuilding ? 'laster…' : (wormsBuildErr ? 'FEIL' : 'NULL'));
   const meId = me ? me.id.slice(0,5) : '?';
   const act = (s.worms && s.worms.active || '').slice(0,5);
-  el.textContent = `ph:${s.phase} eng:${eng} fr:${wormsFrameCount}\nme:${meId} aktiv:${act} ${meId===act?'(DU)':''}`;
+  el.textContent = `ph:${s.phase} eng:${eng} fr:${wormsFrameCount}\nme:${meId} aktiv:${act} ${meId===act?'(DU)':''}`
+    + (wormsBuildErr ? `\nERR:${wormsBuildErr.slice(0,60)}` : '');
 }
 
 function myWorm(w){ return w.worms.find(x => x.pid === me.id); }
@@ -1256,6 +1259,7 @@ function wormTurnText(w){
 
 function buildWormsStage(s){
   wormsBuilding = true;
+  wormsBuildErr = '';
   app.innerHTML = `
     <div class="worms-stage">
       <div class="worms-top" id="worms-top"></div>
@@ -1263,27 +1267,35 @@ function buildWormsStage(s){
       <div class="worms-ctrl" id="worms-ctrl"></div>
     </div>
   `;
-  // Bygg speilet fra STATE (alltid tilgjengelig) — robust mot tapt worms:init
-  // ved reconnect/refresh. Fallback til worms:init-eventet om state mangler.
+  // Bygg speilet fra STATE (alltid tilgjengelig) — robust mot tapt worms:init.
   const w = (s && s.worms) || wormsInit;
+  const watchdog = setTimeout(() => {
+    if (wormsBuilding){ wormsBuildErr = 'timeout: import hang (>6s)'; wormsBuilding = false; }
+  }, 6000);
   import('./worms-engine.js').then(m => {
+    clearTimeout(watchdog);
     const cv = document.getElementById('worms-canvas');
     if (!cv){ wormsBuilding = false; return; }
-    wormsEngine = m.createWormsEngine({ canvas: cv, mode: 'mirror' });
-    if (w && w.teams && w.worms){
-      wormsEngine.start({
-        coins: false,
-        seed: w.seed,
-        teams: w.teams,
-        worms: w.worms.map(x => ({ pid: x.pid, name: x.name, team: x.team, lives: x.lives }))
-      });
-      if (wormsLastFrame) wormsEngine.applySnapshot(wormsLastFrame);
+    try {
+      const eng = m.createWormsEngine({ canvas: cv, mode: 'mirror' });
+      if (w && w.teams && w.worms){
+        eng.start({
+          coins: false,
+          seed: w.seed,
+          teams: w.teams,
+          worms: w.worms.map(x => ({ pid: x.pid, name: x.name, team: x.team, lives: x.lives }))
+        });
+        if (wormsLastFrame) eng.applySnapshot(wormsLastFrame);
+      }
+      wormsEngine = eng;            // sett FØRST etter vellykket start
+    } catch(err){
+      wormsBuildErr = 'start: ' + (err && err.message || err);
     }
     wormsBuilding = false;
   }).catch(err => {
+    clearTimeout(watchdog);
+    wormsBuildErr = 'import: ' + (err && err.message || err);
     wormsBuilding = false;
-    const wrap = document.querySelector('.worms-canvas-wrap');
-    if (wrap) wrap.innerHTML = `<div style="color:#f88;font:13px monospace;padding:20px;text-align:center">Klarte ikke laste spillet:<br>${escapeHtml(String(err && err.message || err))}</div>`;
   });
 }
 
@@ -1328,7 +1340,7 @@ function renderWormsControls(s, amActive){
         </div>
         <button class="worms-mbtn" id="worms-right">▶</button>
       </div>
-      <div class="worms-fire-hint">Flytt med pilene · dra <b>bakover</b> i sikteflaten og slipp for å skyte 🚀</div>
+      <div class="worms-fire-hint">Flytt med pilene · dra i sikteflaten <b>mot målet</b> og slipp for å skyte 🚀</div>
     `;
     bindWormsControls();
   } else {
@@ -1375,8 +1387,8 @@ function bindWormsControls(){
     const R = r.width/2;
     const mag = Math.hypot(dx, dy);
     const power = Math.min(mag, R) / R;
-    // Slingshot: skyt motsatt av dra-retningen
-    const angle = Math.atan2(-dy, -dx);
+    // DIREKTE sikting: skyt i den retningen du drar (intuitivt, lengre dra = mer kraft)
+    const angle = Math.atan2(dy, dx);
     curAim = { angle, power };
     const cl = Math.min(mag, R);
     const tx = (mag>0 ? dx/mag : 0) * cl, ty = (mag>0 ? dy/mag : 0) * cl;
