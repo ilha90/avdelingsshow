@@ -315,6 +315,52 @@ export const QUIZ_CATEGORIES = {
       { q: '🎈🏠👴', a: ['Rocky', 'Up', 'Cars', 'Titanic'], c: 1, isEmoji: true },
       { q: '🐧🕺', a: ['Titanic', 'Rocky', 'Happy Feet', 'Cars'], c: 2, isEmoji: true }
     ]
+  },
+  genesys: {
+    label: 'Genesys Cloud',
+    emoji: '🎧',
+    questions: [
+      { q: 'Hva slags plattform er Genesys Cloud?', a: ['Regnskapssystem', 'Skybasert kontaktsenter-plattform', 'CRM for eiendom', 'Videoredigering'], c: 1 },
+      { q: 'I hvilket verktøy bygger man samtaleflyter (call flows) i Genesys Cloud?', a: ['Architect', 'Composer', 'Designer', 'Builder'], c: 0 },
+      { q: 'Hva kalles en "kø" der innkommende henvendelser fordeles til rådgivere?', a: ['Bucket', 'Queue (kø)', 'Stack', 'Pool'], c: 1 },
+      { q: 'Hvilken skyleverandørs infrastruktur kjører Genesys Cloud på?', a: ['Microsoft Azure', 'Google Cloud', 'AWS', 'Oracle Cloud'], c: 2 },
+      { q: 'Hva står "ACD" for i kontaktsenter-sammenheng?', a: ['Automatic Call Distribution', 'Advanced Customer Data', 'Agent Control Desk', 'Automated Case Delivery'], c: 0 },
+      { q: 'Hva kalles motoren for utgående ringekampanjer i Genesys?', a: ['Inbound IVR', 'Outbound Dialer', 'Webchat', 'Workforce'], c: 1 },
+      { q: 'Hvilken status setter en rådgiver seg i for å motta samtaler?', a: ['On Queue / Tilgjengelig', 'Busy', 'Away', 'Offline'], c: 0 },
+      { q: 'Hva kalles en tale-/chat-bot bygget i Architect?', a: ['Macro', 'Bot Flow', 'Script Pack', 'Widget'], c: 1 },
+      { q: 'Hva står NLU for (brukes i Genesys-boter)?', a: ['Natural Language Understanding', 'New Lead Upload', 'Network Layer Unit', 'Numeric Lookup Utility'], c: 0 },
+      { q: 'Hva heter modulen for bemanningsplanlegging i Genesys Cloud?', a: ['Workforce Management (WFM)', 'TimeTracker', 'ShiftDesk', 'CrewPlan'], c: 0 },
+      { q: 'I DNBs ringemotor — hvor produseres leads aller først?', a: ['CIM', 'Teradata', 'Genesys Cloud', 'Excel'], c: 0 },
+      { q: 'Hvilken vei går leads gjennom ringemotor-kjeden?', a: ['Genesys → Teradata → CIM', 'CIM → Teradata → Genesys Cloud', 'Teradata → CIM → Genesys', 'CIM → Genesys → Teradata'], c: 1 },
+      { q: 'Hva heter feltet for leads som er klargjort for opplasting til Genesys Cloud?', a: ['CloudReady', 'ReadyCloud', 'LoadOK', 'GenesysGo'], c: 1 },
+      { q: 'Når kjører "hent leads fra Teradata"-jobben hver morgen?', a: ['06:00', '07:30', '09:00', '12:00'], c: 1 },
+      { q: 'Når lastes leads senest inn til Genesys Cloud?', a: ['senest 08:00', 'senest 10:00', 'senest 12:00', 'kl. 15:00'], c: 0 },
+      { q: 'Hovedsjekken i den daglige 07:30-eposten: hvilke to tall sammenligner man?', a: ['TilRingeliste vs ReadyCloud', 'AntallDagensCRM vs AntallRecCRM', 'AntallFiltrerte vs Sum', 'ReadyCloud vs AntallFiltrerte'], c: 1 },
+      { q: 'Hva betyr det hvis AntallDagensCRM er lavere enn AntallRecCRM?', a: ['Alt er OK', 'Mottatt leads med utløpt frist', 'For mange rådgivere på jobb', 'Genesys er nede'], c: 1 },
+      { q: 'Hvem er produkteier for ringemotoren?', a: ['Ilir Hadri', 'Jawad Ali', 'Erik Nordheim', 'Manmohan Singh'], c: 0 },
+      { q: 'Hvorfor må jobbene restartes i riktig rekkefølge (07:30 før 08:00)?', a: ['For å spare strøm', 'Ellers blir Genesys Cloud tom', 'Pga lisenskrav', 'Det spiller ingen rolle'], c: 1 },
+      { q: 'Hva utløses automatisk hvis 07:30-jobben feiler?', a: ['Ingenting', 'SMS-varsel til ansvarlige', 'Systemet restarter selv', 'Alle rådgivere logges ut'], c: 1 }
+    ]
+  },
+  genesys_utrulling: {
+    label: 'Genesys Utrulling',
+    emoji: '🚀',
+    questions: [
+      { q: 'Når startet selve utrullingen av nytt kontaktsenter (Genesys Cloud)?', a: ['Januar 2024', 'Mars 2024', 'Mai 2024', 'Januar 2025'], c: 1 },
+      { q: 'Når ble Genesys Cloud-avtalen signert?', a: ['30.01.2024', '01.03.2024', '04.03.2024', '11.03.2024'], c: 0 },
+      { q: 'Når var offisiell kickoff for prosjektet?', a: ['30.01.2024', '01.03.2024', '02.04.2024', '01.05.2024'], c: 1 },
+      { q: 'Hvilken periode var den planlagte hovedutrullingen (core) i 2024?', a: ['Januar–februar', 'Mars–slutten av mai', 'Juni–august', 'September–desember'], c: 1 },
+      { q: 'Hvilket område var med i den store bølgen 11. mars 2024?', a: ['Private Banking', 'PM Oslo', 'Verdipapirservice', 'Bilagsservice'], c: 1 },
+      { q: 'Når ble Private Banking og Verdipapirservice rullet ut?', a: ['11. mars 2024', '25. mars 2024', '3. april 2024', '1. juni 2024'], c: 2 },
+      { q: 'Hvor mange chats ble flyttet til nytt kontaktsenter i november 2025?', a: ['Over 500', 'Over 1 000', 'Over 2 100', 'Over 5 000'], c: 2 },
+      { q: 'Hva ble rullet ut i desember 2025?', a: ['Tale-menyer', 'Webskjema', 'Copilot', 'Private Banking'], c: 0 },
+      { q: 'I hvilken måned i 2025 ble Sbanken nattmeny rullet ut?', a: ['Oktober', 'November', 'Desember', 'September'], c: 1 },
+      { q: 'Hva var hovedfokus i 2025-fasen?', a: ['Stabilisering, opplæring og hypercare', 'Avtalesignering', 'Oppstart core-migrering', 'Avvikling av kontaktsenteret'], c: 0 },
+      { q: 'Hva kjennetegner utrullingen i 2026?', a: ['Oppstart av core-migrering', 'Feature- og kapabilitetsutrulling (Copilot, IVR m.m.)', 'Signering av avtale', 'Pilot av kontaktsenteret'], c: 1 },
+      { q: 'Hvilke av disse ble rullet ut som "puljer" i 2026?', a: ['Webskjema og Copilot', 'Teradata-jobber', 'Avtalesignering', 'Kickoff-møter'], c: 0 },
+      { q: 'Hva er den gjennomgående utrullingsstrategien i programmet?', a: ['Alt på én gang ("big bang")', 'Puljebasert, stegvis', 'Kun om natten', 'Tilfeldig rekkefølge'], c: 1 },
+      { q: 'Hvilken modernisering-rekkefølge fulgte programmet?', a: ['Features → core → pilot', 'Core → spesialtilfeller → features', 'Pilot → avtale → kickoff', 'Edge cases → core'], c: 1 }
+    ]
   }
 };
 
