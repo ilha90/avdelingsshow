@@ -18,7 +18,8 @@ let wormsInit = null;       // {seed, teams, worms}
 let wormsLastFrame = null;  // siste snapshot
 let wormsBuilding = false;  // hindrer dobbel-bygging mens import laster
 let wormsBuildErr = '';     // feilmelding hvis motoren ikke kunne bygges/startes
-let wormsFrameCount = 0;    // mottatte frames (debug)
+let wormsLoadout = null;    // aktiv orms {m,sel,own} fra siste frame (arsenal-UI)
+let wormsArsenalSig = '';   // signatur for å unngå unødig DOM-rebuild av arsenalet
 
 const app = document.getElementById('app');
 
@@ -262,9 +263,10 @@ socket.on('snake:tick', d => {
 // ====== Worms speil-sync (host streamer snapshots) ======
 socket.on('worms:init', d => { wormsInit = d; wormsLastFrame = null; });
 socket.on('worms:frame', snap => {
-  wormsFrameCount++;
   wormsLastFrame = snap;
   if (wormsEngine) wormsEngine.applySnapshot(snap);
+  // Aktiv orms loadout (penger/eide/valgt) → oppdater arsenal-UI live
+  if (snap && snap.ld){ wormsLoadout = snap.ld; updateWormsArsenal(); }
 });
 socket.on('worms:carve', ({ cx, cy, r }) => {
   if (wormsEngine) wormsEngine.applyCarve(cx, cy, r);
@@ -286,7 +288,7 @@ function render(s){
     wormsView = null;
     if (wormsEngine){ wormsEngine.dispose(); wormsEngine = null; }
     wormsBuilding = false; wormsBuildErr = '';
-    const dbg = document.getElementById('worms-dbg'); if (dbg) dbg.remove();
+    wormsLoadout = null; wormsArsenalSig = '';
   }
   // Reset quiz-rebuild-key når vi forlater quiz-faser
   if (s.phase !== 'question' && s.phase !== 'reveal') resetQuizKey();
@@ -1225,6 +1227,18 @@ function showWormsGame(s){
   if (!wormsEngine && !wormsBuilding && !wormsBuildErr){
     buildWormsStage(s);
   }
+  // Synlig (men diskret) feilmelding hvis motoren ikke kunne lastes — med retry.
+  if (wormsBuildErr && !wormsEngine){
+    if (!document.getElementById('worms-reload-btn')){
+      app.innerHTML = `<div class="worms-stage"><div class="worms-loaderr">
+        <div>⚠️ Klarte ikke å laste Romkrig.</div>
+        <button id="worms-reload-btn" class="btn-primary">Prøv igjen</button>
+      </div></div>`;
+      const btn = document.getElementById('worms-reload-btn');
+      if (btn) btn.addEventListener('click', () => { wormsBuildErr = ''; wormsView = null; render(state); });
+    }
+    return;
+  }
   const amActive = w.active === me.id;
   const key = amActive ? 'active' : ('spec:' + w.active);
   if (wormsView !== key){
@@ -1232,22 +1246,6 @@ function showWormsGame(s){
     renderWormsControls(s, amActive);
   }
   updateWormsTopHud(s);
-  wormsDebug(s);
-}
-
-function wormsDebug(s){
-  let el = document.getElementById('worms-dbg');
-  if (!el){
-    el = document.createElement('div');
-    el.id = 'worms-dbg';
-    el.style.cssText = 'position:fixed;top:2px;left:2px;z-index:99999;font:10px/1.3 monospace;color:#6f6;background:rgba(0,0,0,.78);padding:3px 6px;border-radius:5px;pointer-events:none;white-space:pre';
-    document.body.appendChild(el);
-  }
-  const eng = wormsEngine ? wormsEngine.getPhase() : (wormsBuilding ? 'laster…' : (wormsBuildErr ? 'FEIL' : 'NULL'));
-  const meId = me ? me.id.slice(0,5) : '?';
-  const act = (s.worms && s.worms.active || '').slice(0,5);
-  el.textContent = `ph:${s.phase} eng:${eng} fr:${wormsFrameCount}\nme:${meId} aktiv:${act} ${meId===act?'(DU)':''}`
-    + (wormsBuildErr ? `\nERR:${wormsBuildErr.slice(0,60)}` : '');
 }
 
 function myWorm(w){ return w.worms.find(x => x.pid === me.id); }
@@ -1330,6 +1328,10 @@ function renderWormsControls(s, amActive){
   const ctrl = document.getElementById('worms-ctrl'); if (!ctrl) return;
   if (amActive){
     ctrl.innerHTML = `
+      <div class="worms-arsenal-wrap">
+        <span class="worms-money" id="worms-money">💰 0 kr</span>
+        <div class="worms-arsenal" id="worms-arsenal"></div>
+      </div>
       <div class="worms-ctrl-row">
         <button class="worms-mbtn" id="worms-left">◀</button>
         <div class="worms-aim" id="worms-aim">
@@ -1340,12 +1342,59 @@ function renderWormsControls(s, amActive){
         </div>
         <button class="worms-mbtn" id="worms-right">▶</button>
       </div>
-      <div class="worms-fire-hint">Flytt med pilene · dra i sikteflaten <b>mot målet</b> og slipp for å skyte 🚀</div>
+      <div class="worms-fire-hint">Velg våpen · flytt med pilene · dra i sikteflaten <b>mot målet</b> og slipp for å skyte 🚀</div>
     `;
     bindWormsControls();
+    bindWormsArsenal();
+    wormsArsenalSig = '';      // tving full opptegning på ny tur
+    updateWormsArsenal();
   } else {
     ctrl.innerHTML = `<div class="worms-spec-note">👀 ${wormTurnText(s.worms)} spiller — følg med!</div>`;
   }
+}
+
+// Bygg/oppdater våpenarsenalet fra aktiv orms loadout (penger/eide/valgt).
+function updateWormsArsenal(){
+  const el = document.getElementById('worms-arsenal'); if (!el) return;
+  const ld = wormsLoadout; if (!ld || !wormsEngine) return;
+  const WEAPONS = wormsEngine.WEAPONS, ORDER = wormsEngine.WEAPON_ORDER;
+  if (!WEAPONS || !ORDER) return;
+  const own = ld.own || [];
+  const sig = ld.m + '|' + ld.sel + '|' + own.slice().sort().join(',');
+  if (sig === wormsArsenalSig) return;
+  wormsArsenalSig = sig;
+  const moneyEl = document.getElementById('worms-money');
+  if (moneyEl) moneyEl.textContent = '💰 ' + ld.m + ' kr';
+  el.innerHTML = ORDER.map(id => {
+    const w = WEAPONS[id];
+    const owned = own.includes(id), afford = ld.m >= w.price, selected = ld.sel === id;
+    const cls = 'worms-wbtn' + (selected ? ' sel' : '') + (owned ? ' owned' : (afford ? '' : ' cant'));
+    const tag = owned ? (w.free ? '∞' : '✓') : (w.price + 'kr');
+    return `<button class="${cls}" data-id="${id}" ${(!owned && !afford) ? 'disabled' : ''} title="${escapeHtml(w.name + ' — ' + w.desc)}">
+      <span class="wic">${w.icon}</span><span class="wpx">${tag}</span>
+    </button>`;
+  }).join('');
+}
+
+// Klikk-delegering: eid → velg, ueid+råd → kjøp. Bindes på arsenal-containeren.
+function bindWormsArsenal(){
+  const el = document.getElementById('worms-arsenal'); if (!el) return;
+  el.addEventListener('click', e => {
+    const btn = e.target.closest('.worms-wbtn'); if (!btn) return;
+    const id = btn.dataset.id; if (!id) return;
+    const ld = wormsLoadout || { own: [], m: 0 };
+    const owned = (ld.own || []).includes(id);
+    const W = wormsEngine && wormsEngine.WEAPONS;
+    if (owned){
+      socket.emit('player:worms-select', { id });
+      haptic.tap();
+    } else if (W && ld.m >= W[id].price){
+      socket.emit('player:worms-buy', { id });
+      haptic.bump(); if (sfx.pop) sfx.pop();
+    } else {
+      haptic.fail();
+    }
+  });
 }
 
 function bindWormsControls(){
@@ -1409,6 +1458,9 @@ function bindWormsControls(){
     if (curAim && curAim.power > 0.05){
       socket.emit('player:worms-fire', { angle: curAim.angle, power: curAim.power });
       haptic.buzz(); if (sfx.boom) sfx.boom();
+    } else {
+      // Slapp uten nok kraft → fortell motoren at siktet er avbrutt (fjern siktelinje)
+      socket.emit('player:worms-aim', { angle: 0, power: 0, dragging: false });
     }
     curAim = null;
   };

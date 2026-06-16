@@ -3684,3 +3684,35 @@ body:has(.live-ticker.visible) .commentator { bottom: 110px; }
   transition: opacity .12s; pointer-events: none;
 }
 .worms-fire-hint { margin-top: 8px; font-size: 12.5px; color: var(--ink-muted); text-align: center; }
+
+/* Våpenarsenal (aktiv spiller) */
+.worms-arsenal-wrap { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.worms-money {
+  flex: 0 0 auto; font-size: 13px; font-weight: 900; color: var(--gold);
+  background: rgba(2,16,11,.6); border: 1px solid var(--stage-hairline);
+  border-radius: 10px; padding: 6px 9px; white-space: nowrap;
+}
+.worms-arsenal {
+  flex: 1 1 auto; display: flex; gap: 6px; overflow-x: auto; padding: 2px;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.worms-arsenal::-webkit-scrollbar { display: none; }
+.worms-wbtn {
+  flex: 0 0 auto; width: 50px; height: 52px; border-radius: 11px; cursor: pointer;
+  border: 2px solid var(--stage-edge); background: rgba(255,255,255,.04); color: #fff;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  transition: transform .08s, border-color .12s, background .12s; touch-action: manipulation;
+}
+.worms-wbtn .wic { font-size: 21px; line-height: 1; }
+.worms-wbtn .wpx { font-size: 9px; font-weight: 800; color: var(--gold); }
+.worms-wbtn.owned .wpx { color: var(--accent); }
+.worms-wbtn.sel { border-color: var(--gold); background: rgba(202,171,81,.18); box-shadow: 0 0 0 2px var(--gold) inset; }
+.worms-wbtn.cant { opacity: .4; filter: grayscale(.6); cursor: not-allowed; }
+.worms-wbtn:active { transform: translateY(1px) scale(.96); }
+
+/* Feil/last-på-nytt-tilstand */
+.worms-loaderr {
+  position: absolute; inset: 0; display: flex; flex-direction: column; gap: 14px;
+  align-items: center; justify-content: center; text-align: center; padding: 24px;
+  font-size: 16px; font-weight: 700; color: var(--ink-soft);
+}

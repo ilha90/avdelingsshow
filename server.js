@@ -913,6 +913,14 @@ io.on('connection', socket => {
     if (typeof angle !== 'number' || typeof power !== 'number') return;
     relayWormsControl('aim', { angle, power: clamp(power, 0, 1), dragging: !!dragging });
   });
+  socket.on('player:worms-select', ({ id } = {}) => {
+    if (typeof id !== 'string') return;
+    relayWormsControl('select', { id });
+  });
+  socket.on('player:worms-buy', ({ id } = {}) => {
+    if (typeof id !== 'string') return;
+    relayWormsControl('buy', { id });
+  });
   socket.on('player:worms-fire', ({ angle, power } = {}) => {
     if (typeof angle !== 'number' || typeof power !== 'number') return;
     if (!game.worms || game.worms.active !== socket.id || game.worms.awaitingResult) return;

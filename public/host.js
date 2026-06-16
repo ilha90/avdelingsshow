@@ -1404,7 +1404,7 @@ function renderWormsGame(s){
       const wi = (s && s.worms) || wormsInit;
       if (wi && wi.teams && wi.worms){
         wormsEngine.start({
-          coins: false,
+          coins: true,
           seed: wi.seed,
           teams: wi.teams,
           worms: wi.worms.map(w => ({ pid: w.pid, name: w.name, team: w.team, lives: w.lives }))

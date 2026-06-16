@@ -657,7 +657,7 @@ export function createWormsEngine(opts){
     // hjelpetekst bunn-senter
     let help='';
     if (G.phase==='move') help='Flytt ormen ('+Math.max(0,Math.round(p.moveLeft))+'px igjen) — så sikt og skyt';
-    else if (G.phase==='turn') help='Sikt med slingshot og slipp for å skyte';
+    else if (G.phase==='turn') help='Sikt og slipp for å skyte';
     if (help){
       ctx.save(); ctx.font='13px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='bottom';
       const tw=ctx.measureText(help).width;
@@ -830,16 +830,28 @@ export function createWormsEngine(opts){
     if (type==='move'){
       // {dir:-1|1, on:bool}  (nettverk) eller lokal kall
       if (G.phase!=='move' && G.phase!=='turn') return;
-      if (G.phase==='turn'){ /* tillat re-posisjonering ikke; ignore */ }
+      // Worms-følelse: flytting er lov helt til skudd. Trykker man flytt mens man
+      // har påbegynt sikte (turn), avbrytes siktet og vi går tilbake til move.
+      if (G.phase==='turn' && payload.on){
+        G.aim.net=false; G.aim.dragging=false; setPhase('move');
+      }
       keyDir = payload.on ? (payload.dir<0?-1:1) : 0;
     } else if (type==='toTurn'){
       if (G.phase==='move') setPhase('turn');
+    } else if (type==='select'){
+      // {id}  — velg eid våpen
+      selectWeapon(null, payload.id);
+    } else if (type==='buy'){
+      // {id}  — kjøp våpen hvis råd
+      buyWeapon(null, payload.id);
     } else if (type==='aim'){
       // {angle, power, dragging}  (nettverk slingshot live)
       if (G.phase==='move') setPhase('turn');
       if (G.phase!=='turn') return;
+      // dragging:false = spilleren slapp sikteflaten uten å skyte → nullstill siktet
+      if (!payload.dragging){ G.aim.net=false; G.aim.dragging=false; return; }
       G.aim.net=true; G.aim.angle=payload.angle; G.aim.power=clamp(payload.power||0,0,1);
-      G.aim.dragging = !!payload.dragging;
+      G.aim.dragging=true;
     } else if (type==='fire'){
       // {angle, power}  (nettverk slipp)
       if (G.phase==='move') setPhase('turn');
@@ -893,6 +905,9 @@ export function createWormsEngine(opts){
       w: G.players.map(p => ({ p:p.pid, x:Math.round(p.x), y:Math.round(p.y), l:p.lives, a:p.alive?1:0, f:p.face })),
       pr: G.projectiles.map(o => ({ x:Math.round(o.x), y:Math.round(o.y), t:o.w, fu:o.fuse|0 })),
       ex: G.explosions.map(o => ({ x:Math.round(o.x), y:Math.round(o.y), r:Math.round(o.r), lf:+o.life.toFixed(2) })),
+      co: G.coins.map(o => ({ x:Math.round(o.x), y:Math.round(o.y), r:o.r, b:o.big?1:0, v:o.value, c:o.cursed?1:0 })),
+      // loadout for aktiv orm → spillerens arsenal-UI
+      ld: c ? { m:c.money, sel:c.sel, own:Array.from(c.owned) } : null,
       aim: aimSnapshot(),
       bn: bannerText, bt: Math.round(bannerTimer)
     };
@@ -907,10 +922,13 @@ export function createWormsEngine(opts){
     }
     G.projectiles = (s.pr || []).map(o => ({ x:o.x, y:o.y, w:o.t, raygun:o.t==='raygun', trail:[], fuse:o.fu||0, sub:false }));
     G.explosions = (s.ex || []).map(o => ({ x:o.x, y:o.y, r:o.r, maxR:o.r, life:o.lf }));
+    G.coins = (s.co || []).map(o => ({ x:o.x, baseY:o.y, y:o.y, r:o.r, big:!!o.b, value:o.v, ph:0, cursed:!!o.c }));
     if (s.aim && s.aim.on){ G.aim.net = true; G.aim.dragging = true; G.aim.angle = s.aim.a; G.aim.power = s.aim.p; }
     else { G.aim.net = false; G.aim.dragging = false; }
     if (s.bn != null){ bannerText = s.bn; bannerTimer = s.bt || 0; }
   }
+  // Aktiv orms loadout fra siste snapshot (for speilende spillers arsenal-UI).
+  function loadoutFromSnapshot(s){ return (s && s.ld) || null; }
   function applyCarve(cx,cy,r){ if (G) carveTerrainLocal(cx,cy,r); }
 
   const api = {
@@ -918,7 +936,7 @@ export function createWormsEngine(opts){
     localKey, localMouse, spacePressed, setLives,
     selectWeapon, buyWeapon, setGameOver, dispose,
     aliveTeams, resize,
-    snapshot, applySnapshot, applyCarve,
+    snapshot, applySnapshot, applyCarve, loadoutFromSnapshot,
     getCurrent: () => cur(),
     getPlayers: () => G ? G.players : [],
     getPhase: () => G ? G.phase : 'idle',
