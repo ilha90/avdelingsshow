@@ -325,13 +325,13 @@ export const QUIZ_CATEGORIES = {
       { q: 'Hvor "bor" Genesys Cloud?', a: ['På en server i kjelleren', 'I skyen', 'På rådgivernes PC-er', 'På en USB-pinne'], c: 1 },
       { q: 'Hva kalles "køen" der kundehenvendelser fordeles til rådgivere?', a: ['Kø (queue)', 'Skranke', 'Lobby', 'Resepsjon'], c: 0 },
       { q: 'Hvilken status setter en rådgiver seg i for å være klar til å ta henvendelser?', a: ['Tilgjengelig (On Queue)', 'Borte', 'Opptatt', 'Pause'], c: 0 },
-      { q: 'Hva heter motoren som ringer ut til kunder (utgående kampanjer)?', a: ['Ringemotoren', 'Svareren', 'Køsystemet', 'Chatboten'], c: 0 },
+      { q: 'Hva møter deg ofte først når du ringer et kundesenter?', a: ['En talemeny (IVR)', 'En faktura', 'En SMS-kode', 'En e-post'], c: 0 },
       { q: 'Hvilke kanaler kan Genesys Cloud håndtere?', a: ['Kun telefon', 'Telefon, chat, e-post og mer', 'Kun chat', 'Kun brev'], c: 1 },
       { q: 'Hva er en "bot" i Genesys-sammenheng?', a: ['En fysisk robot på kontoret', 'En automatisk tale-/chat-robot', 'En type telefon', 'Et tastatur'], c: 1 },
       { q: 'I hvilket verktøy bygges samtaleflytene (hva som skjer når kunden ringer)?', a: ['Architect', 'Word', 'Paint', 'Outlook'], c: 0 },
       { q: 'Hva betyr det at utrullingen er "puljebasert"?', a: ['Alt flyttes samme dag', 'Enheter flyttes stegvis i bølger', 'Bare om natten', 'I tilfeldig rekkefølge'], c: 1 },
       { q: 'Hva er en av hovedgevinstene med skybasert kontaktsenter?', a: ['Billigere kaffe', 'Moderne plattform med nye muligheter (Copilot, IVR m.m.)', 'Færre kunder', 'Lengre køer'], c: 1 },
-      { q: 'Hvem på huset er produkteier for ringemotoren?', a: ['Ilir Hadri', 'Jawad Ali', 'Erik Nordheim', 'Vegard Haugen'], c: 0 }
+      { q: 'Hva er en "callback" i et kontaktsenter?', a: ['Kunden beholder køplassen og blir ringt opp', 'En type telefon', 'En feilmelding', 'En rabattkode'], c: 0 }
     ]
   },
   genesys_utrulling: {
@@ -349,7 +349,7 @@ export const QUIZ_CATEGORIES = {
       { q: 'I hvilken måned i 2025 ble Sbanken nattmeny rullet ut?', a: ['Oktober', 'November', 'Desember', 'September'], c: 1 },
       { q: 'Hva var hovedfokus i 2025-fasen?', a: ['Stabilisering, opplæring og hypercare', 'Avtalesignering', 'Oppstart core-migrering', 'Avvikling av kontaktsenteret'], c: 0 },
       { q: 'Hva kjennetegner utrullingen i 2026?', a: ['Oppstart av core-migrering', 'Feature- og kapabilitetsutrulling (Copilot, IVR m.m.)', 'Signering av avtale', 'Pilot av kontaktsenteret'], c: 1 },
-      { q: 'Hvilke av disse ble rullet ut som "puljer" i 2026?', a: ['Webskjema og Copilot', 'Teradata-jobber', 'Avtalesignering', 'Kickoff-møter'], c: 0 },
+      { q: 'Hvilke av disse ble rullet ut som "puljer" i 2026?', a: ['Webskjema og Copilot', 'Oppsett av servere', 'Avtalesignering', 'Kickoff-møter'], c: 0 },
       { q: 'Hva er den gjennomgående utrullingsstrategien i programmet?', a: ['Alt på én gang ("big bang")', 'Puljebasert, stegvis', 'Kun om natten', 'Tilfeldig rekkefølge'], c: 1 },
       { q: 'Hvilken modernisering-rekkefølge fulgte programmet?', a: ['Features → core → pilot', 'Core → spesialtilfeller → features', 'Pilot → avtale → kickoff', 'Edge cases → core'], c: 1 }
     ]
